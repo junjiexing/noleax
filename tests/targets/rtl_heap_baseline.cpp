@@ -32,6 +32,7 @@ struct Options {
   std::uint32_t iterations{20'000U};
   std::uint32_t rounds{2U};
   std::uint64_t seed{0x4e4f4c4541585034ULL};
+  const char* hook_harness{nullptr};
 };
 
 enum class ParseResult : std::uint8_t {
@@ -49,6 +50,84 @@ enum class AllocationApi : std::uint8_t {
 struct NativeFunctions {
   RtlAllocateHeapFunction allocate{nullptr};
   RtlFreeHeapFunction free{nullptr};
+};
+
+using HookHarnessAbiVersion = std::uint32_t (*)() noexcept;
+using HookHarnessInstall = std::uint32_t (*)() noexcept;
+using HookHarnessCallCount = std::uint64_t (*)() noexcept;
+using HookHarnessStop = std::uint32_t (*)() noexcept;
+
+class HookHarness {
+ public:
+  ~HookHarness() { static_cast<void>(stop()); }
+
+  HookHarness(const HookHarness&) = delete;
+  HookHarness& operator=(const HookHarness&) = delete;
+
+  HookHarness() = default;
+
+  [[nodiscard]] bool start(const char* path) noexcept {
+    if (module_ != nullptr || path == nullptr || *path == '\0') {
+      return false;
+    }
+    module_ = LoadLibraryA(path);
+    if (module_ == nullptr) {
+      return false;
+    }
+
+    const auto abi_version = reinterpret_cast<HookHarnessAbiVersion>(
+        GetProcAddress(module_, "noleax_test_rtl_allocate_heap_hook_abi_version"));
+    install_ = reinterpret_cast<HookHarnessInstall>(
+        GetProcAddress(module_, "noleax_test_rtl_allocate_heap_hook_install"));
+    call_count_ = reinterpret_cast<HookHarnessCallCount>(
+        GetProcAddress(module_, "noleax_test_rtl_allocate_heap_hook_call_count"));
+    stop_ = reinterpret_cast<HookHarnessStop>(
+        GetProcAddress(module_, "noleax_test_rtl_allocate_heap_hook_stop"));
+    if (abi_version == nullptr || install_ == nullptr || call_count_ == nullptr ||
+        stop_ == nullptr || abi_version() != 1U || install_() != 0U) {
+      FreeLibrary(module_);
+      clear();
+      return false;
+    }
+    started_ = true;
+    return true;
+  }
+
+  [[nodiscard]] std::uint64_t call_count() const noexcept { return started_ ? call_count_() : 0U; }
+
+  [[nodiscard]] bool stop() noexcept {
+    if (module_ == nullptr) {
+      return true;
+    }
+    if (started_) {
+      if (stop_() != 0U) {
+        return false;
+      }
+      started_ = false;
+    }
+    if (FreeLibrary(module_) == FALSE) {
+      return false;
+    }
+    clear();
+    return true;
+  }
+
+  [[nodiscard]] bool started() const noexcept { return started_; }
+
+ private:
+  void clear() noexcept {
+    module_ = nullptr;
+    install_ = nullptr;
+    call_count_ = nullptr;
+    stop_ = nullptr;
+    started_ = false;
+  }
+
+  HMODULE module_{nullptr};
+  HookHarnessInstall install_{nullptr};
+  HookHarnessCallCount call_count_{nullptr};
+  HookHarnessStop stop_{nullptr};
+  bool started_{false};
 };
 
 struct Summary {
@@ -128,7 +207,7 @@ struct Block {
 void print_usage() {
   std::printf(
       "usage: noleax-rtl-heap-baseline [--threads N] [--iterations N] "
-      "[--rounds N] [--seed N]\n");
+      "[--rounds N] [--seed N] [--hook-harness DLL]\n");
 }
 
 [[nodiscard]] ParseResult parse_options(int argc, char* argv[], Options& options) {
@@ -153,6 +232,9 @@ void print_usage() {
       valid = parse_bounded(value, kMaximumRounds, options.rounds);
     } else if (argument == "--seed") {
       valid = parse_unsigned(value, options.seed);
+    } else if (argument == "--hook-harness") {
+      valid = !value.empty();
+      options.hook_harness = value.data();
     } else {
       std::fprintf(stderr, "unknown option: %.*s\n", static_cast<int>(argument.size()),
                    argument.data());
@@ -545,6 +627,12 @@ int main(int argc, char* argv[]) {
     return 3;
   }
 
+  HookHarness hook_harness;
+  if (options.hook_harness != nullptr && !hook_harness.start(options.hook_harness)) {
+    std::fprintf(stderr, "cannot load or start the RtlAllocateHeap hook harness\n");
+    return 4;
+  }
+
   Summary baseline;
   for (std::uint32_t round = 0U; round < options.rounds; ++round) {
     Summary current;
@@ -564,6 +652,18 @@ int main(int argc, char* argv[]) {
   if (!summary_is_valid(options, baseline)) {
     std::fprintf(stderr, "baseline summary invariants failed\n");
     return 31;
+  }
+  if (hook_harness.started()) {
+    const std::uint64_t minimum_hook_calls =
+        baseline.rtl_attempts * static_cast<std::uint64_t>(options.rounds);
+    if (hook_harness.call_count() < minimum_hook_calls) {
+      std::fprintf(stderr, "RtlAllocateHeap replacement did not observe the direct workload\n");
+      return 32;
+    }
+    if (!hook_harness.stop()) {
+      std::fprintf(stderr, "cannot stop or unload the RtlAllocateHeap hook harness\n");
+      return 33;
+    }
   }
   print_summary(options, baseline);
   return 0;

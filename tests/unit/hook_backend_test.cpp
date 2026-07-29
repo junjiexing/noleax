@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <stdexcept>
 #include <string_view>
+#include <thread>
 #include <utility>
 
 namespace {
@@ -25,6 +26,8 @@ FixtureFunction transform_original = nullptr;
 FixtureFunction combine_original = nullptr;
 std::atomic<std::uint64_t> transform_calls{0U};
 std::atomic<std::uint64_t> combine_calls{0U};
+noleax::agent::OriginalTrampolineSlot published_original{nullptr};
+std::atomic<bool> entered_without_published_original{false};
 
 __declspec(noinline) std::uint64_t WINAPI transform_replacement(std::uint64_t left,
                                                                 std::uint64_t right) noexcept {
@@ -36,6 +39,17 @@ __declspec(noinline) std::uint64_t WINAPI combine_replacement(std::uint64_t left
                                                               std::uint64_t right) noexcept {
   combine_calls.fetch_add(1U, std::memory_order_relaxed);
   return combine_original(left, right) ^ kCombineMask;
+}
+
+__declspec(noinline) std::uint64_t WINAPI
+published_original_replacement(std::uint64_t left, std::uint64_t right) noexcept {
+  void* const original_address = published_original.load(std::memory_order_acquire);
+  if (original_address == nullptr) {
+    entered_without_published_original.store(true, std::memory_order_relaxed);
+    return 0U;
+  }
+  const auto original = reinterpret_cast<FixtureFunction>(original_address);
+  return original(left, right) ^ kTransformMask;
 }
 
 [[nodiscard]] void* function_address(FixtureFunction function) noexcept {
@@ -79,6 +93,8 @@ class OriginalReset {
     combine_original = nullptr;
     transform_calls = 0U;
     combine_calls = 0U;
+    published_original.store(nullptr, std::memory_order_relaxed);
+    entered_without_published_original.store(false, std::memory_order_relaxed);
   }
 };
 
@@ -159,6 +175,89 @@ TEST_CASE("hook backend installs calls and removes a fast replacement", "[agent]
   CHECK(transform_calls == 1U);
   CHECK(backend.uninstall(function_address(target)) ==
         noleax::agent::HookUninstallStatus::kNotInstalled);
+}
+
+TEST_CASE("hook backend publishes an original slot before activation", "[agent][hook-backend]") {
+  const LoadedHookFixture fixture;
+  const OriginalReset reset;
+  const FixtureFunction target = fixture.function("noleax_hook_fixture_transform");
+  constexpr std::uint64_t left = 0x1020304050607080ULL;
+  constexpr std::uint64_t right = 0x8877665544332211ULL;
+  const std::uint64_t baseline = target(left, right);
+  noleax::agent::HookBackend backend;
+
+  const auto installed =
+      backend.install_fast(function_address(target),
+                           function_address(published_original_replacement), &published_original);
+  REQUIRE(installed.installed());
+  REQUIRE(installed.original != nullptr);
+  CHECK(published_original.load(std::memory_order_acquire) == installed.original);
+  CHECK(target(left, right) == (baseline ^ kTransformMask));
+  CHECK_FALSE(entered_without_published_original.load(std::memory_order_relaxed));
+
+  CHECK(backend.uninstall(function_address(target)) ==
+        noleax::agent::HookUninstallStatus::kUninstalled);
+  published_original.store(nullptr, std::memory_order_release);
+  CHECK(target(left, right) == baseline);
+}
+
+TEST_CASE("hook backend serializes transactions across instances", "[agent][hook-backend]") {
+  const LoadedHookFixture fixture;
+  const OriginalReset reset;
+  const FixtureFunction transform = fixture.function("noleax_hook_fixture_transform");
+  const FixtureFunction combine = fixture.function("noleax_hook_fixture_combine");
+  constexpr std::uint64_t left = 17U;
+  constexpr std::uint64_t right = 29U;
+  const std::uint64_t transform_baseline = transform(left, right);
+  const std::uint64_t combine_baseline = combine(left, right);
+
+  for (std::uint32_t iteration = 0U; iteration < 10U; ++iteration) {
+    noleax::agent::HookBackend transform_backend;
+    noleax::agent::HookBackend combine_backend;
+    noleax::agent::FastHookResult transform_result;
+    noleax::agent::FastHookResult combine_result;
+    std::atomic<std::uint32_t> ready{0U};
+    std::atomic<bool> start{false};
+
+    auto wait_for_start = [&] {
+      ready.fetch_add(1U, std::memory_order_release);
+      while (!start.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+      }
+    };
+    std::thread transform_installer{[&] {
+      wait_for_start();
+      transform_result = transform_backend.install_fast(function_address(transform),
+                                                        function_address(transform_replacement));
+    }};
+    std::thread combine_installer{[&] {
+      wait_for_start();
+      combine_result = combine_backend.install_fast(function_address(combine),
+                                                    function_address(combine_replacement));
+    }};
+    while (ready.load(std::memory_order_acquire) != 2U) {
+      std::this_thread::yield();
+    }
+    start.store(true, std::memory_order_release);
+    transform_installer.join();
+    combine_installer.join();
+
+    REQUIRE(transform_result.installed());
+    REQUIRE(combine_result.installed());
+    transform_original = reinterpret_cast<FixtureFunction>(transform_result.original);
+    combine_original = reinterpret_cast<FixtureFunction>(combine_result.original);
+    CHECK(transform(left + iteration, right) ==
+          (transform_original(left + iteration, right) ^ kTransformMask));
+    CHECK(combine(left, right + iteration) ==
+          (combine_original(left, right + iteration) ^ kCombineMask));
+    CHECK(transform_backend.uninstall(function_address(transform)) ==
+          noleax::agent::HookUninstallStatus::kUninstalled);
+    CHECK(combine_backend.uninstall(function_address(combine)) ==
+          noleax::agent::HookUninstallStatus::kUninstalled);
+  }
+
+  CHECK(transform(left, right) == transform_baseline);
+  CHECK(combine(left, right) == combine_baseline);
 }
 
 TEST_CASE("hook backend validates input and becomes inert after shutdown",

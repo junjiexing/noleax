@@ -15,6 +15,8 @@
 namespace noleax::agent {
 namespace {
 
+std::mutex transaction_mutex;
+
 [[nodiscard]] HookInstallStatus map_install_status(HooxReplaceReturn status) noexcept {
   switch (status) {
     case HOOX_REPLACE_OK:
@@ -53,7 +55,8 @@ class HookBackend::Impl {
     }
   }
 
-  [[nodiscard]] FastHookResult install_fast(void* target, void* replacement) {
+  [[nodiscard]] FastHookResult install_fast(void* target, void* replacement,
+                                            OriginalTrampolineSlot* original_slot) {
     std::scoped_lock lock{mutex_};
     if (interceptor_ == nullptr || stopping_) {
       return {HookInstallStatus::kBackendStopped, nullptr};
@@ -67,9 +70,17 @@ class HookBackend::Impl {
 
     const auto existing = find_entry(target);
     if (existing != entries_.end()) {
+      if (original_slot != nullptr) {
+        original_slot->store(existing->original, std::memory_order_release);
+      }
       return {HookInstallStatus::kAlreadyInstalled, existing->original};
     }
 
+    // Keep activation deferred until both backend bookkeeping and any caller-provided original
+    // slot are ready. This is required when the target allocator can be reached by bookkeeping
+    // performed after Hoox has created the trampoline.
+    std::scoped_lock transaction_lock{transaction_mutex};
+    hoox_interceptor_begin_transaction(interceptor_);
     HooxInterceptorOptions options{};
     options.scenario = HOOX_INTERCEPTOR_SCENARIO_ONLINE;
     options.relocation_policy = HOOX_RELOCATION_CHECKED;
@@ -78,11 +89,13 @@ class HookBackend::Impl {
         hoox_interceptor_replace_fast(interceptor_, target, replacement, &original, &options);
     const HookInstallStatus status = map_install_status(replace_status);
     if (status != HookInstallStatus::kInstalled) {
+      hoox_interceptor_end_transaction(interceptor_);
       return {status, nullptr};
     }
     if (original == nullptr) {
       hoox_interceptor_revert(interceptor_, target);
       pending_teardown_ = true;
+      hoox_interceptor_end_transaction(interceptor_);
       static_cast<void>(flush_locked(HookBackend::kDefaultFlushAttempts));
       return {HookInstallStatus::kMissingOriginal, nullptr};
     }
@@ -92,9 +105,15 @@ class HookBackend::Impl {
     } catch (...) {
       hoox_interceptor_revert(interceptor_, target);
       pending_teardown_ = true;
+      hoox_interceptor_end_transaction(interceptor_);
       static_cast<void>(flush_locked(HookBackend::kDefaultFlushAttempts));
       throw;
     }
+
+    if (original_slot != nullptr) {
+      original_slot->store(original, std::memory_order_release);
+    }
+    hoox_interceptor_end_transaction(interceptor_);
     return {HookInstallStatus::kInstalled, original};
   }
 
@@ -176,6 +195,7 @@ class HookBackend::Impl {
     }
     stopping_ = true;
     if (!entries_.empty()) {
+      std::scoped_lock transaction_lock{transaction_mutex};
       hoox_interceptor_begin_transaction(interceptor_);
       for (const Entry& entry : entries_) {
         hoox_interceptor_revert(interceptor_, entry.target);
@@ -245,8 +265,9 @@ HookBackend::HookBackend() : impl_{std::make_unique<Impl>()} {}
 
 HookBackend::~HookBackend() = default;
 
-FastHookResult HookBackend::install_fast(void* target, void* replacement) {
-  return impl_->install_fast(target, replacement);
+FastHookResult HookBackend::install_fast(void* target, void* replacement,
+                                         OriginalTrampolineSlot* original_slot) {
+  return impl_->install_fast(target, replacement, original_slot);
 }
 
 HookUninstallStatus HookBackend::uninstall(void* target, std::uint32_t flush_attempts) noexcept {

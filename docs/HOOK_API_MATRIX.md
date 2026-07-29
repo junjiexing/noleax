@@ -300,7 +300,7 @@ NTSTATUS NTAPI NtUnmapViewOfSection(
 |---|---:|---:|---:|---:|---:|---:|---:|
 | RtlCreateHeap | pending | pending | pending | pending | pending | pending | no |
 | RtlDestroyHeap | pending | pending | pending | pending | pending | pending | no |
-| RtlAllocateHeap | backend ready; API pending | pending | pending | unhooked baseline | probe only | pending | no |
+| RtlAllocateHeap | P4.3 passthrough | activation publish | ABI/LastError pass | 8x20k pass | probe only | pending | no |
 | RtlReAllocateHeap | pending | pending | pending | pending | pending | pending | no |
 | RtlFreeHeap | pending | pending | pending | pending | pending | pending | no |
 | NtAllocateVirtualMemory | pending | pending | pending | pending | pending | pending | no |
@@ -308,6 +308,7 @@ NTSTATUS NTAPI NtUnmapViewOfSection(
 | NtMapViewOfSection | pending | pending | pending | pending | pending | pending | no |
 | NtUnmapViewOfSection | pending | pending | pending | pending | pending | pending | no |
 
-P0 probe 和 P4.1 未 hook baseline 都不等价于 hook contract test，所以默认 profile 在产品实现中仍保持
-disabled，直到对应测试门禁通过。P4.1 workload 和摘要规范见
-[RTL_HEAP_BASELINE.md](RTL_HEAP_BASELINE.md)。
+P4.3 passthrough 已通过真实 hook contract 差分，但尚无 recursion guard、事件队列、栈、writer、
+quiescence 和 Page Heap 门禁，所以默认 profile 仍保持 disabled。workload 与 P4.3 证据见
+[RTL_HEAP_BASELINE.md](RTL_HEAP_BASELINE.md) 和
+[RTL_ALLOCATE_HEAP_HOOK.md](RTL_ALLOCATE_HEAP_HOOK.md)。

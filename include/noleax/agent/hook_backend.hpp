@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -7,6 +8,8 @@
 #include <string_view>
 
 namespace noleax::agent {
+
+using OriginalTrampolineSlot = std::atomic<void*>;
 
 enum class HookInstallStatus : std::uint8_t {
   kInstalled,
@@ -56,7 +59,8 @@ class HookBackend {
   HookBackend(HookBackend&&) = delete;
   HookBackend& operator=(HookBackend&&) = delete;
 
-  [[nodiscard]] FastHookResult install_fast(void* target, void* replacement);
+  [[nodiscard]] FastHookResult install_fast(void* target, void* replacement,
+                                            OriginalTrampolineSlot* original_slot = nullptr);
   [[nodiscard]] HookUninstallStatus uninstall(
       void* target, std::uint32_t flush_attempts = kDefaultFlushAttempts) noexcept;
   [[nodiscard]] bool flush(std::uint32_t max_attempts = kDefaultFlushAttempts) noexcept;

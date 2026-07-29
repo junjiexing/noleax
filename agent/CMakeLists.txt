@@ -2,6 +2,12 @@ add_library(noleax-hook-backend STATIC
   hook_backend.cpp
 )
 
+if(WIN32)
+  target_sources(noleax-hook-backend PRIVATE
+    windows/rtl_allocate_heap_hook.cpp
+  )
+endif()
+
 add_library(noleax::hook-backend ALIAS noleax-hook-backend)
 
 target_include_directories(noleax-hook-backend

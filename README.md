@@ -5,7 +5,8 @@ Noleax（读音 “no leaks”）是一个基于 hook 的跨平台内存事件�
 当前状态：早期开发，首先实现 Windows x64；离线分析库已完成 events/outstanding、过滤、
 console/流式 JSON/CSV 输出和 Windows 离线符号服务。Module/Stack codec 与 `noleax analyze` 的
 端到端 CLI 调度仍待接入。P4 Windows Rtl hook 安全原型已建立未 hook 的动态/静态 CRT 差分基线
-和 Hoox `replace_fast` 生命周期适配层；真实 `RtlAllocateHeap` hook 尚未启用。
+和 Hoox `replace_fast` 生命周期适配层；`RtlAllocateHeap` passthrough ABI 差分已通过，但事件捕获和
+默认 profile 尚未启用。
 
 计划能力：
 
@@ -27,6 +28,7 @@ console/流式 JSON/CSV 输出和 Windows 离线符号服务。Module/Stack code
 - docs/CSV_OUTPUT.md
 - docs/SYMBOLIZATION.md
 - docs/RTL_HEAP_BASELINE.md
+- docs/RTL_ALLOCATE_HEAP_HOOK.md
 - docs/HOOK_BACKEND.md
 - docs/HOOK_API_MATRIX.md
 - docs/HOOK_BACKEND_AUDIT.md

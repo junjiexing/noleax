@@ -1,0 +1,98 @@
+# RtlAllocateHeap Passthrough Hook
+
+> 状态：P4.3 Windows x64 完成
+> 范围：ABI passthrough，不记录事件，不进入任何产品 profile
+
+## 1. 目的
+
+P4.3 首次在正式测试路径 hook `ntdll!RtlAllocateHeap`，只验证 Hoox trampoline、精确 ABI、original
+发布顺序和卸载生命周期。replacement 不捕获栈、不写队列，也不执行 recursion/internal-thread
+判断；这些分别属于 P4.4 至 P4.8。
+
+精确函数类型为：
+
+~~~cpp
+PVOID (NTAPI*)(PVOID heap, ULONG flags, SIZE_T size)
+~~~
+
+replacement 只执行无锁原子调用计数、acquire-load original trampoline、一次 original 调用和返回。
+original 不可能安全缺失；若该不变量被破坏则 fail-fast，不能递归调用已被替换的 target。
+
+## 2. 激活前发布
+
+allocator hook 不能采用“先激活、函数返回后再保存 original”的普通顺序。hook 一旦生效，backend
+尾部的容器或运行库 bookkeeping 就可能再次进入 `RtlAllocateHeap`。
+
+`HookBackend::install_fast` 因此使用外层 Hoox transaction：
+
+1. 创建 trampoline，但保持 transaction 未提交；
+2. 完成 backend entry bookkeeping；
+3. 以 release-store 将 original 写入调用方提供的 `OriginalTrampolineSlot`；
+4. 结束 transaction，最后激活目标代码 patch。
+
+replacement 使用 acquire-load。这样任何观察到已激活 patch 的线程都不会遇到尚未发布的
+original；backend 自身在步骤 2 中发生的分配仍走未 hook 的原函数。
+
+## 3. 合同测试拓扑
+
+P4.1 的两个 workload executable 不链接 Hoox 或 agent。P4.3 新增独立 MD harness DLL，显式导出
+install/call-count/stop；同一 executable 通过可选 `--hook-harness DLL` 参数决定是否加载它：
+
+~~~text
+noleax-rtl-heap-baseline-md.exe ─┐
+                                ├─ unhooked / hooked 使用完全相同的 workload 和摘要
+noleax-rtl-heap-baseline-mt.exe ─┘
+                    │
+                    └─ LoadLibrary → hook harness DLL → HookBackend → Hoox v0.1.1
+~~~
+
+这种结构避免把 Hoox 的动态 CRT 链接进 `/MT` 目标，也更接近后续 agent DLL 注入边界。hook 必须在
+所有 worker 结束后 revert/flush/shutdown，随后 harness 才能 `FreeLibrary`。
+
+自动测试逐字节比较以下四份 stdout：
+
+- MD unhooked；
+- MT unhooked；
+- MD hooked；
+- MT hooked。
+
+摘要覆盖成功/失败返回、零填充、live block 内容、释放结果、直接与间接入口、process/显式 heap、
+`LastError` change count/hash 和确定性 checksum。harness 另要求 replacement 调用数至少覆盖全部直接
+Rtl workload，防止“安装报告成功但 replacement 未执行”的假阳性。
+
+## 4. 验证结果
+
+Debug 与 Release 的快速合同测试全部通过，并各连续重复 20 次。Release 长压力参数为 8 个线程、
+每线程 20,000 次操作、2 个 round；MD/MT hooked 与各自 baseline 逐字节一致：
+
+~~~text
+attempts=160024 successes=160000 expected_failures=24 frees=160000
+rtl_last_error_changes=8 win32_last_error_changes=8
+rtl_last_error_hash=0x2fc65ff63169b923
+win32_last_error_hash=0xdb3089d8201ac1a3
+checksum=0x7caf2ccfa0606232
+~~~
+
+Release x64 object disassembly 中的 replacement 总长 39 字节；成功路径只包含栈对齐、`lock inc`、
+original 地址 load/null check、一次 `call rax` 和返回。参数寄存器 RCX/RDX/R8 未被覆盖；没有
+allocator、文件、loader、日志或锁调用。
+
+运行方法：
+
+~~~powershell
+. .\scripts\Enter-NoleaxDevShell.ps1
+cmake --build --preset windows-x64-release
+ctest --preset windows-x64-release -L passthrough --output-on-failure
+ctest --preset windows-x64-release -L passthrough --repeat until-fail:20
+~~~
+
+## 5. 未完成边界
+
+- P4.4：recursion/internal-thread guard。
+- P4.5：预分配事件队列与 overflow 语义。
+- P4.6：原始栈捕获。
+- P4.7：后台 trace writer。
+- P4.8：replacement 自有 in-flight/quiescence。
+- P4.9：Page Heap、Application Verifier、CFG/CET 和更长 race 压力。
+
+因此 `RtlAllocateHeap` 仍为 disabled，不得把 P4.3 的 passthrough 结论描述为内存事件捕获已完成。

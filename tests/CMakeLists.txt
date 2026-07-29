@@ -88,6 +88,14 @@ if(WIN32)
     NOLEAX_HOOK_FIXTURE_PATH="$<TARGET_FILE:noleax-hook-backend-fixture>"
   )
 
+  add_library(noleax-rtl-allocate-heap-hook-harness SHARED
+    integration/rtl_allocate_heap_hook_harness.cpp
+  )
+  target_link_libraries(noleax-rtl-allocate-heap-hook-harness PRIVATE
+    noleax::hook-backend
+  )
+  noleax_set_project_warnings(noleax-rtl-allocate-heap-hook-harness)
+
   set(noleax_rtl_heap_baseline_arguments
     --threads 4
     --iterations 2000
@@ -126,6 +134,29 @@ if(WIN32)
     "MultiThreaded$<$<CONFIG:Debug>:Debug>"
   )
 
+  add_dependencies(
+    noleax-rtl-heap-baseline-md
+    noleax-rtl-allocate-heap-hook-harness
+  )
+  add_dependencies(
+    noleax-rtl-heap-baseline-mt
+    noleax-rtl-allocate-heap-hook-harness
+  )
+
+  foreach(test_suffix IN ITEMS md mt)
+    add_test(NAME hook.rtl-allocate-heap-passthrough-${test_suffix}
+      COMMAND noleax-rtl-heap-baseline-${test_suffix}
+        ${noleax_rtl_heap_baseline_arguments}
+        --hook-harness "$<TARGET_FILE:noleax-rtl-allocate-heap-hook-harness>"
+    )
+    set_tests_properties(hook.rtl-allocate-heap-passthrough-${test_suffix} PROPERTIES
+      LABELS "hook;stress;windows;rtl-heap;passthrough"
+      PASS_REGULAR_EXPRESSION "^status=ok version=1 "
+      RUN_SERIAL TRUE
+      TIMEOUT 60
+    )
+  endforeach()
+
   add_test(NAME hook.rtl-heap-baseline.compare-crt
     COMMAND "${CMAKE_COMMAND}"
       "-DNOLEAX_BASELINE_MD=$<TARGET_FILE:noleax-rtl-heap-baseline-md>"
@@ -135,6 +166,20 @@ if(WIN32)
   set_tests_properties(hook.rtl-heap-baseline.compare-crt PROPERTIES
     LABELS "hook;stress;windows;rtl-heap;baseline"
     PASS_REGULAR_EXPRESSION "Matching Rtl heap baseline"
+    RUN_SERIAL TRUE
+    TIMEOUT 120
+  )
+
+  add_test(NAME hook.rtl-allocate-heap-passthrough.compare-baseline
+    COMMAND "${CMAKE_COMMAND}"
+      "-DNOLEAX_BASELINE_MD=$<TARGET_FILE:noleax-rtl-heap-baseline-md>"
+      "-DNOLEAX_BASELINE_MT=$<TARGET_FILE:noleax-rtl-heap-baseline-mt>"
+      "-DNOLEAX_HOOK_HARNESS=$<TARGET_FILE:noleax-rtl-allocate-heap-hook-harness>"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CompareRtlAllocateHeapPassthrough.cmake"
+  )
+  set_tests_properties(hook.rtl-allocate-heap-passthrough.compare-baseline PROPERTIES
+    LABELS "hook;stress;windows;rtl-heap;passthrough"
+    PASS_REGULAR_EXPRESSION "RtlAllocateHeap passthrough matches both baselines"
     RUN_SERIAL TRUE
     TIMEOUT 120
   )

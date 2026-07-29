@@ -112,6 +112,11 @@ P4.2 已将上述 API 收口到 `noleax::agent::HookBackend`。公开 adapter �
 状态、original trampoline、revert、deferred teardown、flush 和 shutdown 均有独立测试。实现和
 仍需 P4.8 解决的 replacement in-flight 边界见 [HOOK_BACKEND.md](HOOK_BACKEND.md)。
 
+P4.3 进一步要求 allocator hook 使用嵌套 transaction：在代码 patch 激活前完成 backend
+bookkeeping，并通过原子 slot 发布 original。真实 `RtlAllocateHeap` passthrough 的 MD/MT、
+Debug/Release ABI 与 `LastError` 差分已通过；证据见
+[RTL_ALLOCATE_HEAP_HOOK.md](RTL_ALLOCATE_HEAP_HOOK.md)。
+
 ### 5.1 为什么选择 replace_fast
 
 普通 listener/replace 路径会维护 invocation context 和每线程 invocation stack。源码显示线程第一次进入该路径时会延迟创建 thread context，并通过系统 allocator 分配多个对象。

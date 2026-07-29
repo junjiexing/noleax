@@ -7,7 +7,7 @@
 P4.1 建立不加载 Noleax agent、不链接 Hoox 的独立压力目标。它是后续 Rtl hook 合同测试的行为
 基线，不是产品可执行文件，也不是性能结论。
 
-P4.2/P4.3 必须复用同一 workload 和摘要格式：分别运行未 hook 与 hooked 目标，比较返回状态、
+P4.2/P4.3 复用同一 workload 和摘要格式：分别运行未 hook 与 hooked 目标，比较返回状态、
 内存内容、释放结果、`LastError` 指纹和确定性 checksum。不能为 hooked 场景另写一个更容易通过的
 workload。
 
@@ -20,6 +20,10 @@ workload。
 
 两个目标由同一源文件构建，且都不链接 `noleax-agent`、Hoox 或 analyzer。CTest 先分别运行目标，
 再由独立进程逐字节比较两种 CRT 的 stdout 摘要。
+
+P4.3 为同一 executable 增加测试专用 `--hook-harness DLL` 参数。未提供时仍是 P4.1 原始路径；提供
+时由独立 DLL 安装 passthrough hook，workload 本身仍不链接 Hoox。四路差分设计见
+[RTL_ALLOCATE_HEAP_HOOK.md](RTL_ALLOCATE_HEAP_HOOK.md)。
 
 ## 3. Workload
 
@@ -93,8 +97,9 @@ ctest --preset windows-x64-debug -L baseline --output-on-failure
 限制为 1 至 64 个线程、每线程 1 至 1,000,000 次操作和 1 至 100 个 round。seed 是 uint64 十进制
 数。参数错误、API 解析失败、分配/内容/释放失败、round 摘要变化或 CRT 摘要不一致均返回非零。
 
-## 6. P4.1 边界
+## 6. P4.1/P4.3 边界
 
-P4.1 尚未安装任何 hook，也不验证 trampoline、安装/卸载或 callback ABI。CFG/CET、Page Heap、
-Application Verifier 和 `HEAP_GENERATE_EXCEPTIONS` 隔离进程场景保留到对应 P4 门禁。当前摘要不输出
-耗时；p50/p95/p99 必须在 hook 差分阶段使用独立计时，避免把正确性 oracle 变成不稳定快照。
+P4.1 路径不安装任何 hook。P4.3 已验证 passthrough trampoline、安装/卸载和 callback ABI，但尚未
+记录事件。CFG/CET、Page Heap、Application Verifier 和 `HEAP_GENERATE_EXCEPTIONS` 隔离进程场景
+保留到对应 P4 门禁。当前摘要不输出耗时；p50/p95/p99 必须使用独立计时，避免把正确性 oracle
+变成不稳定快照。

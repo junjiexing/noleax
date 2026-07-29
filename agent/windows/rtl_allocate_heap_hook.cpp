@@ -1,0 +1,163 @@
+#include "noleax/agent/windows/rtl_allocate_heap_hook.hpp"
+
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
+
+namespace noleax::agent::windows {
+namespace {
+
+using RtlAllocateHeapFunction = PVOID(NTAPI*)(PVOID heap, ULONG flags, SIZE_T size);
+
+OriginalTrampolineSlot original_trampoline{nullptr};
+std::atomic<std::uint64_t> replacement_calls{0U};
+std::atomic<RtlAllocateHeapHook*> active_owner{nullptr};
+
+static_assert(OriginalTrampolineSlot::is_always_lock_free);
+static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
+
+[[noreturn]] void fail_missing_original() noexcept {
+#if defined(_MSC_VER)
+  __fastfail(FAST_FAIL_FATAL_APP_EXIT);
+#else
+  std::abort();
+#endif
+}
+
+PVOID NTAPI replacement_rtl_allocate_heap(PVOID heap, ULONG flags, SIZE_T size) noexcept {
+  replacement_calls.fetch_add(1U, std::memory_order_relaxed);
+  void* const original_address = original_trampoline.load(std::memory_order_acquire);
+  if (original_address == nullptr) {
+    fail_missing_original();
+  }
+  const auto original = reinterpret_cast<RtlAllocateHeapFunction>(original_address);
+  return original(heap, flags, size);
+}
+
+[[nodiscard]] void* replacement_address() noexcept {
+  return reinterpret_cast<void*>(&replacement_rtl_allocate_heap);
+}
+
+void release_owner(RtlAllocateHeapHook* owner) noexcept {
+  original_trampoline.store(nullptr, std::memory_order_release);
+  RtlAllocateHeapHook* expected = owner;
+  static_cast<void>(active_owner.compare_exchange_strong(
+      expected, nullptr, std::memory_order_release, std::memory_order_relaxed));
+}
+
+}  // namespace
+
+RtlAllocateHeapHook::RtlAllocateHeapHook(HookBackend& backend) : backend_{&backend} {
+  const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+  if (ntdll == nullptr) {
+    throw HookBackendError{"ntdll.dll is not loaded"};
+  }
+  const FARPROC address = GetProcAddress(ntdll, "RtlAllocateHeap");
+  if (address == nullptr) {
+    throw HookBackendError{"ntdll.dll does not export RtlAllocateHeap"};
+  }
+  target_ = reinterpret_cast<void*>(address);
+}
+
+RtlAllocateHeapHook::~RtlAllocateHeapHook() {
+  if (state_ == State::kInstalled) {
+    static_cast<void>(uninstall());
+  }
+  if (state_ == State::kTeardownPending) {
+    static_cast<void>(flush());
+  }
+}
+
+FastHookResult RtlAllocateHeapHook::install() {
+  if (state_ == State::kInstalled) {
+    return {HookInstallStatus::kAlreadyInstalled,
+            original_trampoline.load(std::memory_order_acquire)};
+  }
+  if (state_ == State::kTeardownPending) {
+    return {HookInstallStatus::kTeardownPending, nullptr};
+  }
+
+  RtlAllocateHeapHook* expected = nullptr;
+  if (!active_owner.compare_exchange_strong(expected, this, std::memory_order_acq_rel,
+                                            std::memory_order_acquire)) {
+    return {HookInstallStatus::kAlreadyReplaced, nullptr};
+  }
+
+  original_trampoline.store(nullptr, std::memory_order_relaxed);
+  replacement_calls.store(0U, std::memory_order_relaxed);
+  FastHookResult result;
+  try {
+    result = backend_->install_fast(target_, replacement_address(), &original_trampoline);
+  } catch (...) {
+    release_owner(this);
+    throw;
+  }
+
+  if (result.installed()) {
+    state_ = State::kInstalled;
+  } else {
+    release_owner(this);
+  }
+  return result;
+}
+
+HookUninstallStatus RtlAllocateHeapHook::uninstall(std::uint32_t flush_attempts) noexcept {
+  if (state_ == State::kInactive) {
+    return HookUninstallStatus::kNotInstalled;
+  }
+  if (state_ == State::kTeardownPending) {
+    return HookUninstallStatus::kTeardownPending;
+  }
+
+  const HookUninstallStatus result = backend_->uninstall(target_, flush_attempts);
+  if (result == HookUninstallStatus::kUninstalled ||
+      result == HookUninstallStatus::kBackendStopped) {
+    finish_teardown();
+  } else if (result == HookUninstallStatus::kTeardownPending) {
+    state_ = State::kTeardownPending;
+  } else if (backend_->flush(flush_attempts == 0U ? 1U : flush_attempts)) {
+    finish_teardown();
+  } else {
+    state_ = State::kTeardownPending;
+  }
+  return result;
+}
+
+bool RtlAllocateHeapHook::flush(std::uint32_t max_attempts) noexcept {
+  if (state_ == State::kInactive) {
+    return true;
+  }
+  const bool complete = backend_->flush(max_attempts);
+  if (complete && state_ == State::kTeardownPending) {
+    finish_teardown();
+  }
+  return complete;
+}
+
+bool RtlAllocateHeapHook::is_installed() const noexcept { return state_ == State::kInstalled; }
+
+bool RtlAllocateHeapHook::has_pending_teardown() const noexcept {
+  return state_ == State::kTeardownPending;
+}
+
+std::uint64_t RtlAllocateHeapHook::call_count() const noexcept {
+  return replacement_calls.load(std::memory_order_relaxed);
+}
+
+void* RtlAllocateHeapHook::target_address() const noexcept { return target_; }
+
+void RtlAllocateHeapHook::finish_teardown() noexcept {
+  state_ = State::kInactive;
+  release_owner(this);
+}
+
+}  // namespace noleax::agent::windows

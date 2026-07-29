@@ -8,8 +8,9 @@
 `HookBackend` 是 Noleax 业务代码与 Hoox 之间的唯一适配层。公开头文件不包含 `hoox.h`，也不暴露
 Hoox enum、interceptor 或 option 类型。agent 通过 `noleax::hook-backend` 静态库使用后端。
 
-P4.2 只验证通用 backend 生命周期和无副作用 fixture，不 hook `RtlAllocateHeap`。真实 NT Heap
-签名、ABI 和差分压力属于 P4.3。
+P4.2 的通用 backend 生命周期使用无副作用 fixture；P4.3 已在该边界之上完成真实
+`RtlAllocateHeap` passthrough ABI 差分，见
+[RTL_ALLOCATE_HEAP_HOOK.md](RTL_ALLOCATE_HEAP_HOOK.md)。
 
 ## 2. 安装策略
 
@@ -19,6 +20,11 @@ P4.2 只验证通用 backend 生命周期和无副作用 fixture，不 hook `Rtl
 - online scenario；
 - checked relocation policy；
 - 非空 original trampoline 输出。
+
+真实 allocator adapter 还会传入 `OriginalTrampolineSlot`。backend 用外层 Hoox transaction 延迟
+激活，先完成 entry bookkeeping，再以 release-store 发布 original，最后提交代码 patch；replacement
+以 acquire-load 读取。该顺序消除 hook 已生效但 original 尚未可用的递归窗口。普通 fixture 可以
+省略 slot。
 
 target/replacement 为空或相同会在进入 Hoox 前返回 `invalid_argument`。同一 backend 的重复 target
 返回 `already_installed` 和已有 original；其他 backend 已替换该 target 时映射为
@@ -70,6 +76,10 @@ shutdown 不会销毁仍被其他实例引用的 singleton。
 同一对象的方法可以由多个控制线程调用，但对象析构仍要求外部先停止对该 C++ 对象的调用。业务
 replacement 不应调用 `HookBackend` 控制面方法。
 
+Hoox transaction 属于进程 singleton，而不是某个 `HookBackend` 实例。adapter 因此还用模块级
+control mutex 覆盖完整的 begin/end 区间，防止两个 backend 实例的 transaction 跨线程嵌套，保证
+`install_fast` 返回时本次 patch 已经激活。该锁只用于安装和批量 shutdown，不进入 replacement。
+
 ## 6. Hoox v0.1.1 生命周期补丁
 
 Hoox v0.1.1 的 `HxPrivate` 在 Windows 上通过 `FlsAlloc` 注册 DLL 内部回调，但
@@ -93,11 +103,13 @@ v0.1.1 和原 SHA-512；补丁文件随 Noleax 源码 review。
 
 - replacement 调用计数、original 返回值和替换后返回值；
 - null/相同地址、同实例重复安装和跨实例冲突；
+- 两个 backend 实例并发安装时 transaction 不交错；
 - 单 target uninstall、显式 deferred teardown 和后续 flush；
 - 两个 target 的 transaction shutdown；
 - 析构自动回滚和 25 次完整 init/install/call/revert/deinit 循环；
 - shutdown 幂等及 stopped 状态；
 - agent DLL 通过 adapter 完成 Hoox linkage smoke test，并在 `FreeLibrary` 后正常退出；
+- original slot 在 transaction 激活前发布；
 - agent unload smoke 在 Debug/Release 下各连续运行 20 次；
 - Debug/Release。
 
