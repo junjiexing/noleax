@@ -3,11 +3,13 @@ find_package(lz4 CONFIG REQUIRED)
 find_package(zstd CONFIG REQUIRED)
 
 add_executable(noleax-unit-tests
+  support/synthetic_trace.cpp
   unit/command_line_test.cpp
   unit/completeness_test.cpp
   unit/configuration_test.cpp
   unit/event_test.cpp
   unit/record_codec_test.cpp
+  unit/synthetic_trace_test.cpp
   unit/trace_reader_test.cpp
   unit/trace_writer_test.cpp
   unit/value_parser_test.cpp
@@ -24,6 +26,8 @@ target_link_libraries(noleax-unit-tests
     lz4::lz4
     zstd::libzstd
 )
+
+target_include_directories(noleax-unit-tests PRIVATE "${PROJECT_SOURCE_DIR}/tests")
 
 target_compile_definitions(noleax-unit-tests PRIVATE
   NOLEAX_TEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}"

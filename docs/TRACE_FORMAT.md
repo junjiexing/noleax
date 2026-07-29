@@ -1,6 +1,6 @@
 # Noleax Trace Format
 
-> 状态：P2.7 record codec 基线；合成 trace 生成器待完成
+> 状态：P2 trace core 与合成 trace 生成器完成
 > 文件扩展名：.nlx
 > format major：1
 > 默认字节序：little-endian
@@ -521,3 +521,24 @@ reader 将 trace 视为不可信输入：
 
 P2.5 reader 默认限制：file/chunk header 各 64 KiB、stored chunk 17 MiB、uncompressed
 chunk 16 MiB、最大展开比例 65536:1。所有长度在分配和解压前验证；调用方可以进一步收紧。
+
+## 18. 合成 trace fixture
+
+P2.7 提供仅供测试使用的 SyntheticTraceBuilder，以正式 TraceWriter 和 V1 record codec 生成
+fixture，再用正式 TraceReader 和 decoder 验证，不维护第二套 wire-format 实现。
+
+生成规则：
+
+- chunk 固定按 metadata、event、statistics、end 排列；后三类在没有对应 record 时省略。
+- metadata 当前包含一个 CaptureScope；event chunk 按调用顺序保存 Event 和 Loss。
+- event sequence 必须严格递增，monotonic ticks 不得回退。
+- event chunk 的 sequence 范围覆盖事件和具有 sequence range 的 Loss；正常结束的最终 sequence
+  和 ticks 自动覆盖所有事件及 Loss 范围。
+- Statistics 中的 `observed - filtered_before_queue - dropped` 必须等于实际编码的 Event 数量。
+- `finish_normally` 从 CaptureScope 和 Loss 派生 aggregate completeness，并清除
+  missing_end_of_trace；也可故意省略 EndOfTrace 生成异常终止 fixture。
+- none、LZ4 和 Zstd 均可选择；文件大小上限仍由正式 writer 强制执行。
+
+builder 不读取当前时间、不生成随机 session ID，也不隐式改写调用者输入。因此在 file header、
+CaptureScope、record、codec 和 writer 选项完全相同时，输出必须逐字节一致。三种 codec 的确定性
+和全量九类事件 round trip 都由自动测试覆盖。
