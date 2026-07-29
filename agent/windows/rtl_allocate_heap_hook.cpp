@@ -26,9 +26,11 @@ std::atomic<std::uint64_t> recordable_calls{0U};
 std::atomic<std::uint64_t> recursive_calls{0U};
 std::atomic<std::uint64_t> internal_calls{0U};
 std::atomic<RtlAllocateHeapHook*> active_owner{nullptr};
+std::atomic<BoundedMpscQueue<RtlAllocateHeapEvent>*> active_event_queue{nullptr};
 
 static_assert(OriginalTrampolineSlot::is_always_lock_free);
 static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
+static_assert(decltype(active_event_queue)::is_always_lock_free);
 
 [[noreturn]] void fail_missing_original() noexcept {
 #if defined(_MSC_VER)
@@ -41,7 +43,8 @@ static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
 PVOID NTAPI replacement_rtl_allocate_heap(PVOID heap, ULONG flags, SIZE_T size) noexcept {
   const HookInvocationGuard guard;
   replacement_calls.fetch_add(1U, std::memory_order_relaxed);
-  switch (guard.kind()) {
+  const HookEntryKind entry_kind = guard.kind();
+  switch (entry_kind) {
     case HookEntryKind::kOutermost:
       recordable_calls.fetch_add(1U, std::memory_order_relaxed);
       break;
@@ -57,7 +60,34 @@ PVOID NTAPI replacement_rtl_allocate_heap(PVOID heap, ULONG flags, SIZE_T size) 
     fail_missing_original();
   }
   const auto original = reinterpret_cast<RtlAllocateHeapFunction>(original_address);
-  return original(heap, flags, size);
+  PVOID const result = original(heap, flags, size);
+  const DWORD original_last_error = GetLastError();
+
+  if (entry_kind == HookEntryKind::kOutermost) {
+    auto* const queue = active_event_queue.load(std::memory_order_acquire);
+    if (queue == nullptr) {
+      fail_missing_original();
+    }
+    static_cast<void>(queue->try_emplace([heap, flags, size, result](
+                                             RtlAllocateHeapEvent& event,
+                                             std::uint64_t queue_sequence) noexcept {
+      LARGE_INTEGER ticks{};
+      static_cast<void>(QueryPerformanceCounter(&ticks));
+      event = {};
+      event.queue_sequence = queue_sequence;
+      event.monotonic_ticks = static_cast<std::uint64_t>(ticks.QuadPart);
+      event.thread_id = static_cast<std::uint64_t>(GetCurrentThreadId());
+      event.heap_handle = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(heap));
+      event.requested_size = static_cast<std::uint64_t>(size);
+      event.result_address = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(result));
+      event.flags = flags;
+      event.status = result == nullptr ? RtlAllocateHeapEventStatus::kFailure
+                                       : RtlAllocateHeapEventStatus::kSuccess;
+    }));
+  }
+
+  SetLastError(original_last_error);
+  return result;
 }
 
 [[nodiscard]] void* replacement_address() noexcept {
@@ -65,6 +95,7 @@ PVOID NTAPI replacement_rtl_allocate_heap(PVOID heap, ULONG flags, SIZE_T size) 
 }
 
 void release_owner(RtlAllocateHeapHook* owner) noexcept {
+  active_event_queue.store(nullptr, std::memory_order_release);
   original_trampoline.store(nullptr, std::memory_order_release);
   RtlAllocateHeapHook* expected = owner;
   static_cast<void>(active_owner.compare_exchange_strong(
@@ -73,7 +104,8 @@ void release_owner(RtlAllocateHeapHook* owner) noexcept {
 
 }  // namespace
 
-RtlAllocateHeapHook::RtlAllocateHeapHook(HookBackend& backend) : backend_{&backend} {
+RtlAllocateHeapHook::RtlAllocateHeapHook(HookBackend& backend, std::size_t event_queue_capacity)
+    : event_queue_{event_queue_capacity}, backend_{&backend} {
   const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
   if (ntdll == nullptr) {
     throw HookBackendError{"ntdll.dll is not loaded"};
@@ -118,6 +150,8 @@ FastHookResult RtlAllocateHeapHook::install() {
   }
 
   original_trampoline.store(nullptr, std::memory_order_relaxed);
+  event_queue_.reset_quiescent();
+  active_event_queue.store(&event_queue_, std::memory_order_release);
   replacement_calls.store(0U, std::memory_order_relaxed);
   recordable_calls.store(0U, std::memory_order_relaxed);
   recursive_calls.store(0U, std::memory_order_relaxed);
@@ -191,6 +225,18 @@ std::uint64_t RtlAllocateHeapHook::recursive_call_count() const noexcept {
 
 std::uint64_t RtlAllocateHeapHook::internal_call_count() const noexcept {
   return internal_calls.load(std::memory_order_relaxed);
+}
+
+std::uint64_t RtlAllocateHeapHook::dropped_event_count() const noexcept {
+  return event_queue_.dropped_count();
+}
+
+std::size_t RtlAllocateHeapHook::event_queue_capacity() const noexcept {
+  return event_queue_.capacity();
+}
+
+bool RtlAllocateHeapHook::try_dequeue_event(RtlAllocateHeapEvent& event) noexcept {
+  return event_queue_.try_pop(event);
 }
 
 void* RtlAllocateHeapHook::target_address() const noexcept { return target_; }

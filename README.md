@@ -30,6 +30,7 @@ console/流式 JSON/CSV 输出和 Windows 离线符号服务。Module/Stack code
 - docs/RTL_HEAP_BASELINE.md
 - docs/RTL_ALLOCATE_HEAP_HOOK.md
 - docs/HOOK_GUARD.md
+- docs/EVENT_QUEUE.md
 - docs/HOOK_BACKEND.md
 - docs/HOOK_API_MATRIX.md
 - docs/HOOK_BACKEND_AUDIT.md

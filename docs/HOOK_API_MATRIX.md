@@ -300,7 +300,7 @@ NTSTATUS NTAPI NtUnmapViewOfSection(
 |---|---:|---:|---:|---:|---:|---:|---:|
 | RtlCreateHeap | pending | pending | pending | pending | pending | pending | no |
 | RtlDestroyHeap | pending | pending | pending | pending | pending | pending | no |
-| RtlAllocateHeap | P4.4 guarded passthrough | guard/refcount pass | ABI/LastError/guard pass | 8x20k + TLS-start pass | probe only | pending | no |
+| RtlAllocateHeap | P4.5 queued prototype | guard/queue pass | ABI/LastError/overflow pass | 8x20k + TLS-start pass | probe only | pending | no |
 | RtlReAllocateHeap | pending | pending | pending | pending | pending | pending | no |
 | RtlFreeHeap | pending | pending | pending | pending | pending | pending | no |
 | NtAllocateVirtualMemory | pending | pending | pending | pending | pending | pending | no |
@@ -308,9 +308,9 @@ NTSTATUS NTAPI NtUnmapViewOfSection(
 | NtMapViewOfSection | pending | pending | pending | pending | pending | pending | no |
 | NtUnmapViewOfSection | pending | pending | pending | pending | pending | pending | no |
 
-P4.4 guarded passthrough 已通过真实 hook contract 差分、recursive/internal-thread 探针和新线程
-TLS 启动回归，但尚无事件队列、栈、writer、quiescence、SEH 和 Page Heap 门禁，所以默认 profile
-仍保持 disabled。workload 与 P4.4 证据见
+P4.5 queued prototype 已通过真实 hook contract 差分、guard 探针、新线程 TLS 启动和强制 queue
+overflow 回归，但尚无栈、writer、quiescence、SEH 和 Page Heap 门禁，所以默认 profile 仍保持
+disabled。workload 与 P4.5 证据见
 [RTL_HEAP_BASELINE.md](RTL_HEAP_BASELINE.md) 和
 [RTL_ALLOCATE_HEAP_HOOK.md](RTL_ALLOCATE_HEAP_HOOK.md)，guard 设计与崩溃根因见
-[HOOK_GUARD.md](HOOK_GUARD.md)。
+[HOOK_GUARD.md](HOOK_GUARD.md)，队列合同见 [EVENT_QUEUE.md](EVENT_QUEUE.md)。

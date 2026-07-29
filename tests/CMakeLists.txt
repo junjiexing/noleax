@@ -8,6 +8,7 @@ add_executable(noleax-unit-tests
   support/json_schema.cpp
   support/synthetic_trace.cpp
   unit/analyzer_event_stream_test.cpp
+  unit/bounded_mpsc_queue_test.cpp
   unit/console_test.cpp
   unit/csv_test.cpp
   unit/filter_test.cpp

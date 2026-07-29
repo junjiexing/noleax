@@ -77,6 +77,9 @@ adapter 只有在 hook 已进入 inactive 状态后才释放槽。索引缺失�
 4. acquire-load original trampoline 并调用；
 5. guard 析构并恢复 hook depth。
 
+P4.5 在步骤 4 后为 outermost 调用增加了预分配 event queue，但没有改变 guard 的 TLS 路径或
+recursive/internal-thread 抑制规则，详见 [EVENT_QUEUE.md](EVENT_QUEUE.md)。
+
 Release x64 object 反汇编确认 guard 正常路径只有原子 index load、`gs:[TEB]` 固定槽访问、整数
 位运算和 store；没有 heap、锁、文件、loader、日志或 TLS API 调用。对象中不存在 `.tls$` 段或
 CRT `_tls_index` 引用。`TlsAlloc`/`TlsFree` 只存在于 adapter 安装前和安全 teardown 后的冷路径。

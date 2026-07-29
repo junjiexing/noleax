@@ -2,6 +2,7 @@
 #define NOMINMAX
 #include <windows.h>
 
+#include <cstddef>
 #include <cstdint>
 
 #include "noleax/agent/hook_backend.hpp"
@@ -16,6 +17,7 @@ noleax::agent::HookBackend* backend = nullptr;
 noleax::agent::windows::RtlAllocateHeapHook* hook = nullptr;
 
 using RtlAllocateHeapFunction = PVOID(NTAPI*)(PVOID heap, ULONG flags, SIZE_T size);
+constexpr std::size_t kHarnessQueueCapacity = 256U;
 
 void destroy_harness() noexcept {
   delete hook;
@@ -24,7 +26,37 @@ void destroy_harness() noexcept {
   backend = nullptr;
 }
 
-[[nodiscard]] std::uint32_t stop_harness() noexcept {
+[[nodiscard]] std::uint32_t verify_event_queue() noexcept {
+  std::uint64_t dequeued = 0U;
+  noleax::agent::windows::RtlAllocateHeapEvent event;
+  while (hook->try_dequeue_event(event)) {
+    ++dequeued;
+    if (event.queue_sequence != dequeued || event.monotonic_ticks == 0U || event.thread_id == 0U) {
+      return 1U;
+    }
+    if (event.status != noleax::agent::windows::RtlAllocateHeapEventStatus::kSuccess &&
+        event.status != noleax::agent::windows::RtlAllocateHeapEventStatus::kFailure) {
+      return 2U;
+    }
+    const bool succeeded =
+        event.status == noleax::agent::windows::RtlAllocateHeapEventStatus::kSuccess;
+    if (succeeded != (event.result_address != 0U)) {
+      return 3U;
+    }
+  }
+
+  const std::uint64_t dropped = hook->dropped_event_count();
+  if (hook->event_queue_capacity() != kHarnessQueueCapacity || dropped == 0U) {
+    return 4U;
+  }
+  if (dequeued > hook->recordable_call_count() ||
+      dropped != hook->recordable_call_count() - dequeued) {
+    return 5U;
+  }
+  return 0U;
+}
+
+[[nodiscard]] std::uint32_t stop_harness(bool verify_queue = true) noexcept {
   if (hook == nullptr || backend == nullptr) {
     return 1U;
   }
@@ -36,12 +68,13 @@ void destroy_harness() noexcept {
   if (uninstall_status != noleax::agent::HookUninstallStatus::kUninstalled) {
     return 2U;
   }
+  const std::uint32_t queue_status = verify_queue ? verify_event_queue() : 0U;
   if (!backend->shutdown()) {
     return 3U;
   }
 
   destroy_harness();
-  return 0U;
+  return queue_status == 0U ? 0U : 10U + queue_status;
 }
 
 [[nodiscard]] std::uint32_t verify_guard_behavior() noexcept {
@@ -117,7 +150,7 @@ NOLEAX_HOOK_HARNESS_EXPORT std::uint32_t noleax_test_rtl_allocate_heap_hook_inst
 
   try {
     backend = new noleax::agent::HookBackend{};
-    hook = new noleax::agent::windows::RtlAllocateHeapHook{*backend};
+    hook = new noleax::agent::windows::RtlAllocateHeapHook{*backend, kHarnessQueueCapacity};
     const auto result = hook->install();
     if (!result.installed()) {
       const auto status = static_cast<std::uint32_t>(result.status);
@@ -126,7 +159,7 @@ NOLEAX_HOOK_HARNESS_EXPORT std::uint32_t noleax_test_rtl_allocate_heap_hook_inst
     }
     const std::uint32_t guard_status = verify_guard_behavior();
     if (guard_status != 0U) {
-      const std::uint32_t stop_status = stop_harness();
+      const std::uint32_t stop_status = stop_harness(false);
       return stop_status == 0U ? 200U + guard_status : 300U + stop_status;
     }
   } catch (...) {
