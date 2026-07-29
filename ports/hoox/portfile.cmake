@@ -6,6 +6,7 @@ vcpkg_from_github(
     HEAD_REF main
     PATCHES
         install-rules.patch
+        windows-fls-lifecycle.patch
 )
 
 vcpkg_cmake_configure(

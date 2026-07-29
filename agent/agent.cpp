@@ -1,7 +1,6 @@
-#include <hoox.h>
-
 #include <cstdint>
 
+#include "noleax/agent/hook_backend.hpp"
 #include "noleax/version.hpp"
 
 #if defined(_WIN32)
@@ -15,7 +14,10 @@ NOLEAX_AGENT_EXPORT std::uint32_t noleax_agent_abi_version() noexcept {
 }
 
 NOLEAX_AGENT_EXPORT bool noleax_agent_verify_hook_backend_linkage() noexcept {
-  hoox_init();
-  hoox_deinit();
-  return true;
+  try {
+    noleax::agent::HookBackend backend;
+    return backend.is_active() && backend.shutdown();
+  } catch (...) {
+    return false;
+  }
 }

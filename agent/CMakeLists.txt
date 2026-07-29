@@ -1,10 +1,29 @@
+add_library(noleax-hook-backend STATIC
+  hook_backend.cpp
+)
+
+add_library(noleax::hook-backend ALIAS noleax-hook-backend)
+
+target_include_directories(noleax-hook-backend
+  PUBLIC
+    "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"
+    "$<INSTALL_INTERFACE:include>"
+)
+
+target_link_libraries(noleax-hook-backend
+  PRIVATE
+    hoox::hoox
+)
+
+noleax_set_project_warnings(noleax-hook-backend)
+
 add_library(noleax-agent SHARED
   agent.cpp
 )
 
 target_link_libraries(noleax-agent
   PRIVATE
-    hoox::hoox
+    noleax::hook-backend
     noleax::core
 )
 

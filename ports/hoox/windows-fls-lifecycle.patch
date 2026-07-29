@@ -1,0 +1,85 @@
+diff --git a/src/compat/hxthread.h b/src/compat/hxthread.h
+--- a/src/compat/hxthread.h
++++ b/src/compat/hxthread.h
+@@ -68,10 +68,11 @@
+ hx_boolean hx_rec_mutex_trylock (HxRecMutex * mutex);
+ void hx_rec_mutex_unlock (HxRecMutex * mutex);
+ void hx_rec_mutex_recover_from_fork_in_child (HxRecMutex * mutex);
+-
+-hx_pointer hx_private_get (HxPrivate * key);
+-void hx_private_set (HxPrivate * key, hx_pointer value);
+-
++
++hx_pointer hx_private_get (HxPrivate * key);
++void hx_private_set (HxPrivate * key, hx_pointer value);
++void hx_private_clear (HxPrivate * key);
++
+ /* one-time initialisation (bracketing enter/leave). Simple global-lock
+  * implementation: correct for non-nesting inits (cpu features, etc.). */
+ hx_boolean hx_once_init_enter_impl (volatile void * location);
+diff --git a/src/compat/hxthread.c b/src/compat/hxthread.c
+--- a/src/compat/hxthread.c
++++ b/src/compat/hxthread.c
+@@ -247,7 +247,22 @@ hx_private_get (HxPrivate * key)
+   HxPrivateSlot * slot = hx_private_slot (key, FALSE);
+   return (slot != NULL) ? slot->value : NULL;
+ }
+-
++
++void
++hx_private_clear (HxPrivate * key)
++{
++  hx_size stored;
++
++  stored = (hx_size) hx_atomic_pointer_get (&key->impl);
++  if (stored == 0)
++    return;
++
++  hx_atomic_pointer_set (&key->impl, NULL);
++
++  if (!FlsFree ((DWORD) (stored - 1)))
++    hx_abort ();
++}
++
+ void
+ hx_private_set (HxPrivate * key,
+                hx_pointer value)
+@@ -438,7 +453,24 @@ hx_private_get (HxPrivate * key)
+ {
+   return pthread_getspecific (hx_private_key (key));
+ }
+-
++
++void
++hx_private_clear (HxPrivate * key)
++{
++  HxPrivateKey * pk;
++
++  pk = hx_atomic_pointer_get (&key->impl);
++  if (pk == NULL)
++    return;
++
++  hx_atomic_pointer_set (&key->impl, NULL);
++
++  if (pthread_key_delete (pk->key) != 0)
++    hx_abort ();
++
++  hx_free (pk);
++}
++
+ void
+ hx_private_set (HxPrivate * key,
+                hx_pointer value)
+diff --git a/src/core/hooxinterceptor.c b/src/core/hooxinterceptor.c
+--- a/src/core/hooxinterceptor.c
++++ b/src/core/hooxinterceptor.c
+@@ -400,7 +400,9 @@
+   current_context = hx_private_get (&hoox_interceptor_context_private);
+   if (current_context != NULL)
+   {
+     hx_private_set (&hoox_interceptor_context_private, NULL);
+     interceptor_thread_context_destroy (current_context);
+   }
++
++  hx_private_clear (&hoox_interceptor_context_private);
+ }

@@ -5,8 +5,8 @@
 > 更新日期：2026-07-29
 > 确认日期：2026-07-29
 > 当前阶段：P4 Windows Rtl hook 安全原型（`feat/windows-hook-agent`）
-> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1
-> 下一工作项：P4.2 封装 Hoox HookBackend
+> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2
+> 下一工作项：P4.3 空 RtlAllocateHeap trampoline
 
 ## 1. 文档目的
 
@@ -1252,6 +1252,13 @@ Rtl、Win32 Heap、CRT、process/显式 heap、零填充、确定失败、多线
 释放。同参数的进程内多轮摘要必须一致，两种 CRT 的跨进程摘要必须逐字节一致。摘要保留原始
 `LastError` change count 和实际值 hash，供 P4.3 hooked 差分使用。详见
 [RTL_HEAP_BASELINE.md](RTL_HEAP_BASELINE.md)。
+
+P4.2 已通过。`HookBackend` 隔离全部 Hoox 类型，固定使用 checked online `replace_fast`，并将
+安装错误、original 缺失、重复 target、revert、deferred teardown、flush 和 stopped 状态显式化。
+独立 Release fixture 验证 original trampoline、跨实例冲突、批量 shutdown、析构回滚和重复生命周期。
+Hoox v0.1.1 遗留 FLS callback 的 DLL 卸载缺陷由 overlay 生命周期补丁修复，并通过 Debug/Release
+各 20 次 unload/exit 回归。Hoox flush 不覆盖 replacement 自身的全部 in-flight 窗口，该
+quiescence 明确保留给 P4.8。详见 [HOOK_BACKEND.md](HOOK_BACKEND.md)。
 
 阶段门禁：
 

@@ -70,6 +70,24 @@ set_tests_properties(config.print-effective PROPERTIES
   PASS_REGULAR_EXPRESSION "operation = \"doctor\" # source: config")
 
 if(WIN32)
+  target_sources(noleax-unit-tests PRIVATE
+    unit/hook_backend_test.cpp
+  )
+  target_link_libraries(noleax-unit-tests PRIVATE noleax::hook-backend)
+
+  add_library(noleax-hook-backend-fixture SHARED
+    integration/hook_backend_fixture.cpp
+  )
+  noleax_set_project_warnings(noleax-hook-backend-fixture)
+  if(MSVC)
+    target_link_options(noleax-hook-backend-fixture PRIVATE /OPT:NOICF)
+  endif()
+
+  add_dependencies(noleax-unit-tests noleax-hook-backend-fixture)
+  target_compile_definitions(noleax-unit-tests PRIVATE
+    NOLEAX_HOOK_FIXTURE_PATH="$<TARGET_FILE:noleax-hook-backend-fixture>"
+  )
+
   set(noleax_rtl_heap_baseline_arguments
     --threads 4
     --iterations 2000

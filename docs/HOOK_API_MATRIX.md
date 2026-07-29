@@ -300,7 +300,7 @@ NTSTATUS NTAPI NtUnmapViewOfSection(
 |---|---:|---:|---:|---:|---:|---:|---:|
 | RtlCreateHeap | pending | pending | pending | pending | pending | pending | no |
 | RtlDestroyHeap | pending | pending | pending | pending | pending | pending | no |
-| RtlAllocateHeap | probe only | pending | pending | unhooked baseline | probe only | pending | no |
+| RtlAllocateHeap | backend ready; API pending | pending | pending | unhooked baseline | probe only | pending | no |
 | RtlReAllocateHeap | pending | pending | pending | pending | pending | pending | no |
 | RtlFreeHeap | pending | pending | pending | pending | pending | pending | no |
 | NtAllocateVirtualMemory | pending | pending | pending | pending | pending | pending | no |
