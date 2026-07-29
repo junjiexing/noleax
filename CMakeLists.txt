@@ -42,6 +42,7 @@ add_subdirectory(src/core)
 add_subdirectory(src/config)
 add_subdirectory(src/cli)
 add_subdirectory(src/trace)
+add_subdirectory(src/analyzer)
 add_subdirectory(apps/noleax)
 add_subdirectory(agent)
 

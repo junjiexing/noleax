@@ -1,0 +1,430 @@
+#include <algorithm>
+#include <array>
+#include <catch2/catch_test_macros.hpp>
+#include <cstddef>
+#include <cstdint>
+#include <ios>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <variant>
+#include <vector>
+
+#include "noleax/analyzer/event_stream.hpp"
+#include "noleax/trace/completeness.hpp"
+#include "noleax/trace/event.hpp"
+#include "noleax/trace/record_codec.hpp"
+#include "noleax/trace/trace_writer.hpp"
+#include "noleax/trace/wire_format.hpp"
+#include "support/synthetic_trace.hpp"
+
+namespace {
+
+[[nodiscard]] noleax::trace::FileHeader file_header() {
+  noleax::trace::FileHeader header;
+  header.pointer_width = 8U;
+  header.platform = noleax::trace::Platform::kWindows;
+  header.architecture = noleax::trace::Architecture::kX64;
+  header.session_id[0] = std::byte{0x42};
+  header.monotonic_frequency = 10'000'000U;
+  return header;
+}
+
+[[nodiscard]] noleax::trace::CaptureStatistics statistics_for_count(std::uint64_t count) {
+  noleax::trace::CaptureStatistics statistics;
+  statistics.observed_calls = count;
+  statistics.successful_operations = count;
+  statistics.unique_stacks = count;
+  if (count != 0U) {
+    noleax::trace::ApiStatistics api;
+    api.api_id = 1U;
+    api.observed_calls = count;
+    api.successful_operations = count;
+    statistics.per_api.push_back(api);
+  }
+  return statistics;
+}
+
+[[nodiscard]] noleax::trace::CaptureStatistics statistics_for_events(
+    const std::vector<noleax::trace::Event>& events) {
+  noleax::trace::CaptureStatistics statistics;
+  for (const auto& event : events) {
+    ++statistics.observed_calls;
+    if (noleax::trace::call_succeeded(event.header.status)) {
+      ++statistics.successful_operations;
+    } else {
+      ++statistics.failed_operations;
+    }
+    ++statistics.unique_stacks;
+
+    auto api = std::find_if(statistics.per_api.begin(), statistics.per_api.end(),
+                            [&event](const noleax::trace::ApiStatistics& candidate) {
+                              return candidate.api_id == event.header.api_id;
+                            });
+    if (api == statistics.per_api.end()) {
+      noleax::trace::ApiStatistics new_api;
+      new_api.api_id = event.header.api_id;
+      statistics.per_api.push_back(new_api);
+      api = statistics.per_api.end() - 1;
+    }
+    ++api->observed_calls;
+    if (noleax::trace::call_succeeded(event.header.status)) {
+      ++api->successful_operations;
+    } else {
+      ++api->failed_operations;
+    }
+  }
+  return statistics;
+}
+
+[[nodiscard]] noleax::trace::EndOfTrace normal_end(std::uint64_t sequence, std::uint64_t ticks) {
+  noleax::trace::EndOfTrace end;
+  end.final_sequence = noleax::trace::Sequence{sequence};
+  end.final_monotonic_ticks = ticks;
+  end.normal_stop = true;
+  end.target_exit_code = 0;
+  return end;
+}
+
+struct ChunkInput {
+  noleax::trace::ChunkDescriptor descriptor;
+  std::vector<std::byte> payload;
+};
+
+[[nodiscard]] noleax::trace::ChunkDescriptor descriptor(noleax::trace::ChunkType type,
+                                                        std::uint64_t sequence_begin = 0U,
+                                                        std::uint64_t sequence_end = 0U) {
+  noleax::trace::ChunkDescriptor result;
+  result.type = type;
+  result.sequence_begin = noleax::trace::Sequence{sequence_begin};
+  result.sequence_end = noleax::trace::Sequence{sequence_end};
+  return result;
+}
+
+[[nodiscard]] std::string write_trace(const std::vector<ChunkInput>& chunks) {
+  std::ostringstream output{std::ios::binary};
+  noleax::trace::TraceWriter writer{output, file_header()};
+  for (const auto& chunk : chunks) {
+    if (writer.write_chunk(chunk.descriptor, chunk.payload) !=
+        noleax::trace::ChunkWriteResult::kWritten) {
+      throw std::runtime_error{"test trace unexpectedly reached its file size limit"};
+    }
+  }
+  return output.str();
+}
+
+[[nodiscard]] std::vector<std::byte> metadata_payload(noleax::trace::CaptureScope scope = {true,
+                                                                                           false}) {
+  std::vector<std::byte> payload;
+  noleax::trace::append_capture_scope_record(payload, scope);
+  return payload;
+}
+
+[[nodiscard]] std::vector<std::byte> event_payload(
+    const std::vector<noleax::trace::Event>& events) {
+  std::vector<std::byte> payload;
+  for (const auto& event : events) {
+    noleax::trace::append_event_record(payload, event);
+  }
+  return payload;
+}
+
+[[nodiscard]] std::vector<std::byte> statistics_payload(
+    const noleax::trace::CaptureStatistics& statistics) {
+  std::vector<std::byte> payload;
+  noleax::trace::append_statistics_record(payload, statistics);
+  return payload;
+}
+
+[[nodiscard]] std::vector<std::byte> end_payload(const noleax::trace::EndOfTrace& end) {
+  std::vector<std::byte> payload;
+  noleax::trace::append_end_of_trace_record(payload, end);
+  return payload;
+}
+
+[[nodiscard]] noleax::analyzer::EventStreamResult analyze(
+    const std::string& encoded, const noleax::analyzer::EventStreamCallbacks& callbacks = {}) {
+  std::istringstream input{encoded, std::ios::binary};
+  return noleax::analyzer::analyze_event_stream(input, callbacks);
+}
+
+[[nodiscard]] std::string complete_synthetic_trace() {
+  const auto events = noleax::testing::make_all_memory_event_kinds();
+  noleax::testing::SyntheticTraceBuilder builder{file_header(), {true, false}};
+  for (const auto& event : events) {
+    builder.add_event(event);
+  }
+  builder.set_statistics(statistics_for_events(events)).finish_normally(17);
+  return builder.build();
+}
+
+enum class CallbackKind : std::uint8_t {
+  kFileHeader,
+  kCaptureScope,
+  kEvent,
+  kLoss,
+  kStatistics,
+  kEnd,
+};
+
+}  // namespace
+
+TEST_CASE("event stream decodes every normalized event in trace order", "[analyzer][events]") {
+  using namespace noleax::trace;
+  const auto encoded = complete_synthetic_trace();
+  const auto expected_events = noleax::testing::make_all_memory_event_kinds();
+  std::vector<Event> actual_events;
+  std::vector<CallbackKind> callback_order;
+  noleax::analyzer::EventStreamCallbacks callbacks;
+  callbacks.on_file_header = [&callback_order](const FileHeader&) {
+    callback_order.push_back(CallbackKind::kFileHeader);
+  };
+  callbacks.on_capture_scope = [&callback_order](const CaptureScope&) {
+    callback_order.push_back(CallbackKind::kCaptureScope);
+  };
+  callbacks.on_event = [&actual_events, &callback_order](const Event& event) {
+    actual_events.push_back(event);
+    callback_order.push_back(CallbackKind::kEvent);
+  };
+  callbacks.on_statistics = [&callback_order](const CaptureStatistics&) {
+    callback_order.push_back(CallbackKind::kStatistics);
+  };
+  callbacks.on_end_of_trace = [&callback_order](const EndOfTrace&) {
+    callback_order.push_back(CallbackKind::kEnd);
+  };
+
+  const auto result = analyze(encoded, callbacks);
+  CHECK(actual_events == expected_events);
+  std::vector<CallbackKind> expected_order{CallbackKind::kFileHeader, CallbackKind::kCaptureScope};
+  expected_order.insert(expected_order.end(), expected_events.size(), CallbackKind::kEvent);
+  expected_order.push_back(CallbackKind::kStatistics);
+  expected_order.push_back(CallbackKind::kEnd);
+  CHECK(callback_order == expected_order);
+  CHECK(result.file_header == file_header());
+  CHECK(result.capture_scope == CaptureScope{true, false});
+  REQUIRE(result.statistics.has_value());
+  CHECK(*result.statistics == statistics_for_events(expected_events));
+  REQUIRE(result.end_of_trace.has_value());
+  CHECK(result.end_of_trace->target_exit_code == 17);
+  CHECK(result.known_sequence_end == Sequence{9U});
+  CHECK(result.known_monotonic_end == 90U);
+  CHECK(result.event_count == expected_events.size());
+  CHECK(result.loss_record_count == 0U);
+  CHECK(result.bytes_read == encoded.size());
+  CHECK_FALSE(result.truncated);
+  CHECK_FALSE(result.partially_understood);
+  CHECK(result.completeness.overall_state() == CompletenessState::kComplete);
+  CHECK(result.completeness.recommended_exit_code() == 0);
+}
+
+TEST_CASE("event stream folds capture loss and termination into completeness",
+          "[analyzer][events]") {
+  using namespace noleax::trace;
+  LossRecord event_loss;
+  event_loss.reason = LossReason::kQueueFull;
+  event_loss.location = LossLocation::kAgentQueue;
+  event_loss.estimated_event_count = 2U;
+  event_loss.sequence_range = SequenceRange{Sequence{4U}, Sequence{5U}};
+  event_loss.tick_range = TickRange{40U, 50U};
+
+  LossRecord stack_loss;
+  stack_loss.reason = LossReason::kStackCaptureFailed;
+  stack_loss.location = LossLocation::kAgentQueue;
+  stack_loss.estimated_event_count = 1U;
+
+  std::vector<LossRecord> observed_losses;
+  noleax::analyzer::EventStreamCallbacks callbacks;
+  callbacks.on_loss = [&observed_losses](const LossRecord& loss) {
+    observed_losses.push_back(loss);
+  };
+  noleax::testing::SyntheticTraceBuilder builder{file_header(), {false, true}};
+  const auto encoded = builder.add_loss(event_loss).add_loss(stack_loss).finish_normally().build();
+  const auto result = analyze(encoded, callbacks);
+
+  CHECK(observed_losses == std::vector{event_loss, stack_loss});
+  CHECK(result.loss_record_count == 2U);
+  CHECK(result.known_sequence_end == Sequence{5U});
+  CHECK(result.known_monotonic_end == 50U);
+  CHECK(result.completeness.has(CompletenessIssue::kCaptureDidNotStartAtProcessStart));
+  CHECK(result.completeness.has(CompletenessIssue::kPreexistingAllocationsUnknown));
+  CHECK(result.completeness.has(CompletenessIssue::kEventLoss));
+  CHECK(result.completeness.has(CompletenessIssue::kStackDataLoss));
+  CHECK_FALSE(result.completeness.has(CompletenessIssue::kMissingEndOfTrace));
+  CHECK(result.completeness.recommended_exit_code() == 2);
+}
+
+TEST_CASE("event stream preserves complete chunks before a truncated tail", "[analyzer][events]") {
+  using namespace noleax::trace;
+  auto encoded = complete_synthetic_trace();
+  encoded.pop_back();
+  std::uint64_t callbacks = 0U;
+  noleax::analyzer::EventStreamCallbacks stream_callbacks;
+  stream_callbacks.on_event = [&callbacks](const Event&) { ++callbacks; };
+
+  const auto result = analyze(encoded, stream_callbacks);
+  CHECK(callbacks == 9U);
+  CHECK(result.event_count == 9U);
+  CHECK(result.truncated);
+  CHECK(result.completeness.has(CompletenessIssue::kTraceTruncated));
+  CHECK(result.completeness.has(CompletenessIssue::kMissingEndOfTrace));
+  CHECK_FALSE(result.end_of_trace.has_value());
+  CHECK(result.completeness.recommended_exit_code() == 2);
+}
+
+TEST_CASE("event stream marks skipped future records as partially understood",
+          "[analyzer][events]") {
+  using namespace noleax::trace;
+  const auto events = noleax::testing::make_all_memory_event_kinds();
+  auto events_payload = event_payload({events.front()});
+  append_record(events_payload, 0x7FFFU, 1U, {}, kDefaultMaximumRecordSize);
+  const std::vector chunks{
+      ChunkInput{descriptor(ChunkType::kMetadata), metadata_payload()},
+      ChunkInput{descriptor(ChunkType::kEvent, 1U, 1U), events_payload},
+      ChunkInput{descriptor(ChunkType::kEnd), end_payload(normal_end(1U, 10U))},
+  };
+
+  const auto result = analyze(write_trace(chunks));
+  CHECK(result.event_count == 1U);
+  CHECK(result.partially_understood);
+  CHECK(result.completeness.has(CompletenessIssue::kUnknownRecordSkipped));
+  CHECK(result.completeness.understanding_state() == UnderstandingState::kPartial);
+  CHECK(result.completeness.recommended_exit_code() == 2);
+}
+
+TEST_CASE("event stream propagates reader format uncertainty", "[analyzer][events]") {
+  using namespace noleax::trace;
+  const auto metadata = metadata_payload();
+  const std::vector chunks{
+      ChunkInput{descriptor(ChunkType::kMetadata), metadata},
+      ChunkInput{descriptor(ChunkType::kModule), {}},
+      ChunkInput{descriptor(ChunkType::kEnd), end_payload(normal_end(0U, 0U))},
+  };
+  std::string encoded = write_trace(chunks);
+  const std::size_t module_header_offset = kFileHeaderSize + kChunkHeaderSize + metadata.size();
+  encoded.at(module_header_offset) = static_cast<char>(0xFF);
+  encoded.at(module_header_offset + 1U) = static_cast<char>(0x7F);
+
+  const auto result = analyze(encoded);
+  CHECK(result.partially_understood);
+  CHECK(result.completeness.has(CompletenessIssue::kPartiallyUnderstoodFormat));
+  CHECK(result.completeness.understanding_state() == UnderstandingState::kPartial);
+  CHECK(result.completeness.recommended_exit_code() == 2);
+}
+
+TEST_CASE("event chunks are validated atomically before callbacks", "[analyzer][events]") {
+  using namespace noleax::trace;
+  auto events = noleax::testing::make_all_memory_event_kinds();
+  events[1].header.sequence = events[0].header.sequence;
+  const std::vector chunks{
+      ChunkInput{descriptor(ChunkType::kMetadata), metadata_payload()},
+      ChunkInput{descriptor(ChunkType::kEvent, 1U, 1U), event_payload({events[0], events[1]})},
+  };
+  std::uint64_t callbacks = 0U;
+  noleax::analyzer::EventStreamCallbacks stream_callbacks;
+  stream_callbacks.on_event = [&callbacks](const Event&) { ++callbacks; };
+
+  std::istringstream input{write_trace(chunks), std::ios::binary};
+  CHECK_THROWS_AS(noleax::analyzer::analyze_event_stream(input, stream_callbacks),
+                  noleax::analyzer::TraceAnalysisError);
+  CHECK(callbacks == 0U);
+}
+
+TEST_CASE("event stream rejects inconsistent chunk and terminal metadata", "[analyzer][events]") {
+  using namespace noleax::trace;
+  const auto events = noleax::testing::make_all_memory_event_kinds();
+  const auto first_event_payload = event_payload({events.front()});
+
+  SECTION("event descriptor range") {
+    const std::vector chunks{
+        ChunkInput{descriptor(ChunkType::kMetadata), metadata_payload()},
+        ChunkInput{descriptor(ChunkType::kEvent, 1U, 2U), first_event_payload},
+    };
+    std::istringstream input{write_trace(chunks), std::ios::binary};
+    CHECK_THROWS_AS(noleax::analyzer::analyze_event_stream(input),
+                    noleax::analyzer::TraceAnalysisError);
+  }
+
+  SECTION("statistics event count") {
+    const std::vector chunks{
+        ChunkInput{descriptor(ChunkType::kMetadata), metadata_payload()},
+        ChunkInput{descriptor(ChunkType::kEvent, 1U, 1U), first_event_payload},
+        ChunkInput{descriptor(ChunkType::kStatistics),
+                   statistics_payload(statistics_for_count(2U))},
+    };
+    std::istringstream input{write_trace(chunks), std::ios::binary};
+    CHECK_THROWS_AS(noleax::analyzer::analyze_event_stream(input),
+                    noleax::analyzer::TraceAnalysisError);
+  }
+
+  SECTION("statistics per-API count") {
+    auto statistics = statistics_for_count(1U);
+    statistics.per_api.front().api_id = 2U;
+    const std::vector chunks{
+        ChunkInput{descriptor(ChunkType::kMetadata), metadata_payload()},
+        ChunkInput{descriptor(ChunkType::kEvent, 1U, 1U), first_event_payload},
+        ChunkInput{descriptor(ChunkType::kStatistics), statistics_payload(statistics)},
+    };
+    std::istringstream input{write_trace(chunks), std::ios::binary};
+    CHECK_THROWS_AS(noleax::analyzer::analyze_event_stream(input),
+                    noleax::analyzer::TraceAnalysisError);
+  }
+
+  SECTION("EndOfTrace bounds") {
+    const std::vector chunks{
+        ChunkInput{descriptor(ChunkType::kMetadata), metadata_payload()},
+        ChunkInput{descriptor(ChunkType::kEvent, 1U, 1U), first_event_payload},
+        ChunkInput{descriptor(ChunkType::kEnd), end_payload(normal_end(0U, 10U))},
+    };
+    std::istringstream input{write_trace(chunks), std::ios::binary};
+    CHECK_THROWS_AS(noleax::analyzer::analyze_event_stream(input),
+                    noleax::analyzer::TraceAnalysisError);
+  }
+
+  SECTION("events after statistics") {
+    const std::vector chunks{
+        ChunkInput{descriptor(ChunkType::kMetadata), metadata_payload()},
+        ChunkInput{descriptor(ChunkType::kStatistics),
+                   statistics_payload(statistics_for_count(0U))},
+        ChunkInput{descriptor(ChunkType::kEvent, 1U, 1U), first_event_payload},
+    };
+    std::istringstream input{write_trace(chunks), std::ios::binary};
+    CHECK_THROWS_AS(noleax::analyzer::analyze_event_stream(input),
+                    noleax::analyzer::TraceAnalysisError);
+  }
+
+  SECTION("chunks after EndOfTrace") {
+    const std::vector chunks{
+        ChunkInput{descriptor(ChunkType::kMetadata), metadata_payload()},
+        ChunkInput{descriptor(ChunkType::kEnd), end_payload(normal_end(0U, 0U))},
+        ChunkInput{descriptor(ChunkType::kEvent, 1U, 1U), first_event_payload},
+    };
+    std::istringstream input{write_trace(chunks), std::ios::binary};
+    CHECK_THROWS_AS(noleax::analyzer::analyze_event_stream(input),
+                    noleax::analyzer::TraceAnalysisError);
+  }
+}
+
+TEST_CASE("event stream requires one CaptureScope before events", "[analyzer][events]") {
+  using namespace noleax::trace;
+  const auto events = noleax::testing::make_all_memory_event_kinds();
+
+  SECTION("missing") {
+    const std::vector chunks{
+        ChunkInput{descriptor(ChunkType::kEvent, 1U, 1U), event_payload({events.front()})},
+    };
+    std::istringstream input{write_trace(chunks), std::ios::binary};
+    CHECK_THROWS_AS(noleax::analyzer::analyze_event_stream(input),
+                    noleax::analyzer::TraceAnalysisError);
+  }
+
+  SECTION("duplicate") {
+    auto payload = metadata_payload();
+    append_capture_scope_record(payload, CaptureScope{true, false});
+    const std::vector chunks{
+        ChunkInput{descriptor(ChunkType::kMetadata), payload},
+    };
+    std::istringstream input{write_trace(chunks), std::ios::binary};
+    CHECK_THROWS_AS(noleax::analyzer::analyze_event_stream(input),
+                    noleax::analyzer::TraceAnalysisError);
+  }
+}

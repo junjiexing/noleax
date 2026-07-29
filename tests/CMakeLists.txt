@@ -4,6 +4,7 @@ find_package(zstd CONFIG REQUIRED)
 
 add_executable(noleax-unit-tests
   support/synthetic_trace.cpp
+  unit/analyzer_event_stream_test.cpp
   unit/command_line_test.cpp
   unit/completeness_test.cpp
   unit/configuration_test.cpp
@@ -19,6 +20,7 @@ add_executable(noleax-unit-tests
 target_link_libraries(noleax-unit-tests
   PRIVATE
     Catch2::Catch2WithMain
+    noleax::analyzer
     noleax::cli
     noleax::config
     noleax::core
