@@ -210,7 +210,7 @@ stack dictionary 有独立内存上限。达到上限时：
 - status。
 - stack_id。
 - flags。
-- system_error 或 NTSTATUS。
+- error domain（none、Win32、NTSTATUS、POSIX 或 Mach）和固定宽度 raw error code。
 
 operation：
 
@@ -230,6 +230,9 @@ status：
 - failure
 - unmatched
 - preexisting
+
+failure 表示底层调用失败；unmatched 和 preexisting 表示调用成功，但无法匹配当前 session
+创建的 generation。后两者不得伪造 allocation_id、heap_id 或 mapping_id。
 
 ## 11. Heap events
 
@@ -265,6 +268,11 @@ Reallocate：
 - result address。
 - new allocation_id，仅成功并产生新 generation 时非零。
 - API flags。
+- effect：no_change、new_generation 或 freed；用于明确区分失败、原地/迁移 realloc
+  和由 size-zero adapter 语义产生的释放。
+
+成功 realloc 即使结果地址不变也必须使用新的 allocation_id。失败时 effect 为 no_change，
+旧 generation 保持存活；effect 为 freed 时不得产生新 allocation_id。
 
 Free：
 
@@ -278,7 +286,7 @@ Free：
 
 VmAllocate：
 
-- process handle classification。
+- process handle classification、raw process handle 和可用时的 process id。
 - requested base。
 - result base。
 - requested/result region size。
@@ -288,7 +296,7 @@ VmAllocate：
 
 VmFree：
 
-- process handle classification。
+- process handle classification、raw process handle 和可用时的 process id。
 - base。
 - region size。
 - free type。
@@ -297,7 +305,7 @@ VmFree：
 Map：
 
 - section handle。
-- process handle classification。
+- process handle classification、raw process handle 和可用时的 process id。
 - result base。
 - view size。
 - section offset。
@@ -306,7 +314,7 @@ Map：
 
 Unmap：
 
-- process handle classification。
+- process handle classification、raw process handle 和可用时的 process id。
 - base。
 - mapping_id，可匹配时。
 

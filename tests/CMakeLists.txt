@@ -3,6 +3,7 @@ find_package(Catch2 3 CONFIG REQUIRED)
 add_executable(noleax-unit-tests
   unit/command_line_test.cpp
   unit/configuration_test.cpp
+  unit/event_test.cpp
   unit/value_parser_test.cpp
   unit/version_test.cpp
 )
@@ -13,6 +14,7 @@ target_link_libraries(noleax-unit-tests
     noleax::cli
     noleax::config
     noleax::core
+    noleax::trace
 )
 
 target_compile_definitions(noleax-unit-tests PRIVATE
