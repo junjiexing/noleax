@@ -1,12 +1,14 @@
 find_package(Catch2 3 CONFIG REQUIRED)
 
 add_executable(noleax-unit-tests
+  unit/value_parser_test.cpp
   unit/version_test.cpp
 )
 
 target_link_libraries(noleax-unit-tests
   PRIVATE
     Catch2::Catch2WithMain
+    noleax::config
     noleax::core
 )
 
