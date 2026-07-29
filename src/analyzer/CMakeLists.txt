@@ -6,6 +6,7 @@ add_library(noleax-analyzer STATIC
   generation_tracker.cpp
   json.cpp
   outstanding.cpp
+  symbolizer.cpp
   time.cpp
   utf8.cpp
 )
@@ -22,5 +23,9 @@ target_link_libraries(noleax-analyzer
   PUBLIC
     noleax::trace
 )
+
+if(WIN32)
+  target_link_libraries(noleax-analyzer PRIVATE dbghelp)
+endif()
 
 noleax_set_project_warnings(noleax-analyzer)

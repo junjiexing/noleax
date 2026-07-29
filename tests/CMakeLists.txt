@@ -14,6 +14,7 @@ add_executable(noleax-unit-tests
   unit/generation_tracker_test.cpp
   unit/json_test.cpp
   unit/outstanding_test.cpp
+  unit/symbolizer_test.cpp
   unit/time_test.cpp
   unit/command_line_test.cpp
   unit/completeness_test.cpp
@@ -69,6 +70,20 @@ set_tests_properties(config.print-effective PROPERTIES
   PASS_REGULAR_EXPRESSION "operation = \"doctor\" # source: config")
 
 if(WIN32)
+  add_library(noleax-symbolizer-fixture SHARED
+    integration/symbolizer_fixture.cpp
+  )
+  noleax_set_project_warnings(noleax-symbolizer-fixture)
+  if(MSVC)
+    target_compile_options(noleax-symbolizer-fixture PRIVATE /Od /Zi)
+    target_link_options(noleax-symbolizer-fixture PRIVATE /DEBUG:FULL /OPT:NOREF /OPT:NOICF)
+  endif()
+
+  add_dependencies(noleax-unit-tests noleax-symbolizer-fixture)
+  target_compile_definitions(noleax-unit-tests PRIVATE
+    NOLEAX_SYMBOL_FIXTURE_PATH="$<TARGET_FILE:noleax-symbolizer-fixture>"
+  )
+
   add_executable(noleax-agent-smoke
     integration/agent_smoke.cpp
   )

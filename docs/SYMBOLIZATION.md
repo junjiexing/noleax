@@ -1,0 +1,91 @@
+# Noleax 离线符号解析
+
+> 状态：P3.8 Windows x64 组件完成
+
+## 1. 范围
+
+`OfflineSymbolizer` 将 trace 中记录的模块和绝对地址解析为 module+offset，以及可用时的
+symbol+offset。Windows 实现使用 DbgHelp；DbgHelp 只在 analyzer 进程中调用，不进入目标进程或
+hook replacement。
+
+P3.8 提供独立的符号服务和组件测试。Module/Stack record codec、EventStream 元数据装配以及
+`noleax analyze` 的公开 CLI 调度尚未接入，因此当前不能仅凭 trace 文件从 CLI 获得完整符号栈。
+
+非 Windows 平台保留相同接口，注册模块时返回 `unsupported_platform`。Linux/macOS 的实现留给
+对应平台阶段。
+
+## 2. 输入模型
+
+每个模块 generation 使用一个非零 `module_id`，并携带：
+
+- trace 中的原始加载基址和 PE 映像大小；
+- 离线映像路径；
+- 可选 PE identity：timestamp、checksum、image size；
+- 可选 PDB identity：16 字节 CodeView GUID 和 age。
+
+同一路径或同一历史基址可以出现多个 generation，只要 `module_id` 不同。frame 必须位于所注册
+模块的半开区间 `[base_address, base_address + image_size)`；越界地址会被拒绝，不猜测所属模块。
+
+## 3. 解析流程
+
+1. 校验 module ID、地址范围、映像大小和 identity。
+2. 检查离线映像是否存在，并使用用户明确提供的本地 search path 或 symbol server 初始化
+   DbgHelp。
+3. 在该 symbolizer session 的合成地址空间中为模块分配唯一基址，避免历史模块基址复用造成
+   DbgHelp 冲突。
+4. 加载映像后比较 PE/PDB identity 和 DbgHelp mismatch 标志。
+5. 将 trace 绝对地址转换为 module offset，再映射到合成地址进行符号查询。
+
+无论符号是否可用，成功注册的模块都保留原始绝对地址、module basename 和 module offset。
+
+## 4. 模块状态与回退
+
+| 状态 | 含义 | 可用回退 |
+|---|---|---|
+| `symbols_loaded` | 已加载匹配的 PDB、DIA、CodeView 或 COFF 符号 | symbol+offset、module+offset、绝对地址 |
+| `exports_only` | 只有 PE export 符号 | export+offset、module+offset、绝对地址 |
+| `no_symbols` | 映像匹配，但 DbgHelp 没有可用符号 | module+offset、绝对地址 |
+| `image_not_found` | 离线映像不存在或不可访问 | module+offset、绝对地址 |
+| `image_identity_mismatch` | 映像大小或记录的 PE identity 不匹配 | 卸载符号，仅 module+offset 和绝对地址 |
+| `pdb_not_found` | trace 要求的 PDB 未加载 | 可使用匹配映像的 export；始终保留 module+offset 和绝对地址 |
+| `pdb_identity_mismatch` | PDB GUID/age 或 DbgHelp mismatch 标志不匹配 | 卸载符号，仅 module+offset 和绝对地址 |
+| `load_failed` | DbgHelp 无法加载或查询模块 | module+offset、绝对地址，并保留系统错误码 |
+| `unsupported_platform` | 当前平台尚无符号后端 | module+offset、绝对地址 |
+
+identity mismatch 不会降级使用可能属于另一构建的符号。`pdb_not_found` 与 mismatch 不同：前者允许
+继续使用已验证映像自身的 export。
+
+## 5. Symbol path 与联网策略
+
+- 默认向 DbgHelp 传入显式空 search path，不继承隐式 symbol server。
+- `search_paths` 按用户顺序加入，转换为绝对路径。
+- `symbol_servers` 只有用户显式配置时才以 `srv*URL` 加入。
+- path/server 条目不允许包含分号，server 必须是有效非空 UTF-8。
+- P3.8 不自行管理下载缓存、凭据或代理；这些属于 CLI 集成和发布安全设计。
+
+计划中的配置映射保持为 `symbols.paths` / `--symbol-path` 和
+`symbols.servers` / `--symbol-server`，命令行覆盖配置文件。
+
+## 6. 并发与生命周期
+
+DbgHelp API 不是线程安全的。Noleax 使用进程级 mutex 串行化所有 session 的初始化、加载、查询、
+卸载、清理和全局 option 修改；每次调用后恢复可恢复的原 option。安全策略会启用 DbgHelp 明确规定
+为 process-sticky 的 `SYMOPT_SECURE`，该位在宿主进程内不能再关闭。每个 `OfflineSymbolizer` 另有
+独立 session handle 和 module map。
+
+module map 使用读写锁：多个查询可同时读取元数据，但进入 DbgHelp 后仍全局串行；注册和卸载独占
+module map。锁顺序固定为 module map 在前、DbgHelp mutex 在后。对象析构仍要求调用方先停止针对该
+对象的并发调用，这是普通 C++ 对象生命周期约束。
+
+## 7. 测试门禁
+
+Windows 组件测试使用带完整 PDB 和导出函数的专用 DLL，覆盖：
+
+- 匹配 PDB 的真实函数名解析；
+- 记录的 PE/PDB identity 匹配与不匹配；
+- 默认无隐式 symbol server 时的 PDB 缺失；
+- 映像缺失、地址越界、重复/非法 module ID 和非法 path；
+- 多线程并发 frame resolve；
+- Debug/Release 构建。
+
+P3.8 不替代 P4 hook 安全测试；符号查询始终位于离线 analyzer，不能在 hook 热路径中调用。

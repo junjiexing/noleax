@@ -1,6 +1,6 @@
 # Noleax Analyzer
 
-> 状态：P3.1 events 至 P3.7 CSV 输出完成
+> 状态：P3.1 events 至 P3.8 Windows 离线 symbolizer 完成
 
 ## 1. P3.1 范围
 
@@ -150,7 +150,18 @@ CsvWriter 为 events 和 outstanding 提供两套 schema version 1 固定列。e
 调用栈在单字段中使用可逆的五元组子格式，仍保留 stack ID、capture status、绝对地址和可用符号。
 字段顺序、空值、summary 和转义规则见 [CSV_OUTPUT.md](CSV_OUTPUT.md)。
 
-## 10. 后续阶段
+## 10. Windows 离线符号解析
 
-P3.1-P3.7 的库管线已完成。三种格式共用的公开 CLI 调度以及 Windows module/stack 符号展示在
-后续 P3 工作项接入。
+`OfflineSymbolizer` 在 analyzer 进程内封装 DbgHelp。每个 module generation 使用独立 module ID
+和 session 内合成基址，因此可以解析复用同一历史加载地址的模块。默认 search path 显式为空，
+只有用户提供时才加入本地 symbol path 或 `srv*URL`。
+
+加载后校验 PE timestamp/checksum/image size 和可选 PDB GUID/age。映像或 PDB identity 不匹配时
+卸载该符号，不冒险展示错误函数名；PDB 缺失时仍可使用匹配映像的 export。任何失败都保留
+module+offset 和绝对地址。所有 DbgHelp 调用跨实例全局串行，module map 支持并发只读查询。完整
+状态、回退和线程模型见 [SYMBOLIZATION.md](SYMBOLIZATION.md)。
+
+## 11. 后续阶段
+
+P3.1-P3.8 的库组件已完成。Module/Stack record codec、EventStream 元数据装配和三种格式共用的公开
+CLI 调度尚未接入；这些缺口完成前，`noleax analyze` 仍不能端到端输出 trace 中的真实符号栈。
