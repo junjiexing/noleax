@@ -48,6 +48,17 @@ cmake --build --preset windows-x64-release
 ctest --preset windows-x64-release
 ~~~
 
+Windows CFG/CET hardened gate：
+
+~~~powershell
+cmake --preset windows-x64-hardened
+cmake --build --preset windows-x64-hardened
+ctest --preset windows-x64-hardened
+~~~
+
+完整 hook hardening 压力和管理员 Application Verifier/Page Heap 验收见
+[docs/WINDOWS_HOOK_HARDENING.md](docs/WINDOWS_HOOK_HARDENING.md)。
+
 The first configure installs manifest dependencies into build/<preset>/vcpkg_installed. The Hoox overlay port pins v0.1.1 and verifies its source archive hash.
 
 ## Formatting and static analysis

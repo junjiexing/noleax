@@ -99,8 +99,8 @@ ctest --preset windows-x64-debug -L baseline --output-on-failure
 
 ## 6. P4.1-P4.6 边界
 
-P4.1 路径不安装任何 hook。P4.3 已验证 passthrough trampoline、安装/卸载和 callback ABI，P4.4
-增加 recursion/internal-thread guard，P4.5 增加预分配原始事件队列，P4.6 增加原始栈地址，但尚未
-生成 trace。CFG/CET、
-Page Heap、Application Verifier 和 `HEAP_GENERATE_EXCEPTIONS` 隔离进程场景保留到对应 P4 门禁。
+P4.1 路径不安装任何 hook。P4.3-P4.8 依次验证 passthrough trampoline、guard、预分配队列、原始栈、
+trace writer 和 quiescence。P4.9 已完成 `HEAP_GENERATE_EXCEPTIONS` 隔离进程合同以及 CFG/CET
+hardened 差分；Page Heap/Application Verifier 提权运行仍待验收，见
+[WINDOWS_HOOK_HARDENING.md](WINDOWS_HOOK_HARDENING.md)。
 当前摘要不输出耗时；p50/p95/p99 必须使用独立计时，避免把正确性 oracle 变成不稳定快照。

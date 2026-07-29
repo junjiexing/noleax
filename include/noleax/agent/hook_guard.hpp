@@ -14,6 +14,11 @@ enum class HookEntryKind : std::uint8_t {
 void release_hook_guard_runtime() noexcept;
 [[nodiscard]] bool hook_guard_runtime_is_ready() noexcept;
 
+// The unscoped pair exists for Windows allocator replacements that must use SEH __finally.
+// Every successful enter must be paired with exactly one leave on the same thread.
+[[nodiscard]] HookEntryKind enter_hook_invocation_unscoped() noexcept;
+void leave_hook_invocation_unscoped() noexcept;
+
 class HookInvocationGuard final {
  public:
   HookInvocationGuard() noexcept;

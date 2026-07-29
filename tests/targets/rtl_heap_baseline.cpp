@@ -33,6 +33,8 @@ struct Options {
   std::uint32_t rounds{2U};
   std::uint64_t seed{0x4e4f4c4541585034ULL};
   const char* hook_harness{nullptr};
+  bool require_app_verifier{false};
+  bool require_page_heap{false};
 };
 
 enum class ParseResult : std::uint8_t {
@@ -211,7 +213,8 @@ struct Block {
 void print_usage() {
   std::printf(
       "usage: noleax-rtl-heap-baseline [--threads N] [--iterations N] "
-      "[--rounds N] [--seed N] [--hook-harness DLL]\n");
+      "[--rounds N] [--seed N] [--hook-harness DLL] "
+      "[--require-app-verifier] [--require-page-heap]\n");
 }
 
 [[nodiscard]] ParseResult parse_options(int argc, char* argv[], Options& options) {
@@ -220,6 +223,15 @@ void print_usage() {
     if (argument == "--help") {
       print_usage();
       return ParseResult::kHelp;
+    }
+    if (argument == "--require-app-verifier") {
+      options.require_app_verifier = true;
+      continue;
+    }
+    if (argument == "--require-page-heap") {
+      options.require_app_verifier = true;
+      options.require_page_heap = true;
+      continue;
     }
     if (index + 1 >= argc) {
       std::fprintf(stderr, "missing value for %.*s\n", static_cast<int>(argument.size()),
@@ -520,6 +532,30 @@ void add_summary(Summary& aggregate, const Summary& worker, std::uint32_t worker
   return functions.allocate != nullptr && functions.free != nullptr;
 }
 
+[[nodiscard]] bool verifier_environment_satisfies(const Options& options) noexcept {
+  if (!options.require_app_verifier) {
+    return true;
+  }
+  const bool verifier_loaded =
+      GetModuleHandleW(L"verifier.dll") != nullptr || GetModuleHandleW(L"vrfcore.dll") != nullptr;
+  if (!verifier_loaded) {
+    return false;
+  }
+  if (!options.require_page_heap) {
+    return true;
+  }
+
+  const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+  if (ntdll == nullptr) {
+    return false;
+  }
+  using RtlGetNtGlobalFlagsFunction = ULONG(NTAPI*)();
+  const auto get_global_flags =
+      reinterpret_cast<RtlGetNtGlobalFlagsFunction>(GetProcAddress(ntdll, "RtlGetNtGlobalFlags"));
+  constexpr ULONG kPageHeapEnabled = 0x02000000U;
+  return get_global_flags != nullptr && (get_global_flags() & kPageHeapEnabled) != 0U;
+}
+
 [[nodiscard]] std::uint32_t run_round(const NativeFunctions& functions, const Options& options,
                                       Summary& summary) {
   const HANDLE process_heap = GetProcessHeap();
@@ -629,6 +665,10 @@ int main(int argc, char* argv[]) {
   if (!load_native_functions(functions)) {
     std::fprintf(stderr, "cannot resolve RtlAllocateHeap and RtlFreeHeap\n");
     return 3;
+  }
+  if (!verifier_environment_satisfies(options)) {
+    std::fprintf(stderr, "required Application Verifier/Page Heap instrumentation is absent\n");
+    return 5;
   }
 
   HookHarness hook_harness;

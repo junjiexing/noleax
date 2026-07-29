@@ -24,13 +24,12 @@ int wmain(int argc, wchar_t* argv[]) {
   if (module == nullptr) {
     return 3;
   }
-  const auto abi_version =
-      reinterpret_cast<AbiVersion>(GetProcAddress(module,
-                                                  "noleax_test_rtl_allocate_heap_hook_abi_version"));
+  const auto abi_version = reinterpret_cast<AbiVersion>(
+      GetProcAddress(module, "noleax_test_rtl_allocate_heap_hook_abi_version"));
   const auto install = reinterpret_cast<Install>(
       GetProcAddress(module, "noleax_test_rtl_allocate_heap_hook_install"));
-  const auto stop = reinterpret_cast<Stop>(
-      GetProcAddress(module, "noleax_test_rtl_allocate_heap_hook_stop"));
+  const auto stop =
+      reinterpret_cast<Stop>(GetProcAddress(module, "noleax_test_rtl_allocate_heap_hook_stop"));
   if (abi_version == nullptr || install == nullptr || stop == nullptr || abi_version() != 1U ||
       install() != 0U) {
     FreeLibrary(module);
@@ -38,14 +37,14 @@ int wmain(int argc, wchar_t* argv[]) {
   }
   const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
   const HANDLE heap = GetProcessHeap();
-  const auto allocate = ntdll == nullptr
-                            ? nullptr
-                            : reinterpret_cast<RtlAllocateHeapFunction>(
-                                  GetProcAddress(ntdll, "RtlAllocateHeap"));
-  const auto free_heap = ntdll == nullptr
-                             ? nullptr
-                             : reinterpret_cast<RtlFreeHeapFunction>(
-                                   GetProcAddress(ntdll, "RtlFreeHeap"));
+  const auto allocate =
+      ntdll == nullptr
+          ? nullptr
+          : reinterpret_cast<RtlAllocateHeapFunction>(GetProcAddress(ntdll, "RtlAllocateHeap"));
+  const auto free_heap =
+      ntdll == nullptr
+          ? nullptr
+          : reinterpret_cast<RtlFreeHeapFunction>(GetProcAddress(ntdll, "RtlFreeHeap"));
   if (heap == nullptr || allocate == nullptr || free_heap == nullptr) {
     return 5;
   }
@@ -65,7 +64,8 @@ int wmain(int argc, wchar_t* argv[]) {
   HMODULE retained_module = nullptr;
   const DWORD flags =
       GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
-  if (GetModuleHandleExW(flags, reinterpret_cast<LPCWSTR>(abi_version), &retained_module) == FALSE ||
+  if (GetModuleHandleExW(flags, reinterpret_cast<LPCWSTR>(abi_version), &retained_module) ==
+          FALSE ||
       retained_module != module || abi_version() != 1U) {
     return 9;
   }

@@ -40,4 +40,10 @@ TEST_CASE("replacement lifecycle snapshots routes and exposes deterministic quie
     CHECK_FALSE(passthrough_entry.should_record());
   }
   CHECK(lifecycle.wait_for_quiescence(0U));
+
+  lifecycle.start_recording();
+  CHECK(lifecycle.enter_unscoped() == ReplacementRoute::kRecord);
+  CHECK(lifecycle.in_flight() == 1U);
+  lifecycle.leave_unscoped();
+  CHECK(lifecycle.wait_for_quiescence(0U));
 }

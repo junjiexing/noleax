@@ -70,6 +70,8 @@ Noleax 的发布包必须：
 - `install-rules.patch`：只增加 vcpkg 所需的安装/export 规则。
 - `windows-fls-lifecycle.patch`：补齐私有线程键 deinit，避免 DLL 卸载后遗留 FLS callback；不改变
   hook、relocation 或 trampoline 逻辑。
+- `windows-rwx-patch-quiescence.patch`：在 Windows RWX 多字节 patch 更新期间暂停 peer threads，并以
+  重复线程快照覆盖 thread churn；P4.8 并发 revert 门禁要求该补丁。
 
 这是一项工程合规记录，不替代正式法律意见。
 
@@ -223,7 +225,10 @@ dumpbin 确认输出包含：
 
 相同 RtlAllocateHeap 并发探针通过。
 
-该结果只覆盖当前机器和该探针，不替代 P4 的完整矩阵。
+P4.9 已用独立 hardened preset 扩展为五个正式产物的 PE 标记门禁，并在真实 quiescence hook 进程中
+查询 CFG/CET runtime policy；当前机器报告二者均启用。完整证据见
+[WINDOWS_HOOK_HARDENING.md](WINDOWS_HOOK_HARDENING.md)。该结果仍只覆盖当前 OS/CPU，不能替代后续
+Windows 版本矩阵。
 
 ### 6.5 P4.2 FLS 生命周期回归
 
@@ -251,7 +256,8 @@ dumpbin 确认输出包含：
 | 未发现独立 replace_fast 合同测试 | Noleax 自建 test target |
 | system allocator 可能与被 hook API递归 | 使用 replace_fast 和无分配 replacement |
 | 真实 Windows build 间 ntdll prologue 可能变化 | 支持矩阵按 OS build 验收 |
-| CFG/CET 只完成单机初测 | P4/CI 扩展矩阵 |
+| CFG/CET 仅覆盖当前 OS/CPU | P4.9 hardened 门禁已通过，CI/支持矩阵继续扩展 |
+| Page Heap/Application Verifier 需要管理员设置 | P4.9 回滚脚本已完成，提权验收待执行 |
 | v0.1.1 deinit 遗留 Windows FLS callback | overlay 生命周期补丁及 agent unload/exit 回归 |
 | 安全卸载需要 flush 及自有 in-flight 计数 | HookBackend wrapper 统一实现 |
 

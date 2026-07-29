@@ -61,6 +61,17 @@ TEST_CASE("hook guard classifies outermost and recursive entries", "[agent][hook
   CHECK(noleax::agent::current_hook_depth() == 0U);
 }
 
+TEST_CASE("hook guard exposes balanced unscoped entry for SEH cleanup", "[agent][hook-guard]") {
+  REQUIRE(noleax::agent::acquire_hook_guard_runtime());
+  [[maybe_unused]] const HookGuardRuntimeLease runtime;
+
+  const auto kind = noleax::agent::enter_hook_invocation_unscoped();
+  CHECK(kind == noleax::agent::HookEntryKind::kOutermost);
+  CHECK(noleax::agent::current_hook_depth() == 1U);
+  noleax::agent::leave_hook_invocation_unscoped();
+  CHECK(noleax::agent::current_hook_depth() == 0U);
+}
+
 TEST_CASE("hook guard suppresses nested internal-thread scopes", "[agent][hook-guard]") {
   REQUIRE(noleax::agent::acquire_hook_guard_runtime());
   [[maybe_unused]] const HookGuardRuntimeLease runtime;

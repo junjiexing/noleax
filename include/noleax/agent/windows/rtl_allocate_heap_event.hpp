@@ -10,6 +10,7 @@ namespace noleax::agent::windows {
 enum class RtlAllocateHeapEventStatus : std::uint8_t {
   kSuccess,
   kFailure,
+  kException,
 };
 
 struct RtlAllocateHeapEvent {
@@ -22,6 +23,7 @@ struct RtlAllocateHeapEvent {
   std::uint32_t flags{0U};
   RtlAllocateHeapEventStatus status{RtlAllocateHeapEventStatus::kFailure};
   std::uint8_t reserved[3]{};
+  std::uint32_t exception_status{0U};
   CapturedStack stack;
 
   bool operator==(const RtlAllocateHeapEvent&) const = default;
@@ -29,6 +31,6 @@ struct RtlAllocateHeapEvent {
 
 static_assert(std::is_trivially_copyable_v<RtlAllocateHeapEvent>);
 static_assert(std::is_trivially_destructible_v<RtlAllocateHeapEvent>);
-static_assert(sizeof(RtlAllocateHeapEvent) == 576U);
+static_assert(sizeof(RtlAllocateHeapEvent) == 584U);
 
 }  // namespace noleax::agent::windows

@@ -300,7 +300,7 @@ NTSTATUS NTAPI NtUnmapViewOfSection(
 |---|---:|---:|---:|---:|---:|---:|---:|
 | RtlCreateHeap | pending | pending | pending | pending | pending | pending | no |
 | RtlDestroyHeap | pending | pending | pending | pending | pending | pending | no |
-| RtlAllocateHeap | P4.6 raw-stack prototype | guard/queue/stack pass | ABI/LastError/overflow/stack pass | 8x20k + TLS/unwind pass | probe only | pending | no |
+| RtlAllocateHeap | P4.9 hardened prototype | guard/queue/stack/SEH pass | ABI/LastError/exception/overflow/stack pass | 8x20k + TLS/unwind/quiescence pass | PE + runtime pass | elevated run pending | no |
 | RtlReAllocateHeap | pending | pending | pending | pending | pending | pending | no |
 | RtlFreeHeap | pending | pending | pending | pending | pending | pending | no |
 | NtAllocateVirtualMemory | pending | pending | pending | pending | pending | pending | no |
@@ -308,10 +308,12 @@ NTSTATUS NTAPI NtUnmapViewOfSection(
 | NtMapViewOfSection | pending | pending | pending | pending | pending | pending | no |
 | NtUnmapViewOfSection | pending | pending | pending | pending | pending | pending | no |
 
-P4.6 raw-stack prototype 已通过真实 hook contract 差分、guard 探针、新线程 TLS 启动、强制 queue
-overflow、双策略 unwind、writer 和 quiescence 压力，但尚无 SEH 和 Page Heap 门禁，所以默认
-profile 仍保持 disabled。workload 与 P4.6 证据见
+P4.9 prototype 已通过真实 hook contract 差分、guard 探针、新线程 TLS 启动、强制 queue overflow、
+双策略 unwind、writer、SEH finally 和 CFG/CET quiescence 压力。Application Verifier/Full Page Heap
+自动脚本已完成，但本机当前会话非管理员，提权运行仍待人工验收，所以默认 profile 保持 disabled。
+workload 与 hardening 证据见
 [RTL_HEAP_BASELINE.md](RTL_HEAP_BASELINE.md) 和
 [RTL_ALLOCATE_HEAP_HOOK.md](RTL_ALLOCATE_HEAP_HOOK.md)，guard 设计与崩溃根因见
 [HOOK_GUARD.md](HOOK_GUARD.md)，队列合同见 [EVENT_QUEUE.md](EVENT_QUEUE.md)，栈合同见
-[STACK_CAPTURE.md](STACK_CAPTURE.md)。
+[STACK_CAPTURE.md](STACK_CAPTURE.md)，平台门禁见
+[WINDOWS_HOOK_HARDENING.md](WINDOWS_HOOK_HARDENING.md)。

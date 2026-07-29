@@ -24,6 +24,28 @@ constexpr std::uint64_t kOperationsAfterUninstall = 20'000U;
 constexpr std::uint64_t kThreadCreationsBeforeUninstall = 100U;
 constexpr ULONGLONG kWaitTimeoutMilliseconds = 15'000U;
 
+struct MitigationStatus {
+  bool cfg_queried{false};
+  bool cfg_enabled{false};
+  bool cet_queried{false};
+  bool cet_enabled{false};
+};
+
+[[nodiscard]] MitigationStatus query_mitigations() noexcept {
+  MitigationStatus status;
+  PROCESS_MITIGATION_CONTROL_FLOW_GUARD_POLICY cfg{};
+  status.cfg_queried =
+      GetProcessMitigationPolicy(GetCurrentProcess(), ProcessControlFlowGuardPolicy, &cfg,
+                                 sizeof(cfg)) != FALSE;
+  status.cfg_enabled = status.cfg_queried && cfg.EnableControlFlowGuard != 0U;
+
+  PROCESS_MITIGATION_USER_SHADOW_STACK_POLICY cet{};
+  status.cet_queried = GetProcessMitigationPolicy(GetCurrentProcess(), ProcessUserShadowStackPolicy,
+                                                  &cet, sizeof(cet)) != FALSE;
+  status.cet_enabled = status.cet_queried && cet.EnableUserShadowStack != 0U;
+  return status;
+}
+
 [[nodiscard]] bool wait_for_at_least(const std::atomic<std::uint64_t>& value,
                                      std::uint64_t expected) noexcept {
   const ULONGLONG deadline = GetTickCount64() + kWaitTimeoutMilliseconds;
@@ -39,6 +61,13 @@ constexpr ULONGLONG kWaitTimeoutMilliseconds = 15'000U;
 }  // namespace
 
 int main() {
+  const MitigationStatus mitigations = query_mitigations();
+#if defined(NOLEAX_WINDOWS_HARDENED_TESTING)
+  if (!mitigations.cfg_queried || !mitigations.cfg_enabled) {
+    std::fprintf(stderr, "hardened image did not start with Control Flow Guard enabled\n");
+    return 10;
+  }
+#endif
   const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
   const HANDLE heap = GetProcessHeap();
   if (ntdll == nullptr || heap == nullptr) {
@@ -112,8 +141,7 @@ int main() {
   bool reached_pre_uninstall = false;
   if (all_ready) {
     reached_pre_uninstall = wait_for_at_least(operations, kOperationsBeforeUninstall) &&
-                            wait_for_at_least(thread_creations,
-                                              kThreadCreationsBeforeUninstall);
+                            wait_for_at_least(thread_creations, kThreadCreationsBeforeUninstall);
   }
 
   auto uninstall_status = noleax::agent::HookUninstallStatus::kTeardownPending;
@@ -172,8 +200,7 @@ int main() {
                  "dropped=%llu reinstall=%u shutdown=%u\n",
                  static_cast<unsigned long long>(ready.load(std::memory_order_relaxed)),
                  static_cast<unsigned long long>(operations.load(std::memory_order_relaxed)),
-                 static_cast<unsigned long long>(
-                     thread_creations.load(std::memory_order_relaxed)),
+                 static_cast<unsigned long long>(thread_creations.load(std::memory_order_relaxed)),
                  static_cast<unsigned long long>(failures.load(std::memory_order_relaxed)),
                  static_cast<unsigned int>(uninstall_status),
                  static_cast<unsigned long long>(hook.replacement_in_flight_count()),
@@ -186,12 +213,13 @@ int main() {
     return 5;
   }
 
-  std::printf("status=ok operations=%llu thread_creations=%llu recordable=%llu dequeued=%llu "
-              "dropped=%llu\n",
-              static_cast<unsigned long long>(operations.load(std::memory_order_relaxed)),
-              static_cast<unsigned long long>(thread_creations.load(std::memory_order_relaxed)),
-              static_cast<unsigned long long>(recordable),
-              static_cast<unsigned long long>(dequeued),
-              static_cast<unsigned long long>(dropped));
+  std::printf(
+      "status=ok operations=%llu thread_creations=%llu recordable=%llu dequeued=%llu "
+      "dropped=%llu cfg=%u cet=%u cet_query=%u\n",
+      static_cast<unsigned long long>(operations.load(std::memory_order_relaxed)),
+      static_cast<unsigned long long>(thread_creations.load(std::memory_order_relaxed)),
+      static_cast<unsigned long long>(recordable), static_cast<unsigned long long>(dequeued),
+      static_cast<unsigned long long>(dropped), mitigations.cfg_enabled ? 1U : 0U,
+      mitigations.cet_enabled ? 1U : 0U, mitigations.cet_queried ? 1U : 0U);
   return 0;
 }

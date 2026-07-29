@@ -150,24 +150,28 @@ bool hook_guard_runtime_is_ready() noexcept {
 #endif
 }
 
-HookInvocationGuard::HookInvocationGuard() noexcept {
+HookEntryKind enter_hook_invocation_unscoped() noexcept {
   ThreadHookState state = load_thread_state();
+  HookEntryKind kind = HookEntryKind::kOutermost;
   if (state.internal_depth != 0U) {
-    kind_ = HookEntryKind::kInternalThread;
+    kind = HookEntryKind::kInternalThread;
   } else if (state.hook_depth != 0U) {
-    kind_ = HookEntryKind::kRecursive;
-  } else {
-    kind_ = HookEntryKind::kOutermost;
+    kind = HookEntryKind::kRecursive;
   }
   increment_or_terminate(state.hook_depth);
   store_thread_state(state);
+  return kind;
 }
 
-HookInvocationGuard::~HookInvocationGuard() noexcept {
+void leave_hook_invocation_unscoped() noexcept {
   ThreadHookState state = load_thread_state();
   decrement_or_terminate(state.hook_depth);
   store_thread_state(state);
 }
+
+HookInvocationGuard::HookInvocationGuard() noexcept : kind_{enter_hook_invocation_unscoped()} {}
+
+HookInvocationGuard::~HookInvocationGuard() noexcept { leave_hook_invocation_unscoped(); }
 
 HookEntryKind HookInvocationGuard::kind() const noexcept { return kind_; }
 

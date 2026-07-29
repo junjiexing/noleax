@@ -106,8 +106,9 @@ Debug 和 Release 全量均为 175/175 通过。加入 Windows RWX 暂停 overla
 
 Release x64 object 的 replacement 反汇编复核确认，正常路径只调用 original/恢复后的 target、
 固定 TEB 槽 guard、`GetLastError`/`SetLastError`、`QueryPerformanceCounter`、
-`GetCurrentThreadId` 和受审计的 raw stack capture；queue reservation、publish 和计数均内联为
-无锁原子操作。没有 allocator、I/O、loader、mutex、TLS API 或 CRT TLS 引用。`terminate` 和
+`GetCurrentThreadId`、静态无锁 queue helper 和受审计的 raw stack capture；queue helper 的 relocation
+只包含 QPC、thread ID 和 stack capture。没有 allocator、I/O、loader、mutex、TLS API 或 CRT TLS
+引用。`terminate` 和
 fast-fail 只位于 counter overflow/underflow、空路由等不可恢复内部不变量分支。
 
 Release MD/MT ABI 长差分使用 8 个线程、每线程 20,000 次操作、2 个 round，hooked 与各自 baseline

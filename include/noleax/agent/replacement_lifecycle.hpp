@@ -18,7 +18,7 @@ class ReplacementLifecycle final {
  public:
   class Entry final {
    public:
-    ~Entry() noexcept { lifecycle_->leave(); }
+    ~Entry() noexcept { lifecycle_->leave_unscoped(); }
 
     Entry(const Entry&) = delete;
     Entry& operator=(const Entry&) = delete;
@@ -47,12 +47,23 @@ class ReplacementLifecycle final {
   ReplacementLifecycle(ReplacementLifecycle&&) = delete;
   ReplacementLifecycle& operator=(ReplacementLifecycle&&) = delete;
 
-  [[nodiscard]] Entry enter() noexcept {
+  [[nodiscard]] Entry enter() noexcept { return Entry{*this, enter_unscoped()}; }
+
+  // The unscoped pair exists for Windows replacements that require SEH __finally cleanup.
+  // Every successful enter must be paired with exactly one leave.
+  [[nodiscard]] ReplacementRoute enter_unscoped() noexcept {
     const std::uint64_t previous = in_flight_.fetch_add(1U, std::memory_order_seq_cst);
     if (previous == std::numeric_limits<std::uint64_t>::max()) {
       std::terminate();
     }
-    return Entry{*this, route_.load(std::memory_order_seq_cst)};
+    return route_.load(std::memory_order_seq_cst);
+  }
+
+  void leave_unscoped() noexcept {
+    const std::uint64_t previous = in_flight_.fetch_sub(1U, std::memory_order_seq_cst);
+    if (previous == 0U) {
+      std::terminate();
+    }
   }
 
   void start_recording() noexcept {
@@ -88,13 +99,6 @@ class ReplacementLifecycle final {
   }
 
  private:
-  void leave() noexcept {
-    const std::uint64_t previous = in_flight_.fetch_sub(1U, std::memory_order_seq_cst);
-    if (previous == 0U) {
-      std::terminate();
-    }
-  }
-
   static_assert(std::atomic<ReplacementRoute>::is_always_lock_free);
   static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
 

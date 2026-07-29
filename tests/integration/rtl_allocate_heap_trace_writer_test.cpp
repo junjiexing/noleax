@@ -37,6 +37,8 @@ struct ParsedTrace {
   noleax::analyzer::EventStreamResult result;
   std::uint64_t events_with_stacks{0U};
   std::uint64_t successful_allocations{0U};
+  std::uint64_t exceptional_allocations{0U};
+  std::uint64_t last_exception_status{0U};
   bool unknown_stack_reference{false};
   bool saw_queue_full{false};
   bool saw_trace_full{false};
@@ -47,6 +49,7 @@ enum class TestMode : std::uint8_t {
   kNormal,
   kQueueLimit,
   kFileLimit,
+  kException,
 };
 
 [[nodiscard]] const char* mode_name(TestMode mode) noexcept {
@@ -59,6 +62,8 @@ enum class TestMode : std::uint8_t {
       return "queue-limit";
     case TestMode::kFileLimit:
       return "file-limit";
+    case TestMode::kException:
+      return "exception";
   }
   return "unknown";
 }
@@ -96,6 +101,29 @@ NOLEAX_TEST_NOINLINE bool run_allocations(RtlAllocateHeapFunction allocate,
   return true;
 }
 
+#if defined(_MSC_VER)
+
+[[nodiscard]] LONG capture_exception_status(EXCEPTION_POINTERS* pointers, DWORD* status) noexcept {
+  if (pointers != nullptr && pointers->ExceptionRecord != nullptr && status != nullptr) {
+    *status = pointers->ExceptionRecord->ExceptionCode;
+  }
+  return EXCEPTION_EXECUTE_HANDLER;
+}
+
+[[nodiscard]] DWORD run_exceptional_allocation(RtlAllocateHeapFunction allocate,
+                                               HANDLE heap) noexcept {
+  DWORD status = 0U;
+  constexpr SIZE_T impossible_size =
+      (std::numeric_limits<SIZE_T>::max)() - static_cast<SIZE_T>(65'535U);
+  __try {
+    static_cast<void>(allocate(heap, HEAP_GENERATE_EXCEPTIONS, impossible_size));
+  } __except (capture_exception_status(GetExceptionInformation(), &status)) {
+  }
+  return status;
+}
+
+#endif
+
 [[nodiscard]] bool finish_uninstall(noleax::agent::windows::RtlAllocateHeapHook& hook) noexcept {
   auto status = hook.uninstall();
   if (status == noleax::agent::HookUninstallStatus::kTeardownPending && hook.flush()) {
@@ -125,6 +153,10 @@ NOLEAX_TEST_NOINLINE bool run_allocations(RtlAllocateHeapFunction allocate,
       if (allocation != nullptr && allocation->allocation_id) {
         ++parsed.successful_allocations;
       }
+    } else if (event.header.system_error.domain == noleax::trace::SystemErrorDomain::kNtStatus &&
+               event.header.system_error.code != 0U) {
+      ++parsed.exceptional_allocations;
+      parsed.last_exception_status = event.header.system_error.code;
     }
   };
   callbacks.on_loss = [&parsed](const noleax::trace::LossRecord& loss) {
@@ -216,9 +248,22 @@ NOLEAX_TEST_NOINLINE bool run_allocations(RtlAllocateHeapFunction allocate,
     return 14;
   } catch (const std::logic_error&) {
   }
+  DWORD exception_status = 0U;
+#if defined(_MSC_VER)
+  if (mode == TestMode::kException) {
+    exception_status = run_exceptional_allocation(allocate, heap);
+    if (exception_status == 0U) {
+      return 15;
+    }
+  }
+#else
+  if (mode == TestMode::kException) {
+    return 15;
+  }
+#endif
   const std::uint32_t iterations = file_limit || queue_limit ? 20'000U : 1'000U;
   if (!run_allocations(allocate, free_heap, heap, iterations)) {
-    return 15;
+    return 24;
   }
   // Keep the hook active while the internal writer drains and compresses at least one batch.
   // This verifies that any heap work performed by that thread is classified as internal.
@@ -278,6 +323,17 @@ NOLEAX_TEST_NOINLINE bool run_allocations(RtlAllocateHeapFunction allocate,
         parsed.result.stack_definition_count != writer_result.statistics.unique_stacks) {
       return 21;
     }
+  } else if (mode == TestMode::kException) {
+    if (writer_result.status !=
+            noleax::agent::windows::RtlAllocateHeapTraceWriterStatus::kComplete ||
+        writer_result.statistics.dropped_events != 0U ||
+        writer_result.statistics.failed_operations == 0U || parsed.exceptional_allocations != 1U ||
+        parsed.last_exception_status != exception_status || !writer_result.statistics_written ||
+        !writer_result.end_of_trace_written ||
+        parsed.result.completeness.has(noleax::trace::CompletenessIssue::kEventLoss) ||
+        !parsed.result.completeness.has(noleax::trace::CompletenessIssue::kStackDataLoss)) {
+      return 25;
+    }
   } else if (mode == TestMode::kQueueLimit) {
     if (writer_result.status !=
             noleax::agent::windows::RtlAllocateHeapTraceWriterStatus::kComplete ||
@@ -311,9 +367,9 @@ NOLEAX_TEST_NOINLINE bool run_allocations(RtlAllocateHeapFunction allocate,
 
 int main(int argc, char* argv[]) {
   if (argc != 3) {
-    std::fprintf(
-        stderr,
-        "usage: rtl-heap-trace-writer-test <empty|normal|queue-limit|file-limit> <output>\n");
+    std::fprintf(stderr,
+                 "usage: rtl-heap-trace-writer-test "
+                 "<empty|normal|queue-limit|file-limit|exception> <output>\n");
     return 2;
   }
   const std::string_view mode{argv[1]};
@@ -324,6 +380,8 @@ int main(int argc, char* argv[]) {
     parsed_mode = TestMode::kQueueLimit;
   } else if (mode == "file-limit") {
     parsed_mode = TestMode::kFileLimit;
+  } else if (mode == "exception") {
+    parsed_mode = TestMode::kException;
   } else if (mode != "empty") {
     return 3;
   }

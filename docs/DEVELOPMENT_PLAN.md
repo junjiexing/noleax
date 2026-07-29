@@ -1308,6 +1308,14 @@ Debug 含 thread churn 和 Release race 均连续 100 次、双配置全量均 1
 一次，DLL 驻留到进程退出。Release 热路径反汇编和 MD/MT 8×20,000×2 ABI 长差分也已复核通过。
 详见 [HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)。
 
+P4.9 自动化实现已完成，最终提权门禁待人工执行。独立 hardened preset 对 Noleax 目标启用
+`/guard:cf` 和 `/CETCOMPAT`；五个真实 PE 的标记检查、运行时 CFG/CET、hardened 183/183、并发
+quiescence 100 次和 MD/MT 8×20,000×2 三轮差分均通过。`HEAP_GENERATE_EXCEPTIONS` 现由 SEH
+filter 记录 NTSTATUS 失败事件，并由 `__finally` 保证 guard/in-flight 清理；基线与 hooked 的
+`0xc0000017`、exception parameters 和 `LastError=8` 完全一致。Application Verifier/Full Page Heap
+脚本会拒绝覆盖既有 IFEO 设置并在 finally 中回滚，但本机当前会话非管理员，尚未执行最后一项。
+详见 [WINDOWS_HOOK_HARDENING.md](WINDOWS_HOOK_HARDENING.md)。
+
 阶段门禁：
 
 - 人工 review 分支、dump 分析和压力测试报告。

@@ -36,12 +36,16 @@ void destroy_harness() noexcept {
       return 1U;
     }
     if (event.status != noleax::agent::windows::RtlAllocateHeapEventStatus::kSuccess &&
-        event.status != noleax::agent::windows::RtlAllocateHeapEventStatus::kFailure) {
+        event.status != noleax::agent::windows::RtlAllocateHeapEventStatus::kFailure &&
+        event.status != noleax::agent::windows::RtlAllocateHeapEventStatus::kException) {
       return 2U;
     }
     const bool succeeded =
         event.status == noleax::agent::windows::RtlAllocateHeapEventStatus::kSuccess;
-    if (succeeded != (event.result_address != 0U)) {
+    const bool exceptional =
+        event.status == noleax::agent::windows::RtlAllocateHeapEventStatus::kException;
+    if (succeeded != (event.result_address != 0U) ||
+        exceptional != (event.exception_status != 0U)) {
       return 3U;
     }
     if (event.stack.method !=

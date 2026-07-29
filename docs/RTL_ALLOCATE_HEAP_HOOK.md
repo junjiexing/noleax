@@ -1,6 +1,6 @@
 # RtlAllocateHeap Hook Prototype
 
-> 状态：P4.8 Windows x64 完成
+> 状态：P4.9 自动化完成，Application Verifier/Page Heap 提权验收待执行
 > 范围：guarded raw-stack event queue 与后台 trace writer，不进入任何产品 profile
 
 ## 1. 目的
@@ -9,7 +9,8 @@ P4.3 首次在正式测试路径 hook `ntdll!RtlAllocateHeap`，验证 Hoox tram
 发布顺序和卸载生命周期。P4.4 增加无分配 recursion/internal-thread guard，P4.5 为 outermost
 调用增加预分配 MPSC 原始事件队列，P4.6 在成功取得 queue slot 后捕获原始调用栈。replacement
 自身仍不写 trace；P4.7 由预先启动并标记为 internal 的后台线程消费队列、去重调用栈并写 trace。
-P4.8 已增加 replacement gate、并发 revert 和 fail-safe 模块生命周期。
+P4.8 已增加 replacement gate、并发 revert 和 fail-safe 模块生命周期。P4.9 增加 SEH-safe 清理、
+异常失败事件以及 CFG/CET hardened 门禁。
 
 精确函数类型为：
 
@@ -83,16 +84,24 @@ win32_last_error_hash=0xdb3089d8201ac1a3
 checksum=0x7caf2ccfa0606232
 ~~~
 
-Release x64 object disassembly 中，replacement 调用 guard、original、`Get/SetLastError`、
-`QueryPerformanceCounter`、`GetCurrentThreadId` 和受审计的 raw stack capture；queue
-reservation/publish 与 overflow 计数均为内联无锁原子操作。Noleax 正常路径没有 allocator、文件、
-loader、日志、符号或显式锁调用。guard 继续直接访问
+Release x64 object disassembly 中，replacement 调用 unscoped guard、original、`Get/SetLastError` 和
+静态实例化的无锁 `try_emplace`；该 helper 的外部调用只有 `QueryPerformanceCounter`、
+`GetCurrentThreadId` 和受审计的 raw stack capture。SEH filter 只增加 `Get/SetLastError`、QPC 和 thread
+ID。Noleax 正常路径没有 allocator、文件、loader、日志、符号或显式锁调用。guard 继续直接访问
 `gs:[TEB]` 固定槽，object 中没有 `.tls$` 段或 CRT `_tls_index` 引用。
 
-P4.7 另以 empty、normal、2-slot queue-limit 和 8 KiB file-limit 四种模式验证后台 writer。每个
+writer 以 empty、normal、2-slot queue-limit、8 KiB file-limit 和 exception 五种模式验证。每个
 生成文件均由正式 EventStream 回读，检查 StackDefinition 引用、Loss、统计守恒、终止记录和文件
-硬上限；Debug/Release 全量各 171 项通过。writer 重复压力和完整说明见
+硬上限；exception 模式额外检查 NTSTATUS failure event 和 SEH stack-detail Loss。当前 Debug/Release
+全量各 178 项通过。writer 重复压力和完整说明见
 [TRACE_WRITER.md](TRACE_WRITER.md)。
+
+P4.9 的隔离进程 SEH 合同确认 baseline/hooked 都抛出 `STATUS_NO_MEMORY (0xc0000017)`，exception
+flags/parameters 一致，且 `LastError` 同为 8。异常 unwind 后 hook depth 和 replacement in-flight
+均为零，下一次普通 allocation 仍被记录，hook 可正常 quiesce/shutdown。hardened 产物全量 183/183
+通过，五个真实 PE 都包含 CFG/CET 标记；当前机器的真实 hook 进程报告 `cfg=1, cet=1`，并发卸载
+100 次及 MD/MT 8×20,000×2 三轮长差分通过。详见
+[WINDOWS_HOOK_HARDENING.md](WINDOWS_HOOK_HARDENING.md)。
 
 运行方法：
 
@@ -106,8 +115,8 @@ ctest --preset windows-x64-release -L passthrough --repeat until-fail:20
 
 ## 5. 未完成边界
 
-- P4.9：Page Heap、Application Verifier、CFG/CET 和更长 race 压力。
+- P4.9 最后一项：在 64-bit 管理员 PowerShell 中执行 Application Verifier/Full Page Heap 脚本并
+  review 日志。
 
-此外，`HEAP_GENERATE_EXCEPTIONS` 的 SEH 合同仍等待隔离进程门禁。因此 `RtlAllocateHeap` 继续保持
-disabled；P4.7 trace path 已可由 analyzer 解码，P4.8 生命周期见
-[HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)，但在 P4.9 门禁前仍不是产品级捕获能力。
+因此 `RtlAllocateHeap` 继续保持 disabled；trace path、SEH 和 CFG/CET 已完成自动门禁，P4.8 生命周期
+见 [HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)，但 Page Heap 人工验收前仍不是产品级捕获能力。

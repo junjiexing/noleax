@@ -1,7 +1,7 @@
 # Windows RtlAllocateHeap Background Trace Writer
 
-> 状态：P4.7 Windows x64 完成
-> 范围：单一 `RtlAllocateHeap` API 的进程内 trace path；P4.8 已接入安全停止 barrier
+> 状态：P4.9 Windows x64 自动门禁完成
+> 范围：单一 `RtlAllocateHeap` API 的进程内 trace path、安全停止与 SEH failure event
 
 ## 1. 目标与边界
 
@@ -38,7 +38,7 @@ flush 完成后才离开 teardown-pending。`finish()` 的 final drain 因此不
 ## 3. Drain、时间与栈去重
 
 worker 以单 consumer 顺序读取 queue sequence。原始事件必须满足连续 sequence、非零 thread、有效
-success/result 组合、合法栈状态和不早于 FileHeader origin；违反不变量会使 writer 返回
+success/failure/exception 与 result/NTSTATUS 组合、合法栈状态和不早于 FileHeader origin；违反不变量会使 writer 返回
 `kWriterError`，不会伪造完整 trace。
 
 不同线程按 queue reservation 排序时，QPC tick 可能轻微倒退。writer 保留事件顺序并把倒退值提升
@@ -60,6 +60,10 @@ writer 生成三类 Loss：
 
 stack capture 失败仍写 allocation event，只降低 stack completeness。queue/file 丢失会设置 event loss，
 因此 analyzer 不会把不完整生命周期误报为完整。
+
+`HEAP_GENERATE_EXCEPTIONS` 在第一遍 SEH filter 中生成 failure allocation event，system error 使用
+NTSTATUS。异常派发路径不再次 unwind stack；请求深度非零时该事件同时产生 stack-capture-failed
+Loss。failure event 保留，因此 Statistics 的 lifecycle 计数仍守恒。
 
 结束时必须满足：
 
@@ -91,7 +95,8 @@ Statistics record、一个 48-byte EndOfTrace record 及三个 56-byte chunk hea
 - normal：LZ4、1,000 次显式 allocation、零事件丢失、栈 definition/reference 和统计一致；
 - queue-limit：2-slot queue、20,000 次 allocation，稳定生成 queue-full Loss；
 - file-limit：32,768-slot queue、none codec、8 KiB 上限，稳定生成 trace-full Loss；
-- 三种模式均验证 writer 内部分配被归为 internal、正式 reader/decoder 可完整读取、Statistics 和
+- exception：`STATUS_NO_MEMORY` 保留为带 NTSTATUS 的 failure event，SEH cleanup 后正式 decoder 可读；
+- 五种模式均验证 writer 内部分配被归为 internal、正式 reader/decoder 可完整读取、Statistics 和
   EndOfTrace 存在、文件实际大小等于 writer 报告且不超过硬上限。
 
 stack dictionary 单元测试另覆盖完整 hash collision 比较、segment reset 和 ID 不复用；codec 测试

@@ -128,6 +128,26 @@ if(WIN32)
     TIMEOUT 60
   )
 
+  if(MSVC)
+    add_executable(noleax-rtl-allocate-heap-exception-test
+      integration/rtl_allocate_heap_exception_test.cpp
+    )
+    target_link_libraries(noleax-rtl-allocate-heap-exception-test PRIVATE
+      noleax::hook-backend
+    )
+    noleax_set_project_warnings(noleax-rtl-allocate-heap-exception-test)
+
+    add_test(NAME hook.rtl-allocate-heap-seh-contract
+      COMMAND noleax-rtl-allocate-heap-exception-test
+    )
+    set_tests_properties(hook.rtl-allocate-heap-seh-contract PROPERTIES
+      LABELS "hook;windows;rtl-heap;seh;contract"
+      PASS_REGULAR_EXPRESSION "^status=ok exception=0x[0-9a-f]+ last_error=[0-9]+ event=1 cleanup=1"
+      RUN_SERIAL TRUE
+      TIMEOUT 60
+    )
+  endif()
+
   add_executable(noleax-rtl-allocate-heap-module-retention-test
     integration/rtl_allocate_heap_module_retention_test.cpp
   )
@@ -148,7 +168,7 @@ if(WIN32)
     TIMEOUT 60
   )
 
-  foreach(trace_mode IN ITEMS empty normal queue-limit file-limit)
+  foreach(trace_mode IN ITEMS empty normal queue-limit file-limit exception)
     add_test(NAME hook.rtl-allocate-heap-trace-writer-${trace_mode}
       COMMAND noleax-rtl-allocate-heap-trace-writer-test
         "${trace_mode}"
@@ -270,4 +290,25 @@ if(WIN32)
 
   add_test(NAME agent.load-and-link-hoox
     COMMAND noleax-agent-smoke "$<TARGET_FILE:noleax-agent>")
+
+  if(NOLEAX_WINDOWS_HARDENED_TESTING)
+    find_program(NOLEAX_DUMPBIN_EXECUTABLE NAMES dumpbin REQUIRED)
+    foreach(mitigation_target IN ITEMS
+        noleax-rtl-heap-baseline-md
+        noleax-rtl-heap-baseline-mt
+        noleax-rtl-allocate-heap-hook-harness
+        noleax-rtl-allocate-heap-quiescence-test
+        noleax-rtl-allocate-heap-exception-test)
+      add_test(NAME hook.windows-mitigations.${mitigation_target}
+        COMMAND "${CMAKE_COMMAND}"
+          "-DNOLEAX_DUMPBIN=${NOLEAX_DUMPBIN_EXECUTABLE}"
+          "-DNOLEAX_IMAGE=$<TARGET_FILE:${mitigation_target}>"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/VerifyWindowsImageMitigations.cmake"
+      )
+      set_tests_properties(hook.windows-mitigations.${mitigation_target} PROPERTIES
+        LABELS "hook;windows;mitigations;cfg;cet"
+        PASS_REGULAR_EXPRESSION "CFG/CET metadata verified"
+      )
+    endforeach()
+  endif()
 endif()

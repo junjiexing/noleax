@@ -71,11 +71,11 @@ adapter 只有在 hook 已进入 inactive 状态后才释放槽。索引缺失�
 
 `RtlAllocateHeap` replacement 的顺序为：
 
-1. 创建 `HookInvocationGuard` 并增加 hook depth；
+1. 进入 unscoped guard 并增加 hook depth；
 2. 按 `internal-thread > recursive > outermost` 分类；
 3. 增加无锁诊断计数；
 4. acquire-load original trampoline 并调用；
-5. guard 析构并恢复 hook depth。
+5. MSVC `__finally` 恢复 hook depth；普通 RAII `HookInvocationGuard` 继续供非 replacement 作用域使用。
 
 P4.5 在步骤 4 后为 outermost 调用增加了预分配 event queue，但没有改变 guard 的 TLS 路径或
 recursive/internal-thread 抑制规则，详见 [EVENT_QUEUE.md](EVENT_QUEUE.md)。
@@ -84,9 +84,11 @@ Release x64 object 反汇编确认 guard 正常路径只有原子 index load、`
 位运算和 store；没有 heap、锁、文件、loader、日志或 TLS API 调用。对象中不存在 `.tls$` 段或
 CRT `_tls_index` 引用。`TlsAlloc`/`TlsFree` 只存在于 adapter 安装前和安全 teardown 后的冷路径。
 
-`HEAP_GENERATE_EXCEPTIONS` 的 SEH 退出清理仍属于后续隔离进程合同门禁；在该门禁完成前 profile
-保持 disabled。replacement 自有 in-flight/quiescence 已在 P4.8 完成，见
-[HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)；P4.9 平台门禁仍未完成。
+P4.9 已完成 `HEAP_GENERATE_EXCEPTIONS` 隔离进程合同。original 以 SEH 离开时，C++ `/EHsc` RAII
+不作为异步异常清理保证；replacement 因此通过显式 enter/leave pair 和 `__finally` 恢复 guard，外层
+handler 返回后 depth 必须为零。异常合同、事件语义和结果见
+[WINDOWS_HOOK_HARDENING.md](WINDOWS_HOOK_HARDENING.md)。P4.8 replacement in-flight/quiescence 见
+[HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)。
 
 ## 5. 验证
 
@@ -94,6 +96,7 @@ CRT `_tls_index` 引用。`TlsAlloc`/`TlsFree` 只存在于 adapter 安装前和
 
 - runtime acquire/release 与多个 owner 的引用计数；
 - outermost/recursive 分类和 depth 恢复；
+- unscoped enter/leave 的平衡恢复；
 - 嵌套 internal scope 及其分类优先级；
 - 新线程初始状态和线程间隔离。
 

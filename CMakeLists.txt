@@ -10,6 +10,8 @@ project(
 option(NOLEAX_BUILD_TESTS "Build Noleax tests" ON)
 option(NOLEAX_WARNINGS_AS_ERRORS "Treat project warnings as errors" ON)
 option(NOLEAX_ENABLE_CLANG_TIDY "Run clang-tidy while compiling project sources" OFF)
+option(NOLEAX_WINDOWS_HARDENED_TESTING
+  "Build Windows test images with CFG and CET compatibility metadata" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -17,6 +19,15 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_C_STANDARD 17)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
+
+if(NOLEAX_WINDOWS_HARDENED_TESTING)
+  if(NOT WIN32 OR NOT MSVC)
+    message(FATAL_ERROR "NOLEAX_WINDOWS_HARDENED_TESTING requires MSVC on Windows.")
+  endif()
+  add_compile_options(/guard:cf)
+  add_link_options(/guard:cf /CETCOMPAT)
+  add_compile_definitions(NOLEAX_WINDOWS_HARDENED_TESTING=1)
+endif()
 
 if(NOLEAX_ENABLE_CLANG_TIDY)
   find_program(NOLEAX_CLANG_TIDY_EXECUTABLE NAMES clang-tidy REQUIRED)

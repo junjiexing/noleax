@@ -263,9 +263,11 @@ class RtlAllocateHeapTraceWriter::Implementation final {
       throw std::invalid_argument{"raw RtlAllocateHeap event header is invalid"};
     }
     const bool succeeded = raw_event.status == RtlAllocateHeapEventStatus::kSuccess;
+    const bool exceptional = raw_event.status == RtlAllocateHeapEventStatus::kException;
     if ((raw_event.status != RtlAllocateHeapEventStatus::kSuccess &&
-         raw_event.status != RtlAllocateHeapEventStatus::kFailure) ||
-        succeeded != (raw_event.result_address != 0U)) {
+         raw_event.status != RtlAllocateHeapEventStatus::kFailure && !exceptional) ||
+        succeeded != (raw_event.result_address != 0U) ||
+        exceptional != (raw_event.exception_status != 0U)) {
       throw std::invalid_argument{"raw RtlAllocateHeap event result is inconsistent"};
     }
     if (last_sequence_ == std::numeric_limits<std::uint64_t>::max() ||
@@ -332,6 +334,10 @@ class RtlAllocateHeapTraceWriter::Implementation final {
     event.header.status = raw_event.status == RtlAllocateHeapEventStatus::kSuccess
                               ? noleax::trace::EventStatus::kSuccess
                               : noleax::trace::EventStatus::kFailure;
+    if (raw_event.status == RtlAllocateHeapEventStatus::kException) {
+      event.header.system_error = {noleax::trace::SystemErrorDomain::kNtStatus,
+                                   raw_event.exception_status};
+    }
 
     std::uint64_t event_unique_stacks = 0U;
     std::uint64_t event_reused_stacks = 0U;
