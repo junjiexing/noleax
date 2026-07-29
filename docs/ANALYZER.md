@@ -1,6 +1,6 @@
 # Noleax Analyzer
 
-> 状态：P3.1 events、P3.2 generation 状态机与 P3.3 outstanding 窗口完成
+> 状态：P3.1 events、P3.2 generation 状态机、P3.3 outstanding 窗口与 P3.4 过滤器完成
 
 ## 1. P3.1 范围
 
@@ -84,7 +84,41 @@ allocation_id 或 mapping_id 作为身份，不以可复用的地址作为身份
 trace_end_monotonic_ticks。若状态机发现引用缺失 creation 的有效 ID，结果增加 event_loss，继续
 输出可确定候选并使用退出码 2。
 
-## 6. 后续阶段
+## 6. 过滤器
 
-P3.1-P3.3 尚未连接公开 CLI 输出。P3.4 将在完整状态还原后应用过滤器；console、JSON、CSV
-以及 module/stack 符号展示分别在后续 P3 工作项接入。
+AnalysisFilter 使用固定组合规则：一个类别中的多个值为 OR，不同类别之间为 AND；最小值和
+最大值均为包含边界。空列表或未设置的范围不限制结果。构造时拒绝反向大小范围以及空 API 名称
+或空模块 pattern。
+
+| 类别 | events 模式 | outstanding 模式 |
+|---|---|---|
+| size | 事件自身可解释的 size | generation 的创建大小 |
+| event | 当前事件 operation | generation 的创建 operation |
+| thread | 当前事件 thread_id | 创建 generation 的 thread_id |
+| API/module/stack module | 当前事件元数据 | 创建 generation 的事件元数据 |
+| allocation ID | alloc/free ID；realloc 的 old 或 new ID | heap allocation generation ID |
+| status | 当前事件 status | 创建 generation 的 status |
+
+events 的 size 定义为：heap alloc/realloc 使用 requested_size；VM alloc 成功时使用
+result_size、失败时使用 requested_size；VM free 使用 region_size；map 使用 view_size。
+HeapCreate、HeapDestroy、heap Free 和 Unmap 没有可独立解释的 size，存在 size 过滤时不会匹配。
+outstanding 直接使用 MemoryGeneration.size，因此 heap allocation 为 requested_size，VM allocation
+为 result_size，mapped view 为 view_size。`--allocation-id` 不匹配独立编号空间中的 mapping_id。
+
+API 名称按 ApiDefinition canonical name 做 UTF-8 精确、区分大小写匹配。模块 pattern 支持 `*`
+和 `?`，ASCII 字母不区分大小写，`/` 与 `\` 等价；pattern 含路径分隔符时匹配规范化完整路径，
+否则只匹配 basename。多个 stack module pattern 中任意一个匹配任意一帧即可。元数据无法解析时，
+依赖该元数据的类别不匹配。
+
+当前 ApiDefinition、Module 和 StackDefinition codec 尚未进入 EventStream，因此过滤器通过
+EventMetadataResolver 注入解析结果；配置 API/module/stack-module 过滤而未提供 resolver 时明确
+报错，不会静默输出空结果。
+
+`analyze_filtered_events` 仍以流式方式逐事件回调，并分别统计 matched 与 filtered 数量。
+`analyze_filtered_outstanding` 始终先让所有事件进入 GenerationTracker，确定 c 时刻存活集合之后
+才过滤最终候选；结果中的 candidate_count、ended_by_c_count 和 filtered_out_count 可解释每个阶段。
+
+## 7. 后续阶段
+
+P3.1-P3.4 尚未连接公开 CLI 输出。console、JSON、CSV 以及 module/stack 符号展示分别在后续 P3
+工作项接入。

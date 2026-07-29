@@ -194,12 +194,15 @@ status：
 - success
 - failure
 - unmatched
+- preexisting
 
 symbols mode：
 
 - auto
 
 outstanding 模式要求 a 和 b。c 可省略。时间默认相对 trace 起点；未来若支持 sequence 表达式，将使用明确前缀，避免与时间混淆。
+同一过滤类别的重复选项为 OR，不同类别为 AND；大小范围包含端点。模块 pattern 支持 `*` 和
+`?`，ASCII 大小写及 `/`、`\` 路径分隔符不敏感。API 名称区分大小写。
 
 ## 9. config
 

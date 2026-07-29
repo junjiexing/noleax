@@ -157,6 +157,8 @@ TEST_CASE("analyze CLI replaces arrays and maps all filters", "[cli][config]") {
                              "99",
                              "--status",
                              "success",
+                             "--status",
+                             "preexisting",
                              "--symbols",
                              "auto",
                              "--symbol-path",
@@ -187,7 +189,8 @@ TEST_CASE("analyze CLI replaces arrays and maps all filters", "[cli][config]") {
   CHECK(overrides.filters.modules.value == std::vector<std::string>{"app*"});
   CHECK(overrides.filters.stack_modules.value == std::vector<std::string>{"engine*"});
   CHECK(overrides.filters.allocation_ids.value == std::vector<std::uint64_t>{99U});
-  CHECK(overrides.filters.statuses.value == std::vector{noleax::config::EventStatus::kSuccess});
+  CHECK(overrides.filters.statuses.value == std::vector{noleax::config::EventStatus::kSuccess,
+                                                        noleax::config::EventStatus::kPreexisting});
   CHECK(overrides.symbols.paths.value ==
         std::vector<std::filesystem::path>{current_directory / "symbols"});
   CHECK(overrides.symbols.servers.value == std::vector<std::string>{"https://server"});

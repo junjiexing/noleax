@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "noleax/analyzer/event_stream.hpp"
+#include "noleax/analyzer/filter.hpp"
 #include "noleax/analyzer/generation_tracker.hpp"
 #include "noleax/analyzer/time.hpp"
 #include "noleax/trace/completeness.hpp"
@@ -48,7 +49,9 @@ void checked_increment(std::uint64_t& value, const char* message) {
 
 class OutstandingCollector {
  public:
-  explicit OutstandingCollector(OutstandingWindow window) : window_{window} {
+  OutstandingCollector(OutstandingWindow window, const AnalysisFilter& filter,
+                       const EventMetadataResolver& resolver)
+      : window_{window}, filter_{filter}, resolver_{resolver} {
     GenerationCallbacks generation_callbacks;
     generation_callbacks.on_created = [this](const MemoryGeneration& generation) {
       observe_created(generation);
@@ -97,9 +100,14 @@ class OutstandingCollector {
                std::strong_ordering::greater);
       if (ended_by_c) {
         checked_increment(result.ended_by_c_count, "ended candidate count overflow");
-      } else {
-        result.outstanding.push_back(candidate.generation);
+        continue;
       }
+
+      if (!filter_.matches_generation(candidate.generation, resolver_)) {
+        checked_increment(result.filtered_out_count, "filtered candidate count overflow");
+        continue;
+      }
+      result.outstanding.push_back(candidate.generation);
     }
 
     result.orphaned_allocation_end_count = tracker_.orphaned_allocation_end_count();
@@ -149,6 +157,8 @@ class OutstandingCollector {
   }
 
   OutstandingWindow window_;
+  const AnalysisFilter& filter_;
+  const EventMetadataResolver& resolver_;
   std::optional<noleax::trace::FileHeader> file_header_;
   GenerationTracker tracker_;
   std::vector<CandidateState> candidates_;
@@ -160,8 +170,18 @@ class OutstandingCollector {
 
 OutstandingResult analyze_outstanding(std::istream& input, OutstandingWindow window,
                                       EventStreamOptions options) {
+  return analyze_filtered_outstanding(input, window, AnalysisFilter{}, {}, options);
+}
+
+OutstandingResult analyze_filtered_outstanding(std::istream& input, OutstandingWindow window,
+                                               const AnalysisFilter& filter,
+                                               const EventMetadataResolver& resolver,
+                                               EventStreamOptions options) {
   validate_window(window);
-  return OutstandingCollector{window}.analyze(input, options);
+  if (filter.requires_metadata() && !resolver) {
+    throw AnalysisFilterError{"API and module filters require an event metadata resolver"};
+  }
+  return OutstandingCollector{window, filter, resolver}.analyze(input, options);
 }
 
 }  // namespace noleax::analyzer

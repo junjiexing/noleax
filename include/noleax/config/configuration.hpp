@@ -102,6 +102,7 @@ enum class EventStatus : std::uint8_t {
   kSuccess,
   kFailure,
   kUnmatched,
+  kPreexisting,
 };
 
 template <typename Enum>
@@ -237,6 +238,7 @@ struct EnumTraits<EventStatus> {
       NamedEnumValue{std::string_view{"success"}, EventStatus::kSuccess},
       NamedEnumValue{std::string_view{"failure"}, EventStatus::kFailure},
       NamedEnumValue{std::string_view{"unmatched"}, EventStatus::kUnmatched},
+      NamedEnumValue{std::string_view{"preexisting"}, EventStatus::kPreexisting},
   };
 };
 

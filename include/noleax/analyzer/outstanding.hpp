@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "noleax/analyzer/event_stream.hpp"
+#include "noleax/analyzer/filter.hpp"
 #include "noleax/analyzer/generation_tracker.hpp"
 
 namespace noleax::analyzer {
@@ -25,6 +26,7 @@ struct OutstandingResult {
   std::uint64_t trace_end_monotonic_ticks{0};
   std::uint64_t candidate_count{0};
   std::uint64_t ended_by_c_count{0};
+  std::uint64_t filtered_out_count{0};
   std::uint64_t orphaned_allocation_end_count{0};
   std::uint64_t orphaned_mapping_end_count{0};
   bool observation_uses_trace_end{false};
@@ -38,5 +40,8 @@ class OutstandingAnalysisError final : public std::runtime_error {
 
 [[nodiscard]] OutstandingResult analyze_outstanding(std::istream& input, OutstandingWindow window,
                                                     EventStreamOptions options = {});
+[[nodiscard]] OutstandingResult analyze_filtered_outstanding(
+    std::istream& input, OutstandingWindow window, const AnalysisFilter& filter,
+    const EventMetadataResolver& resolver = {}, EventStreamOptions options = {});
 
 }  // namespace noleax::analyzer

@@ -179,6 +179,9 @@ analyze：
 - a 小于等于 b。
 - c 若设置，必须大于等于 b；超过 trace 结束时间时由 analyzer clamp。
 - min_size 不得大于 max_size。
+- filters.statuses 接受 success、failure、unmatched 和 preexisting。
+- filters.events、threads、apis、modules、stack_modules、allocation_ids 和 statuses 中，同一数组的
+  值为 OR；不同非空过滤类别之间为 AND。
 
 ## 6. CLI 对应性测试
 

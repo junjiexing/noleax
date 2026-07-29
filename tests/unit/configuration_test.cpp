@@ -152,7 +152,7 @@ apis = ["RtlAllocateHeap"]
 modules = ["app*"]
 stack_modules = ["engine*"]
 allocation_ids = [10, 11]
-statuses = ["success", "unmatched"]
+statuses = ["success", "unmatched", "preexisting"]
 
 [symbols]
 mode = "auto"
@@ -232,6 +232,9 @@ color = "always"
   CHECK(overrides.analysis.inputs.value.front() == temporary.path() / "one.nlx");
   CHECK(overrides.filters.events.value ==
         std::vector{noleax::config::EventType::kAlloc, noleax::config::EventType::kRealloc});
+  CHECK(overrides.filters.statuses.value == std::vector{noleax::config::EventStatus::kSuccess,
+                                                        noleax::config::EventStatus::kUnmatched,
+                                                        noleax::config::EventStatus::kPreexisting});
   CHECK_FALSE(overrides.patch.verify.value);
 }
 
