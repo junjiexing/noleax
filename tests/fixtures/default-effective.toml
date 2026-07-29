@@ -1,0 +1,67 @@
+schema_version = 1 # source: default
+operation = "" # source: default
+
+[target]
+path = "" # source: default
+args = [] # source: default
+working_directory = "" # source: default
+pid = 0 # source: default
+
+[injection]
+method = "remote-thread" # source: default
+agent_path = "" # source: default
+timeout = "10s" # source: default
+unload_on_stop = false # source: default
+
+[capture]
+hook_profile = "windows-native" # source: default
+max_stack_depth = 64 # source: default
+min_size = "0B" # source: default
+duration = "" # source: default
+
+[trace]
+path = "" # source: default
+buffer_size = "16MiB" # source: default
+max_file_size = "256MiB" # source: default
+max_files = 1 # source: default
+on_full = "stop" # source: default
+flush_interval = "250ms" # source: default
+compression = "lz4" # source: default
+compression_level = 0 # source: default
+
+[analysis]
+inputs = [] # source: default
+mode = "events" # source: default
+format = "console" # source: default
+output = "" # source: default
+a = "" # source: default
+b = "" # source: default
+c = "" # source: default
+
+[filters]
+min_size = "" # source: default
+max_size = "" # source: default
+events = [] # source: default
+threads = [] # source: default
+apis = [] # source: default
+modules = [] # source: default
+stack_modules = [] # source: default
+allocation_ids = [] # source: default
+statuses = [] # source: default
+
+[symbols]
+mode = "auto" # source: default
+paths = [] # source: default
+servers = [] # source: default
+
+[patch]
+input = "" # source: default
+output = "" # source: default
+method = "entrypoint-section" # source: default
+agent_name = "noleax-agent.dll" # source: default
+allow_break_signature = false # source: default
+verify = true # source: default
+
+[diagnostics]
+log_level = "info" # source: default
+color = "auto" # source: default

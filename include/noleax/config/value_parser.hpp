@@ -19,6 +19,8 @@ class ValueParseError final : public std::invalid_argument {
 [[nodiscard]] std::chrono::nanoseconds parse_duration(std::string_view input);
 [[nodiscard]] std::uint64_t parse_unsigned_integer(std::string_view input, std::uint64_t maximum,
                                                    std::string_view value_kind);
+[[nodiscard]] std::int64_t parse_signed_integer(std::string_view input, std::int64_t minimum,
+                                                std::int64_t maximum, std::string_view value_kind);
 [[nodiscard]] bool parse_boolean(std::string_view input);
 
 template <typename Enum>

@@ -150,6 +150,7 @@ CLI subcommand存在时覆盖 operation。若 CLI 和配置均缺失，显示顶
 - max_files 至少为 1。
 - on_full=rotate 时 max_files 至少为 2。
 - compression=none 或 lz4 时 compression_level 必须为 0。
+- compression=zstd 时 V1 接受 0（codec 默认，即 level 1）或 1。
 - trace.path 的父目录必须存在或可创建。
 
 run：
@@ -174,6 +175,7 @@ analyze：
 
 - analysis.inputs 至少一个。
 - outstanding 模式必须设置 a、b。
+- events 模式不得设置 a、b、c。
 - a 小于等于 b。
 - c 若设置，必须大于等于 b；超过 trace 结束时间时由 analyzer clamp。
 - min_size 不得大于 max_size。

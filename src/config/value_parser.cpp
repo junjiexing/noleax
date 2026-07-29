@@ -71,6 +71,25 @@ std::uint64_t parse_unsigned_integer(std::string_view input, std::uint64_t maxim
   return value;
 }
 
+std::int64_t parse_signed_integer(std::string_view input, std::int64_t minimum,
+                                  std::int64_t maximum, std::string_view value_kind) {
+  if (input.empty()) {
+    throw ValueParseError{value_kind, input, "expected a signed decimal integer"};
+  }
+
+  std::int64_t value = 0;
+  const char* const begin = input.data();
+  const char* const end = begin + input.size();
+  const auto result = std::from_chars(begin, end, value, 10);
+  if (result.ec == std::errc::result_out_of_range || value < minimum || value > maximum) {
+    throw ValueParseError{value_kind, input, "value is out of range"};
+  }
+  if (result.ec != std::errc{} || result.ptr != end) {
+    throw ValueParseError{value_kind, input, "expected a signed decimal integer"};
+  }
+  return value;
+}
+
 std::uint64_t parse_byte_size(std::string_view input) {
   const auto parts = split_number_and_unit(input, "size");
   const auto value =

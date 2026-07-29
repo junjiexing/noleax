@@ -27,6 +27,7 @@ noleax [global-options] doctor
 - 大小支持 B、KiB、MiB、GiB。
 - 相对时间支持 ns、us、ms、s、m、h。
 - CLI 数组整体替换配置数组；名称包含 append 的选项才执行追加。
+- 布尔设置同时提供 `--name` 和 `--no-name`，两者不能同时出现。
 - 路径在合并配置后、执行命令前规范化。
 - 参数中的地址统一使用 0x 前缀十六进制展示。
 
@@ -79,7 +80,7 @@ noleax attach --pid PID [capture-options] [injection-options]
 | --inject-timeout DURATION | injection.timeout | 10s |
 | --trace PATH | trace.path | 基于 PID 和时间生成 |
 | --capture-duration DURATION | capture.duration | 直到目标退出或用户停止 |
-| --unload-on-stop BOOL | injection.unload_on_stop | false |
+| --unload-on-stop / --no-unload-on-stop | injection.unload_on_stop | false |
 
 attach 可用注入方法：
 
@@ -123,6 +124,7 @@ compression：
 - zstd
 
 compression-level 只在 codec 支持时有效；不支持的组合报错。
+V1 中 none、lz4 只接受 0；zstd 接受 0（codec 默认，即 level 1）或显式的 1。
 
 ## 7. patch
 
@@ -136,8 +138,8 @@ noleax patch --input INPUT --output OUTPUT [options]
 | --output PATH | patch.output | 必填 |
 | --patch-method METHOD | patch.method | entrypoint-section |
 | --agent-name NAME | patch.agent_name | noleax-agent.dll |
-| --allow-break-signature BOOL | patch.allow_break_signature | false |
-| --verify BOOL | patch.verify | true |
+| --allow-break-signature / --no-allow-break-signature | patch.allow_break_signature | false |
+| --verify / --no-verify | patch.verify | true |
 
 规则：
 
@@ -192,6 +194,10 @@ status：
 - success
 - failure
 - unmatched
+
+symbols mode：
+
+- auto
 
 outstanding 模式要求 a 和 b。c 可省略。时间默认相对 trace 起点；未来若支持 sequence 表达式，将使用明确前缀，避免与时间混淆。
 

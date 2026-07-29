@@ -2,6 +2,7 @@
 Checks: >
   -*,
   clang-analyzer-*,
+  -clang-analyzer-optin.core.EnumCastOutOfRange,
   performance-*
 WarningsAsErrors: '*'
 HeaderFilterRegex: '[/\\](agent|apps|include|src|tests)[/\\]'

@@ -82,6 +82,19 @@ TEST_CASE("unsigned decimal parser rejects partial and overflowing values",
   }
 }
 
+TEST_CASE("signed decimal parser enforces its caller supplied range", "[config][value-parser]") {
+  CHECK(noleax::config::parse_signed_integer("-2", -2, 3, "test integer") == -2);
+  CHECK(noleax::config::parse_signed_integer("0", -2, 3, "test integer") == 0);
+  CHECK(noleax::config::parse_signed_integer("3", -2, 3, "test integer") == 3);
+
+  constexpr std::array invalidIntegers{"", "-3", "4", "+1", "1.0", "1x", " 1", "1 "};
+  for (const std::string_view value : invalidIntegers) {
+    CAPTURE(value);
+    CHECK_THROWS_AS(noleax::config::parse_signed_integer(value, -2, 3, "test integer"),
+                    ValueParseError);
+  }
+}
+
 TEST_CASE("booleans and enum names use exact lowercase spelling", "[config][value-parser]") {
   CHECK(noleax::config::parse_boolean("true"));
   CHECK_FALSE(noleax::config::parse_boolean("false"));
