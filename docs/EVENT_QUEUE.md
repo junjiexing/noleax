@@ -1,7 +1,7 @@
 # Preallocated MPSC Event Queue
 
-> 状态：P4.5 Windows x64 完成
-> 范围：`RtlAllocateHeap` 原始事件入队与 overflow 统计；尚不写 trace
+> 状态：P4.6 Windows x64 完成
+> 范围：`RtlAllocateHeap` 原始事件和栈入队与 overflow 统计；尚不写 trace
 
 ## 1. 合同
 
@@ -58,20 +58,23 @@ tick_range = absent
 
 ## 4. RtlAllocateHeap 原始事件
 
-P4.5 的 in-process event 固定为 56 bytes，包含：
+P4.6 的 in-process event 固定为 576 bytes，包含：
 
 - queue sequence；
 - QueryPerformanceCounter ticks；
 - thread id；
 - heap handle、flags、requested size；
-- result address 和 success/failure。
+- result address 和 success/failure；
+- 最多 64 帧、520-byte 的定长 `CapturedStack`。
 
 只有 guard 分类为 outermost 的调用会在 original 返回后尝试入队；recursive 和 internal-thread 调用
-仍只调用 trampoline。replacement 在 original 返回后立即保存 `LastError`，完成计时和入队后恢复，
-因此新增的 Windows API 与队列操作不会改变目标可观察到的错误状态。
+仍只调用 trampoline。生产者先取得 slot，再直接向 slot 捕获栈；queue 已满时不会执行无用 unwind。
+replacement 在 original 返回后立即保存 `LastError`，完成计时、捕获和入队后恢复，因此新增的
+Windows API 与队列操作不会改变目标可观察到的错误状态。栈状态和失败合同见
+[STACK_CAPTURE.md](STACK_CAPTURE.md)。
 
-默认 adapter 容量为 65,536 个 event。测试 harness 显式使用 256 个 slot 以稳定制造 overflow；容量
-最终由 agent 配置和 byte budget 推导属于 P4.7。
+默认 adapter 容量为 16,384 个 event。包含 per-slot sequence 后预分配约 9 MiB；测试 harness 显式
+使用 256 个 slot 以稳定制造 overflow。容量最终由 agent 配置和 byte budget 推导属于 P4.7。
 
 ## 5. 验证
 
@@ -82,8 +85,8 @@ P4.5 的 in-process event 固定为 56 bytes，包含：
 - 8 producer 固定满队列，验证每次失败均进入 dropped count；
 - 8 producer 与单 consumer 同时运行，验证 publish/acquire 和 reuse。
 
-真实 hook harness 在卸载后 drain 队列，逐项检查 sequence、ticks、thread 和 status/result 一致性，
-并要求：
+真实 hook harness 在卸载后 drain 队列，逐项检查 sequence、ticks、thread、status/result 和 stack
+编码一致性，并要求：
 
 ~~~text
 recordable_call_count == dequeued_event_count + dropped_event_count

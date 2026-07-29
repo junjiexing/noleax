@@ -27,10 +27,12 @@ std::atomic<std::uint64_t> recursive_calls{0U};
 std::atomic<std::uint64_t> internal_calls{0U};
 std::atomic<RtlAllocateHeapHook*> active_owner{nullptr};
 std::atomic<BoundedMpscQueue<RtlAllocateHeapEvent>*> active_event_queue{nullptr};
+std::atomic<std::uint16_t> active_maximum_stack_depth{0U};
 
 static_assert(OriginalTrampolineSlot::is_always_lock_free);
 static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
 static_assert(decltype(active_event_queue)::is_always_lock_free);
+static_assert(decltype(active_maximum_stack_depth)::is_always_lock_free);
 
 [[noreturn]] void fail_missing_original() noexcept {
 #if defined(_MSC_VER)
@@ -68,12 +70,13 @@ PVOID NTAPI replacement_rtl_allocate_heap(PVOID heap, ULONG flags, SIZE_T size) 
     if (queue == nullptr) {
       fail_missing_original();
     }
-    static_cast<void>(queue->try_emplace([heap, flags, size, result](
+    const std::uint16_t maximum_stack_depth =
+        active_maximum_stack_depth.load(std::memory_order_acquire);
+    static_cast<void>(queue->try_emplace([heap, flags, size, result, maximum_stack_depth](
                                              RtlAllocateHeapEvent& event,
                                              std::uint64_t queue_sequence) noexcept {
       LARGE_INTEGER ticks{};
       static_cast<void>(QueryPerformanceCounter(&ticks));
-      event = {};
       event.queue_sequence = queue_sequence;
       event.monotonic_ticks = static_cast<std::uint64_t>(ticks.QuadPart);
       event.thread_id = static_cast<std::uint64_t>(GetCurrentThreadId());
@@ -83,6 +86,7 @@ PVOID NTAPI replacement_rtl_allocate_heap(PVOID heap, ULONG flags, SIZE_T size) 
       event.flags = flags;
       event.status = result == nullptr ? RtlAllocateHeapEventStatus::kFailure
                                        : RtlAllocateHeapEventStatus::kSuccess;
+      capture_current_stack(event.stack, maximum_stack_depth, 1U);
     }));
   }
 
@@ -95,6 +99,7 @@ PVOID NTAPI replacement_rtl_allocate_heap(PVOID heap, ULONG flags, SIZE_T size) 
 }
 
 void release_owner(RtlAllocateHeapHook* owner) noexcept {
+  active_maximum_stack_depth.store(0U, std::memory_order_release);
   active_event_queue.store(nullptr, std::memory_order_release);
   original_trampoline.store(nullptr, std::memory_order_release);
   RtlAllocateHeapHook* expected = owner;
@@ -104,8 +109,11 @@ void release_owner(RtlAllocateHeapHook* owner) noexcept {
 
 }  // namespace
 
-RtlAllocateHeapHook::RtlAllocateHeapHook(HookBackend& backend, std::size_t event_queue_capacity)
-    : event_queue_{event_queue_capacity}, backend_{&backend} {
+RtlAllocateHeapHook::RtlAllocateHeapHook(HookBackend& backend, std::size_t event_queue_capacity,
+                                         std::uint16_t maximum_stack_depth)
+    : event_queue_{event_queue_capacity},
+      backend_{&backend},
+      maximum_stack_depth_{maximum_stack_depth} {
   const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
   if (ntdll == nullptr) {
     throw HookBackendError{"ntdll.dll is not loaded"};
@@ -115,6 +123,14 @@ RtlAllocateHeapHook::RtlAllocateHeapHook(HookBackend& backend, std::size_t event
     throw HookBackendError{"ntdll.dll does not export RtlAllocateHeap"};
   }
   target_ = reinterpret_cast<void*>(address);
+  if (maximum_stack_depth_ > kMaximumCapturedStackDepth) {
+    throw HookBackendError{"maximum stack depth exceeds the fixed event capacity"};
+  }
+  CapturedStack preflight_stack;
+  capture_current_stack(preflight_stack, maximum_stack_depth_);
+  if (maximum_stack_depth_ != 0U && !stack_capture_succeeded(preflight_stack)) {
+    throw HookBackendError{"RtlCaptureStackBackTrace preflight failed"};
+  }
   if (!acquire_hook_guard_runtime()) {
     throw HookBackendError{"a fixed Windows TLS slot is unavailable for the hook guard"};
   }
@@ -151,6 +167,7 @@ FastHookResult RtlAllocateHeapHook::install() {
 
   original_trampoline.store(nullptr, std::memory_order_relaxed);
   event_queue_.reset_quiescent();
+  active_maximum_stack_depth.store(maximum_stack_depth_, std::memory_order_release);
   active_event_queue.store(&event_queue_, std::memory_order_release);
   replacement_calls.store(0U, std::memory_order_relaxed);
   recordable_calls.store(0U, std::memory_order_relaxed);
@@ -233,6 +250,10 @@ std::uint64_t RtlAllocateHeapHook::dropped_event_count() const noexcept {
 
 std::size_t RtlAllocateHeapHook::event_queue_capacity() const noexcept {
   return event_queue_.capacity();
+}
+
+std::uint16_t RtlAllocateHeapHook::maximum_stack_depth() const noexcept {
+  return maximum_stack_depth_;
 }
 
 bool RtlAllocateHeapHook::try_dequeue_event(RtlAllocateHeapEvent& event) noexcept {

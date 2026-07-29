@@ -28,6 +28,7 @@ void destroy_harness() noexcept {
 
 [[nodiscard]] std::uint32_t verify_event_queue() noexcept {
   std::uint64_t dequeued = 0U;
+  std::uint64_t captured_stacks = 0U;
   noleax::agent::windows::RtlAllocateHeapEvent event;
   while (hook->try_dequeue_event(event)) {
     ++dequeued;
@@ -43,15 +44,33 @@ void destroy_harness() noexcept {
     if (succeeded != (event.result_address != 0U)) {
       return 3U;
     }
+    if (event.stack.method !=
+            noleax::agent::windows::StackCaptureMethod::kRtlCaptureStackBackTrace ||
+        event.stack.requested_depth != noleax::agent::windows::kMaximumCapturedStackDepth) {
+      return 4U;
+    }
+    if (noleax::agent::windows::stack_capture_succeeded(event.stack)) {
+      ++captured_stacks;
+      for (std::uint16_t index = 0U; index < event.stack.frame_count; ++index) {
+        if (event.stack.frames[index] == 0U) {
+          return 5U;
+        }
+      }
+    } else if (event.stack.status != noleax::agent::windows::StackCaptureStatus::kFailed ||
+               event.stack.frame_count != 0U) {
+      return 5U;
+    }
   }
 
   const std::uint64_t dropped = hook->dropped_event_count();
-  if (hook->event_queue_capacity() != kHarnessQueueCapacity || dropped == 0U) {
-    return 4U;
+  if (hook->event_queue_capacity() != kHarnessQueueCapacity ||
+      hook->maximum_stack_depth() != noleax::agent::windows::kMaximumCapturedStackDepth ||
+      dropped == 0U || captured_stacks == 0U) {
+    return 6U;
   }
   if (dequeued > hook->recordable_call_count() ||
       dropped != hook->recordable_call_count() - dequeued) {
-    return 5U;
+    return 7U;
   }
   return 0U;
 }
@@ -150,7 +169,8 @@ NOLEAX_HOOK_HARNESS_EXPORT std::uint32_t noleax_test_rtl_allocate_heap_hook_inst
 
   try {
     backend = new noleax::agent::HookBackend{};
-    hook = new noleax::agent::windows::RtlAllocateHeapHook{*backend, kHarnessQueueCapacity};
+    hook = new noleax::agent::windows::RtlAllocateHeapHook{
+        *backend, kHarnessQueueCapacity, noleax::agent::windows::kMaximumCapturedStackDepth};
     const auto result = hook->install();
     if (!result.installed()) {
       const auto status = static_cast<std::uint32_t>(result.status);

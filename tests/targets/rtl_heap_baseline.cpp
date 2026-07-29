@@ -100,7 +100,8 @@ class HookHarness {
       return true;
     }
     if (started_) {
-      if (stop_() != 0U) {
+      last_stop_status_ = stop_();
+      if (last_stop_status_ != 0U) {
         return false;
       }
       started_ = false;
@@ -113,6 +114,7 @@ class HookHarness {
   }
 
   [[nodiscard]] bool started() const noexcept { return started_; }
+  [[nodiscard]] std::uint32_t last_stop_status() const noexcept { return last_stop_status_; }
 
  private:
   void clear() noexcept {
@@ -121,12 +123,14 @@ class HookHarness {
     call_count_ = nullptr;
     stop_ = nullptr;
     started_ = false;
+    last_stop_status_ = 0U;
   }
 
   HMODULE module_{nullptr};
   HookHarnessInstall install_{nullptr};
   HookHarnessCallCount call_count_{nullptr};
   HookHarnessStop stop_{nullptr};
+  std::uint32_t last_stop_status_{0U};
   bool started_{false};
 };
 
@@ -661,7 +665,8 @@ int main(int argc, char* argv[]) {
       return 32;
     }
     if (!hook_harness.stop()) {
-      std::fprintf(stderr, "cannot stop or unload the RtlAllocateHeap hook harness\n");
+      std::fprintf(stderr, "cannot stop or unload the RtlAllocateHeap hook harness (status=%u)\n",
+                   hook_harness.last_stop_status());
       return 33;
     }
   }

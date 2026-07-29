@@ -5,8 +5,8 @@
 > 更新日期：2026-07-29
 > 确认日期：2026-07-29
 > 当前阶段：P4 Windows Rtl hook 安全原型（`feat/windows-hook-agent`）
-> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5
-> 下一工作项：P4.6 原始栈捕获
+> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6
+> 下一工作项：P4.7 后台 writer
 
 ## 1. 文档目的
 
@@ -1283,6 +1283,13 @@ variable 和 I/O。队列满时立即拒绝 event，并用饱和 64-bit counter 
 8 producer、并发 consumer、复用和 overflow；真实 hook harness 以 256 槽强制 overflow，并在卸载后
 验证 `recordable = dequeued + dropped`。双配置 passthrough 差分保持一致。详见
 [EVENT_QUEUE.md](EVENT_QUEUE.md)。
+
+P4.6 已通过。outermost event 取得 queue slot 后使用 `RtlCaptureStackBackTrace` 捕获最多 64 个原始
+地址，并以额外一帧区分 complete/truncated；adapter 与 replacement 自身帧被过滤。捕获失败显式
+编码为零帧 `kFailed`，不会伪装成空成功栈，P4.7 将据此生成 stack-only Loss。x64
+`RtlCaptureContext + RtlLookupFunctionEntry + RtlVirtualUnwind` 仅作为对照策略参与 8×2,000 并发
+压力和 caller-chain 交叉检查，不进入 hook 热路径。真实 hook 事件、LastError 和 hooked/unhooked
+差分均通过。详见 [STACK_CAPTURE.md](STACK_CAPTURE.md)。
 
 阶段门禁：
 

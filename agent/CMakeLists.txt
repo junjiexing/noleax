@@ -6,6 +6,7 @@ add_library(noleax-hook-backend STATIC
 if(WIN32)
   target_sources(noleax-hook-backend PRIVATE
     windows/rtl_allocate_heap_hook.cpp
+    windows/stack_capture.cpp
   )
 endif()
 

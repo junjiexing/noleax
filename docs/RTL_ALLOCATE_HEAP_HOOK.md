@@ -1,13 +1,14 @@
 # RtlAllocateHeap Hook Prototype
 
-> 状态：P4.5 Windows x64 完成
-> 范围：guarded event-queue prototype，不写 trace，不进入任何产品 profile
+> 状态：P4.6 Windows x64 完成
+> 范围：guarded raw-stack event-queue prototype，不写 trace，不进入任何产品 profile
 
 ## 1. 目的
 
 P4.3 首次在正式测试路径 hook `ntdll!RtlAllocateHeap`，验证 Hoox trampoline、精确 ABI、original
 发布顺序和卸载生命周期。P4.4 增加无分配 recursion/internal-thread guard，P4.5 为 outermost
-调用增加预分配 MPSC 原始事件队列。replacement 仍不捕获栈、不写 trace；这些属于 P4.6 至 P4.8。
+调用增加预分配 MPSC 原始事件队列，P4.6 在成功取得 queue slot 后捕获原始调用栈。replacement
+仍不写 trace；writer 和完整卸载生命周期分别属于 P4.7、P4.8。
 
 精确函数类型为：
 
@@ -16,11 +17,11 @@ PVOID (NTAPI*)(PVOID heap, ULONG flags, SIZE_T size)
 ~~~
 
 replacement 执行 guard 入口分类、无锁原子诊断计数、acquire-load original trampoline 和一次
-original 调用。outermost 调用随后保存 `LastError`、填充定长原始事件、尝试入队并恢复
+original 调用。outermost 调用随后保存 `LastError`、取得 queue slot、填充定长原始事件和栈并恢复
 `LastError`，最后退出 guard。original 或已发布 event queue 不可能安全缺失；若该不变量被破坏则
 fail-fast，不能递归调用已被替换的 target。guard 的 TLS 崩溃根因和固定 TEB 槽设计见
 [HOOK_GUARD.md](HOOK_GUARD.md)，队列设计和 overflow 语义见
-[EVENT_QUEUE.md](EVENT_QUEUE.md)。
+[EVENT_QUEUE.md](EVENT_QUEUE.md)，原始栈和失败语义见 [STACK_CAPTURE.md](STACK_CAPTURE.md)。
 
 ## 2. 激活前发布
 
@@ -64,7 +65,8 @@ noleax-rtl-heap-baseline-mt.exe ─┘
 `LastError` change count/hash 和确定性 checksum。harness 安装后会先真实制造 outermost、recursive
 与 internal-thread 入口，要求只有对应分类计数增加；随后创建 worker 线程并运行 workload。它还
 要求 replacement 调用数至少覆盖全部直接 Rtl workload。停止时，harness 在卸载 hook 后 drain
-256-slot 测试队列，验证 event 内容、连续 sequence、强制 overflow，以及
+256-slot 测试队列，验证 event 内容、连续 sequence、生产捕获方法、请求深度、成功/失败栈编码、
+强制 overflow，以及
 `recordable = dequeued + dropped`，防止“安装报告成功但 replacement/queue 未执行”的假阳性。
 
 ## 4. 验证结果
@@ -81,8 +83,9 @@ checksum=0x7caf2ccfa0606232
 ~~~
 
 Release x64 object disassembly 中，replacement 调用 guard、original、`Get/SetLastError`、
-`QueryPerformanceCounter` 和 `GetCurrentThreadId`；queue reservation/publish 与 overflow 计数均为内联
-无锁原子操作。正常路径没有 allocator、文件、loader、日志或锁调用。guard 继续直接访问
+`QueryPerformanceCounter`、`GetCurrentThreadId` 和受审计的 raw stack capture；queue
+reservation/publish 与 overflow 计数均为内联无锁原子操作。Noleax 正常路径没有 allocator、文件、
+loader、日志、符号或显式锁调用。guard 继续直接访问
 `gs:[TEB]` 固定槽，object 中没有 `.tls$` 段或 CRT `_tls_index` 引用。
 
 运行方法：
@@ -90,17 +93,16 @@ Release x64 object disassembly 中，replacement 调用 guard、original、`Get/
 ~~~powershell
 . .\scripts\Enter-NoleaxDevShell.ps1
 cmake --build --preset windows-x64-release
-ctest --preset windows-x64-release -R "bounded MPSC|hook guard|rtl-allocate-heap-passthrough" --output-on-failure
+ctest --preset windows-x64-release -R "bounded MPSC|hook guard|stack capture|rtl-allocate-heap-passthrough" --output-on-failure
 ctest --preset windows-x64-release -L passthrough --output-on-failure
 ctest --preset windows-x64-release -L passthrough --repeat until-fail:20
 ~~~
 
 ## 5. 未完成边界
 
-- P4.6：原始栈捕获。
 - P4.7：后台 trace writer。
 - P4.8：replacement 自有 in-flight/quiescence。
 - P4.9：Page Heap、Application Verifier、CFG/CET 和更长 race 压力。
 
 此外，`HEAP_GENERATE_EXCEPTIONS` 的 SEH 合同仍等待隔离进程门禁。因此 `RtlAllocateHeap` 继续保持
-disabled，不得把 P4.5 的 queue prototype 结论描述为可分析 trace 捕获已完成。
+disabled，不得把 P4.6 的 raw-stack queue prototype 结论描述为可分析 trace 捕获已完成。

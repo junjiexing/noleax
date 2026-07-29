@@ -97,9 +97,10 @@ ctest --preset windows-x64-debug -L baseline --output-on-failure
 限制为 1 至 64 个线程、每线程 1 至 1,000,000 次操作和 1 至 100 个 round。seed 是 uint64 十进制
 数。参数错误、API 解析失败、分配/内容/释放失败、round 摘要变化或 CRT 摘要不一致均返回非零。
 
-## 6. P4.1-P4.5 边界
+## 6. P4.1-P4.6 边界
 
 P4.1 路径不安装任何 hook。P4.3 已验证 passthrough trampoline、安装/卸载和 callback ABI，P4.4
-增加 recursion/internal-thread guard，P4.5 增加预分配原始事件队列，但尚未生成 trace。CFG/CET、
+增加 recursion/internal-thread guard，P4.5 增加预分配原始事件队列，P4.6 增加原始栈地址，但尚未
+生成 trace。CFG/CET、
 Page Heap、Application Verifier 和 `HEAP_GENERATE_EXCEPTIONS` 隔离进程场景保留到对应 P4 门禁。
 当前摘要不输出耗时；p50/p95/p99 必须使用独立计时，避免把正确性 oracle 变成不稳定快照。

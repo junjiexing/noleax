@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <type_traits>
 
+#include "noleax/agent/windows/stack_capture.hpp"
+
 namespace noleax::agent::windows {
 
 enum class RtlAllocateHeapEventStatus : std::uint8_t {
@@ -20,12 +22,13 @@ struct RtlAllocateHeapEvent {
   std::uint32_t flags{0U};
   RtlAllocateHeapEventStatus status{RtlAllocateHeapEventStatus::kFailure};
   std::uint8_t reserved[3]{};
+  CapturedStack stack;
 
   bool operator==(const RtlAllocateHeapEvent&) const = default;
 };
 
 static_assert(std::is_trivially_copyable_v<RtlAllocateHeapEvent>);
 static_assert(std::is_trivially_destructible_v<RtlAllocateHeapEvent>);
-static_assert(sizeof(RtlAllocateHeapEvent) == 56U);
+static_assert(sizeof(RtlAllocateHeapEvent) == 576U);
 
 }  // namespace noleax::agent::windows

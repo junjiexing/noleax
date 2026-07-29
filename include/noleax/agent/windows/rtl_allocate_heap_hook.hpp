@@ -11,10 +11,12 @@ namespace noleax::agent::windows {
 
 class RtlAllocateHeapHook {
  public:
-  static constexpr std::size_t kDefaultEventQueueCapacity = 65'536U;
+  static constexpr std::size_t kDefaultEventQueueCapacity = 16'384U;
+  static constexpr std::uint16_t kDefaultMaximumStackDepth = kMaximumCapturedStackDepth;
 
   explicit RtlAllocateHeapHook(HookBackend& backend,
-                               std::size_t event_queue_capacity = kDefaultEventQueueCapacity);
+                               std::size_t event_queue_capacity = kDefaultEventQueueCapacity,
+                               std::uint16_t maximum_stack_depth = kDefaultMaximumStackDepth);
   ~RtlAllocateHeapHook();
 
   RtlAllocateHeapHook(const RtlAllocateHeapHook&) = delete;
@@ -36,6 +38,7 @@ class RtlAllocateHeapHook {
   [[nodiscard]] std::uint64_t internal_call_count() const noexcept;
   [[nodiscard]] std::uint64_t dropped_event_count() const noexcept;
   [[nodiscard]] std::size_t event_queue_capacity() const noexcept;
+  [[nodiscard]] std::uint16_t maximum_stack_depth() const noexcept;
   [[nodiscard]] bool try_dequeue_event(RtlAllocateHeapEvent& event) noexcept;
   [[nodiscard]] void* target_address() const noexcept;
 
@@ -51,6 +54,7 @@ class RtlAllocateHeapHook {
   BoundedMpscQueue<RtlAllocateHeapEvent> event_queue_;
   HookBackend* backend_{nullptr};
   void* target_{nullptr};
+  std::uint16_t maximum_stack_depth_{kDefaultMaximumStackDepth};
   State state_{State::kInactive};
   bool guard_runtime_acquired_{false};
 };
