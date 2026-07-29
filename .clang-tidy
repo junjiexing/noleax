@@ -1,0 +1,9 @@
+---
+Checks: >
+  -*,
+  clang-analyzer-*,
+  performance-*
+WarningsAsErrors: '*'
+HeaderFilterRegex: '[/\\](agent|apps|include|src|tests)[/\\]'
+FormatStyle: file
+...

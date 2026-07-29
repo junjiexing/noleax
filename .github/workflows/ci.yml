@@ -1,0 +1,66 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  format:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check C and C++ formatting
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check clang-format==18.1.8
+          .\scripts\Check-Format.ps1
+
+  windows-x64:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - preset: windows-x64-debug
+            clang_tidy: true
+          - preset: windows-x64-release
+            clang_tidy: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure, build, and test
+        shell: pwsh
+        env:
+          PRESET: ${{ matrix.preset }}
+          ENABLE_CLANG_TIDY: ${{ matrix.clang_tidy }}
+        run: |
+          $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
+          .\scripts\Enter-NoleaxDevShell.ps1
+
+          $configureArguments = @()
+          if ($env:ENABLE_CLANG_TIDY -eq "true") {
+            $llvmCandidates = @(
+              "C:\Program Files\LLVM\bin",
+              (Join-Path $env:VCINSTALLDIR "Tools\Llvm\x64\bin")
+            )
+            foreach ($llvmBin in $llvmCandidates) {
+              if (Test-Path -LiteralPath (Join-Path $llvmBin "clang-tidy.exe")) {
+                $env:PATH = "$llvmBin;$env:PATH"
+                break
+              }
+            }
+            clang-tidy --version
+            $configureArguments += "-DNOLEAX_ENABLE_CLANG_TIDY=ON"
+          }
+
+          cmake --preset $env:PRESET @configureArguments
+          cmake --build --preset $env:PRESET
+          ctest --preset $env:PRESET

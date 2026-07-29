@@ -24,7 +24,7 @@ Noleax（读音 “no leaks”）是一个基于 hook 的跨平台内存事件�
 
 ## Build
 
-工程骨架正在 P1 阶段建立。完整、可复现的 CMake/Ninja/vcpkg 命令将在 BUILDING.md 中提供。
+Windows x64 工程骨架已经完成，当前进入可移植核心开发。完整、可复现的 CMake/Ninja/vcpkg 命令见 [BUILDING.md](BUILDING.md)。
 
 ## License
 
