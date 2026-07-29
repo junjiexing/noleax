@@ -1,6 +1,6 @@
 # Noleax Analyzer
 
-> 状态：P3.1 events 至 P3.5 console 输出完成
+> 状态：P3.1 events 至 P3.6 JSON 输出完成
 
 ## 1. P3.1 范围
 
@@ -129,7 +129,19 @@ API/module/stack 定义尚不可用时分别回退为 api ID、原始 stack ID �
 ConsoleMetadataResolver 可注入 module+offset、symbol+offset 和绝对地址组成的多行 frame。可选 ANSI
 颜色由调用方在解析终端状态后启用。完整字段和 warning 名称见 [CONSOLE_OUTPUT.md](CONSOLE_OUTPUT.md)。
 
-## 8. 后续阶段
+## 8. JSON 输出
 
-P3.1-P3.5 的库管线已完成。JSON、CSV、三种格式共用的公开 CLI 调度以及 module/stack 符号展示在
-后续 P3 工作项接入。
+JsonWriter 生成 `noleax.analysis` schema version 1。events 模式把匹配 Event 和全部 Loss 直接从
+analyzer callback 流式写入数组；outstanding 模式输出窗口和最终存活 generation。根对象统一包含
+metadata、实际 filters、summary 和 completeness，地址/handle/flags/错误码使用十六进制字符串，
+64 位 size、ID、sequence 和 ticks 使用无损 JSON integer。
+
+EventPresentationResolver 为 console 和 JSON 共享 API/module、stack status 与解析帧。trace 内仍以
+stack_id 去重；JSON 保留 ID 并为自包含消费展开可用帧。所有文本严格验证 UTF-8，v1 根对象和九类
+payload 由 [JSON_OUTPUT.md](JSON_OUTPUT.md) 与
+[noleax-analysis-v1.schema.json](schema/noleax-analysis-v1.schema.json) 固定。
+
+## 9. 后续阶段
+
+P3.1-P3.6 的库管线已完成。CSV、三种格式共用的公开 CLI 调度以及 module/stack 符号展示在后续
+P3 工作项接入。

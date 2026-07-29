@@ -220,15 +220,15 @@ template <typename Identifier>
   return state == noleax::trace::UnderstandingState::kFull ? "full" : "partial";
 }
 
-[[nodiscard]] const char* stack_status_name(ConsoleStackStatus status) noexcept {
+[[nodiscard]] const char* stack_status_name(StackCaptureStatus status) noexcept {
   switch (status) {
-    case ConsoleStackStatus::kComplete:
+    case StackCaptureStatus::kComplete:
       return "complete";
-    case ConsoleStackStatus::kTruncatedByDepth:
+    case StackCaptureStatus::kTruncatedByDepth:
       return "truncated-by-depth";
-    case ConsoleStackStatus::kUnwindFailed:
+    case StackCaptureStatus::kUnwindFailed:
       return "unwind-failed";
-    case ConsoleStackStatus::kUnavailable:
+    case StackCaptureStatus::kUnavailable:
       return "unavailable";
   }
   return "unknown";

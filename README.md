@@ -2,7 +2,7 @@
 
 Noleax（读音 “no leaks”）是一个基于 hook 的跨平台内存事件捕获和离线分析命令行工具。
 
-当前状态：早期开发，首先实现 Windows x64。
+当前状态：早期开发，首先实现 Windows x64；离线分析器已完成 console 和流式 JSON 库输出。
 
 计划能力：
 
@@ -20,6 +20,7 @@ Noleax（读音 “no leaks”）是一个基于 hook 的跨平台内存事件�
 - docs/CONFIG.md
 - docs/TRACE_FORMAT.md
 - docs/CONSOLE_OUTPUT.md
+- docs/JSON_OUTPUT.md
 - docs/HOOK_API_MATRIX.md
 - docs/HOOK_BACKEND_AUDIT.md
 

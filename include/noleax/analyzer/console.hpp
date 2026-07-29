@@ -1,15 +1,12 @@
 #pragma once
 
 #include <cstdint>
-#include <functional>
 #include <iosfwd>
-#include <optional>
 #include <stdexcept>
-#include <string>
-#include <vector>
 
 #include "noleax/analyzer/filter.hpp"
 #include "noleax/analyzer/outstanding.hpp"
+#include "noleax/analyzer/presentation.hpp"
 #include "noleax/trace/completeness.hpp"
 #include "noleax/trace/event.hpp"
 #include "noleax/trace/wire_format.hpp"
@@ -20,29 +17,10 @@ struct ConsoleOptions {
   bool use_color{false};
 };
 
-struct ConsoleStackFrame {
-  noleax::trace::Address absolute_address{0};
-  std::optional<std::string> module_name;
-  std::optional<std::uint64_t> module_offset;
-  std::optional<std::string> symbol_name;
-  std::optional<std::uint64_t> symbol_offset;
-};
-
-enum class ConsoleStackStatus : std::uint8_t {
-  kComplete,
-  kTruncatedByDepth,
-  kUnwindFailed,
-  kUnavailable,
-};
-
-struct ConsoleEventMetadata {
-  std::optional<std::string> api_name;
-  std::optional<std::string> api_module;
-  std::optional<ConsoleStackStatus> stack_status;
-  std::vector<ConsoleStackFrame> stack_frames;
-};
-
-using ConsoleMetadataResolver = std::function<ConsoleEventMetadata(const noleax::trace::Event&)>;
+using ConsoleStackFrame = ResolvedStackFrame;
+using ConsoleStackStatus = StackCaptureStatus;
+using ConsoleEventMetadata = EventPresentation;
+using ConsoleMetadataResolver = EventPresentationResolver;
 
 class ConsoleFormatError final : public std::runtime_error {
  public:

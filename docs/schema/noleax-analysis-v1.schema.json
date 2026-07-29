@@ -1,0 +1,669 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://noleax.dev/schema/analysis-v1.json",
+  "title": "Noleax analysis result v1",
+  "type": "object",
+  "required": ["schema", "schema_version", "mode", "metadata", "filters", "summary"],
+  "properties": {
+    "schema": { "const": "noleax.analysis" },
+    "schema_version": { "const": 1 },
+    "mode": { "enum": ["events", "outstanding"] },
+    "metadata": { "$ref": "#/$defs/metadata" },
+    "filters": { "$ref": "#/$defs/filters" },
+    "events": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          { "$ref": "#/$defs/event" },
+          { "$ref": "#/$defs/loss" }
+        ]
+      }
+    },
+    "window": { "$ref": "#/$defs/window" },
+    "allocations": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/generation" }
+    },
+    "summary": { "$ref": "#/$defs/summary" }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "mode": { "const": "events" },
+        "summary": { "required": ["matched_events", "filtered_events"] }
+      },
+      "required": ["events"]
+    },
+    {
+      "properties": {
+        "mode": { "const": "outstanding" },
+        "summary": {
+          "required": [
+            "candidates",
+            "ended_by_c",
+            "filtered_out",
+            "outstanding",
+            "orphaned_allocation_ends",
+            "orphaned_mapping_ends"
+          ]
+        }
+      },
+      "required": ["window", "allocations"]
+    }
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "metadata": {
+      "type": "object",
+      "required": ["trace", "capture"],
+      "properties": {
+        "trace": {
+          "type": "object",
+          "required": [
+            "format_major",
+            "format_minor",
+            "platform",
+            "architecture",
+            "pointer_width",
+            "flags",
+            "session_id",
+            "file_index",
+            "monotonic_frequency",
+            "monotonic_origin",
+            "utc_origin_ns"
+          ],
+          "properties": {
+            "format_major": { "type": "integer" },
+            "format_minor": { "type": "integer" },
+            "platform": { "enum": ["unknown", "windows", "linux", "macos"] },
+            "architecture": { "enum": ["unknown", "x86", "x64", "arm64"] },
+            "pointer_width": { "enum": [4, 8] },
+            "flags": { "$ref": "#/$defs/hex" },
+            "session_id": { "type": "string" },
+            "file_index": { "type": "integer" },
+            "monotonic_frequency": { "type": "integer" },
+            "monotonic_origin": { "type": "integer" },
+            "utc_origin_ns": { "type": "integer" }
+          },
+          "additionalProperties": false
+        },
+        "capture": {
+          "type": "object",
+          "required": ["started_at_process_start", "preexisting_allocations_unknown"],
+          "properties": {
+            "started_at_process_start": { "type": "boolean" },
+            "preexisting_allocations_unknown": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "filters": {
+      "type": "object",
+      "required": [
+        "minimum_size",
+        "maximum_size",
+        "operations",
+        "thread_ids",
+        "api_names",
+        "module_patterns",
+        "stack_module_patterns",
+        "allocation_ids",
+        "statuses"
+      ],
+      "properties": {
+        "minimum_size": { "type": ["integer", "null"] },
+        "maximum_size": { "type": ["integer", "null"] },
+        "operations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/operation" }
+        },
+        "thread_ids": { "type": "array", "items": { "type": "integer" } },
+        "api_names": { "type": "array", "items": { "type": "string" } },
+        "module_patterns": { "type": "array", "items": { "type": "string" } },
+        "stack_module_patterns": { "type": "array", "items": { "type": "string" } },
+        "allocation_ids": { "type": "array", "items": { "type": "integer" } },
+        "statuses": { "type": "array", "items": { "$ref": "#/$defs/status" } }
+      },
+      "additionalProperties": false
+    },
+    "operation": {
+      "enum": [
+        "heap_create",
+        "heap_destroy",
+        "alloc",
+        "realloc",
+        "free",
+        "vm_alloc",
+        "vm_free",
+        "map",
+        "unmap"
+      ]
+    },
+    "status": {
+      "enum": ["success", "failure", "unmatched", "preexisting"]
+    },
+    "hex": {
+      "type": "string",
+      "pattern": "^0x[0-9a-f]+$"
+    },
+    "api": {
+      "type": "object",
+      "required": ["id", "name", "module"],
+      "properties": {
+        "id": { "type": "integer" },
+        "name": { "type": ["string", "null"] },
+        "module": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "stack_frame": {
+      "type": "object",
+      "required": ["absolute_address", "module", "module_offset", "symbol", "symbol_offset"],
+      "properties": {
+        "absolute_address": { "$ref": "#/$defs/hex" },
+        "module": { "type": ["string", "null"] },
+        "module_offset": {
+          "oneOf": [
+            { "$ref": "#/$defs/hex" },
+            { "type": "null" }
+          ]
+        },
+        "symbol": { "type": ["string", "null"] },
+        "symbol_offset": {
+          "oneOf": [
+            { "$ref": "#/$defs/hex" },
+            { "type": "null" }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "stack": {
+      "type": "object",
+      "required": ["id", "status", "definition_available", "frames"],
+      "properties": {
+        "id": { "type": ["integer", "null"] },
+        "status": {
+          "type": ["string", "null"],
+          "enum": ["complete", "truncated_by_depth", "unwind_failed", "unavailable", null]
+        },
+        "definition_available": { "type": "boolean" },
+        "frames": { "type": "array", "items": { "$ref": "#/$defs/stack_frame" } }
+      },
+      "additionalProperties": false
+    },
+    "system_error": {
+      "type": "object",
+      "required": ["domain", "code"],
+      "properties": {
+        "domain": { "enum": ["win32", "ntstatus", "posix", "mach"] },
+        "code": { "$ref": "#/$defs/hex" }
+      },
+      "additionalProperties": false
+    },
+    "process_target": {
+      "type": "object",
+      "required": ["scope", "process_handle", "process_id"],
+      "properties": {
+        "scope": { "enum": ["current_process", "remote_process", "unknown"] },
+        "process_handle": { "$ref": "#/$defs/hex" },
+        "process_id": { "type": "integer" }
+      },
+      "additionalProperties": false
+    },
+    "heap_create_payload": {
+      "type": "object",
+      "required": [
+        "kind",
+        "heap_handle",
+        "heap_id",
+        "heap_flags",
+        "reserve_size",
+        "commit_size"
+      ],
+      "properties": {
+        "kind": { "const": "heap_create" },
+        "heap_handle": { "$ref": "#/$defs/hex" },
+        "heap_id": { "type": ["integer", "null"] },
+        "heap_flags": { "$ref": "#/$defs/hex" },
+        "reserve_size": { "type": "integer" },
+        "commit_size": { "type": "integer" }
+      },
+      "additionalProperties": false
+    },
+    "heap_destroy_payload": {
+      "type": "object",
+      "required": ["kind", "heap_handle", "heap_id", "raw_result"],
+      "properties": {
+        "kind": { "const": "heap_destroy" },
+        "heap_handle": { "$ref": "#/$defs/hex" },
+        "heap_id": { "type": ["integer", "null"] },
+        "raw_result": { "$ref": "#/$defs/hex" }
+      },
+      "additionalProperties": false
+    },
+    "allocation_payload": {
+      "type": "object",
+      "required": [
+        "kind",
+        "heap_handle",
+        "heap_id",
+        "requested_size",
+        "result_address",
+        "allocation_id",
+        "api_flags"
+      ],
+      "properties": {
+        "kind": { "const": "allocation" },
+        "heap_handle": { "$ref": "#/$defs/hex" },
+        "heap_id": { "type": ["integer", "null"] },
+        "requested_size": { "type": "integer" },
+        "result_address": { "$ref": "#/$defs/hex" },
+        "allocation_id": { "type": ["integer", "null"] },
+        "api_flags": { "$ref": "#/$defs/hex" }
+      },
+      "additionalProperties": false
+    },
+    "reallocation_payload": {
+      "type": "object",
+      "required": [
+        "kind",
+        "heap_handle",
+        "heap_id",
+        "old_address",
+        "old_allocation_id",
+        "requested_size",
+        "result_address",
+        "new_allocation_id",
+        "api_flags",
+        "effect"
+      ],
+      "properties": {
+        "kind": { "const": "reallocation" },
+        "heap_handle": { "$ref": "#/$defs/hex" },
+        "heap_id": { "type": ["integer", "null"] },
+        "old_address": { "$ref": "#/$defs/hex" },
+        "old_allocation_id": { "type": ["integer", "null"] },
+        "requested_size": { "type": "integer" },
+        "result_address": { "$ref": "#/$defs/hex" },
+        "new_allocation_id": { "type": ["integer", "null"] },
+        "api_flags": { "$ref": "#/$defs/hex" },
+        "effect": { "enum": ["no_change", "new_generation", "freed"] }
+      },
+      "additionalProperties": false
+    },
+    "free_payload": {
+      "type": "object",
+      "required": [
+        "kind",
+        "heap_handle",
+        "heap_id",
+        "address",
+        "allocation_id",
+        "raw_result",
+        "api_flags"
+      ],
+      "properties": {
+        "kind": { "const": "free" },
+        "heap_handle": { "$ref": "#/$defs/hex" },
+        "heap_id": { "type": ["integer", "null"] },
+        "address": { "$ref": "#/$defs/hex" },
+        "allocation_id": { "type": ["integer", "null"] },
+        "raw_result": { "$ref": "#/$defs/hex" },
+        "api_flags": { "$ref": "#/$defs/hex" }
+      },
+      "additionalProperties": false
+    },
+    "vm_allocation_payload": {
+      "type": "object",
+      "required": [
+        "kind",
+        "target",
+        "requested_base",
+        "result_base",
+        "requested_size",
+        "result_size",
+        "allocation_type",
+        "protection",
+        "mapping_id"
+      ],
+      "properties": {
+        "kind": { "const": "vm_allocation" },
+        "target": { "$ref": "#/$defs/process_target" },
+        "requested_base": { "$ref": "#/$defs/hex" },
+        "result_base": { "$ref": "#/$defs/hex" },
+        "requested_size": { "type": "integer" },
+        "result_size": { "type": "integer" },
+        "allocation_type": { "$ref": "#/$defs/hex" },
+        "protection": { "$ref": "#/$defs/hex" },
+        "mapping_id": { "type": ["integer", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "vm_free_payload": {
+      "type": "object",
+      "required": ["kind", "target", "base", "region_size", "free_type", "mapping_id"],
+      "properties": {
+        "kind": { "const": "vm_free" },
+        "target": { "$ref": "#/$defs/process_target" },
+        "base": { "$ref": "#/$defs/hex" },
+        "region_size": { "type": "integer" },
+        "free_type": { "$ref": "#/$defs/hex" },
+        "mapping_id": { "type": ["integer", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "map_payload": {
+      "type": "object",
+      "required": [
+        "kind",
+        "section_handle",
+        "target",
+        "result_base",
+        "view_size",
+        "section_offset",
+        "protection",
+        "mapping_id"
+      ],
+      "properties": {
+        "kind": { "const": "map" },
+        "section_handle": { "$ref": "#/$defs/hex" },
+        "target": { "$ref": "#/$defs/process_target" },
+        "result_base": { "$ref": "#/$defs/hex" },
+        "view_size": { "type": "integer" },
+        "section_offset": { "type": "integer" },
+        "protection": { "$ref": "#/$defs/hex" },
+        "mapping_id": { "type": ["integer", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "unmap_payload": {
+      "type": "object",
+      "required": ["kind", "target", "base", "mapping_id"],
+      "properties": {
+        "kind": { "const": "unmap" },
+        "target": { "$ref": "#/$defs/process_target" },
+        "base": { "$ref": "#/$defs/hex" },
+        "mapping_id": { "type": ["integer", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "event": {
+      "type": "object",
+      "required": [
+        "record_type",
+        "sequence",
+        "monotonic_ticks",
+        "relative_time_ns",
+        "thread_id",
+        "api",
+        "operation",
+        "status",
+        "stack",
+        "event_flags",
+        "system_error",
+        "payload"
+      ],
+      "properties": {
+        "record_type": { "const": "event" },
+        "sequence": { "type": "integer" },
+        "monotonic_ticks": { "type": "integer" },
+        "relative_time_ns": { "type": "integer" },
+        "thread_id": { "type": "integer" },
+        "api": { "$ref": "#/$defs/api" },
+        "operation": { "$ref": "#/$defs/operation" },
+        "status": { "$ref": "#/$defs/status" },
+        "stack": { "$ref": "#/$defs/stack" },
+        "event_flags": { "$ref": "#/$defs/hex" },
+        "system_error": {
+          "oneOf": [
+            { "$ref": "#/$defs/system_error" },
+            { "type": "null" }
+          ]
+        },
+        "payload": {
+          "oneOf": [
+            { "$ref": "#/$defs/heap_create_payload" },
+            { "$ref": "#/$defs/heap_destroy_payload" },
+            { "$ref": "#/$defs/allocation_payload" },
+            { "$ref": "#/$defs/reallocation_payload" },
+            { "$ref": "#/$defs/free_payload" },
+            { "$ref": "#/$defs/vm_allocation_payload" },
+            { "$ref": "#/$defs/vm_free_payload" },
+            { "$ref": "#/$defs/map_payload" },
+            { "$ref": "#/$defs/unmap_payload" }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "loss": {
+      "type": "object",
+      "required": [
+        "record_type",
+        "reason",
+        "location",
+        "estimated_event_count",
+        "sequence_range",
+        "tick_range"
+      ],
+      "properties": {
+        "record_type": { "const": "loss" },
+        "reason": {
+          "enum": [
+            "queue_full",
+            "trace_full",
+            "writer_error",
+            "stack_capture_failed",
+            "rotation_limit",
+            "decoder_error"
+          ]
+        },
+        "location": { "enum": ["agent_queue", "writer", "rotation", "decoder"] },
+        "estimated_event_count": { "type": ["integer", "null"] },
+        "sequence_range": {
+          "oneOf": [
+            { "$ref": "#/$defs/range" },
+            { "type": "null" }
+          ]
+        },
+        "tick_range": {
+          "oneOf": [
+            { "$ref": "#/$defs/range" },
+            { "type": "null" }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "range": {
+      "type": "object",
+      "required": ["begin", "end"],
+      "properties": {
+        "begin": { "type": "integer" },
+        "end": { "type": "integer" }
+      },
+      "additionalProperties": false
+    },
+    "window": {
+      "type": "object",
+      "required": [
+        "a_ns",
+        "b_ns",
+        "requested_c_ns",
+        "effective_c_ns",
+        "observation_uses_trace_end",
+        "trace_end_monotonic_ticks"
+      ],
+      "properties": {
+        "a_ns": { "type": "integer" },
+        "b_ns": { "type": "integer" },
+        "requested_c_ns": { "type": ["integer", "null"] },
+        "effective_c_ns": { "type": "integer" },
+        "observation_uses_trace_end": { "type": "boolean" },
+        "trace_end_monotonic_ticks": { "type": "integer" }
+      },
+      "additionalProperties": false
+    },
+    "generation": {
+      "type": "object",
+      "required": [
+        "generation_kind",
+        "allocation_id",
+        "mapping_id",
+        "heap_id",
+        "heap_handle",
+        "address",
+        "size",
+        "created_by"
+      ],
+      "properties": {
+        "generation_kind": {
+          "enum": ["heap_allocation", "virtual_allocation", "mapped_view"]
+        },
+        "allocation_id": { "type": ["integer", "null"] },
+        "mapping_id": { "type": ["integer", "null"] },
+        "heap_id": { "type": ["integer", "null"] },
+        "heap_handle": {
+          "oneOf": [
+            { "$ref": "#/$defs/hex" },
+            { "type": "null" }
+          ]
+        },
+        "address": { "$ref": "#/$defs/hex" },
+        "size": { "type": "integer" },
+        "created_by": { "$ref": "#/$defs/event" }
+      },
+      "additionalProperties": false
+    },
+    "capture_statistics": {
+      "type": "object",
+      "required": [
+        "observed_calls",
+        "successful_operations",
+        "failed_operations",
+        "filtered_before_queue",
+        "dropped_events",
+        "unique_stacks",
+        "reused_stacks",
+        "written_uncompressed_bytes",
+        "written_stored_bytes",
+        "per_api"
+      ],
+      "properties": {
+        "observed_calls": { "type": "integer" },
+        "successful_operations": { "type": "integer" },
+        "failed_operations": { "type": "integer" },
+        "filtered_before_queue": { "type": "integer" },
+        "dropped_events": { "type": "integer" },
+        "unique_stacks": { "type": "integer" },
+        "reused_stacks": { "type": "integer" },
+        "written_uncompressed_bytes": { "type": "integer" },
+        "written_stored_bytes": { "type": "integer" },
+        "per_api": { "type": "array", "items": { "$ref": "#/$defs/api_statistics" } }
+      },
+      "additionalProperties": false
+    },
+    "api_statistics": {
+      "type": "object",
+      "required": [
+        "api_id",
+        "observed_calls",
+        "successful_operations",
+        "failed_operations",
+        "filtered_before_queue",
+        "dropped_events"
+      ],
+      "properties": {
+        "api_id": { "type": "integer" },
+        "observed_calls": { "type": "integer" },
+        "successful_operations": { "type": "integer" },
+        "failed_operations": { "type": "integer" },
+        "filtered_before_queue": { "type": "integer" },
+        "dropped_events": { "type": "integer" }
+      },
+      "additionalProperties": false
+    },
+    "termination": {
+      "type": "object",
+      "required": ["final_sequence", "final_monotonic_ticks", "normal_stop", "target_exit_code"],
+      "properties": {
+        "final_sequence": { "type": ["integer", "null"] },
+        "final_monotonic_ticks": { "type": "integer" },
+        "normal_stop": { "type": "boolean" },
+        "target_exit_code": { "type": ["integer", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "completeness": {
+      "type": "object",
+      "required": [
+        "mask",
+        "overall",
+        "lifecycle",
+        "stack_detail",
+        "understanding",
+        "issues",
+        "unknown_issue_bits"
+      ],
+      "properties": {
+        "mask": { "$ref": "#/$defs/hex" },
+        "overall": { "enum": ["complete", "incomplete"] },
+        "lifecycle": { "enum": ["complete", "incomplete"] },
+        "stack_detail": { "enum": ["complete", "incomplete"] },
+        "understanding": { "enum": ["full", "partial"] },
+        "issues": { "type": "array", "items": { "type": "string" } },
+        "unknown_issue_bits": { "$ref": "#/$defs/hex" }
+      },
+      "additionalProperties": false
+    },
+    "summary": {
+      "type": "object",
+      "required": [
+        "trace_events",
+        "loss_records",
+        "bytes_read",
+        "known_sequence_end",
+        "known_monotonic_end",
+        "truncated",
+        "partially_understood",
+        "capture_statistics",
+        "termination",
+        "completeness"
+      ],
+      "properties": {
+        "matched_events": { "type": "integer" },
+        "filtered_events": { "type": "integer" },
+        "candidates": { "type": "integer" },
+        "ended_by_c": { "type": "integer" },
+        "filtered_out": { "type": "integer" },
+        "outstanding": { "type": "integer" },
+        "orphaned_allocation_ends": { "type": "integer" },
+        "orphaned_mapping_ends": { "type": "integer" },
+        "trace_events": { "type": "integer" },
+        "loss_records": { "type": "integer" },
+        "bytes_read": { "type": "integer" },
+        "known_sequence_end": { "type": ["integer", "null"] },
+        "known_monotonic_end": { "type": "integer" },
+        "truncated": { "type": "boolean" },
+        "partially_understood": { "type": "boolean" },
+        "capture_statistics": {
+          "oneOf": [
+            { "$ref": "#/$defs/capture_statistics" },
+            { "type": "null" }
+          ]
+        },
+        "termination": {
+          "oneOf": [
+            { "$ref": "#/$defs/termination" },
+            { "type": "null" }
+          ]
+        },
+        "completeness": { "$ref": "#/$defs/completeness" }
+      },
+      "additionalProperties": false
+    }
+  }
+}
