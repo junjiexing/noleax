@@ -4,6 +4,7 @@ find_package(zstd CONFIG REQUIRED)
 
 add_executable(noleax-unit-tests
   unit/command_line_test.cpp
+  unit/completeness_test.cpp
   unit/configuration_test.cpp
   unit/event_test.cpp
   unit/trace_reader_test.cpp

@@ -1,6 +1,6 @@
 # Noleax Trace Format
 
-> 状态：P2.5 writer/reader 编码基线
+> 状态：P2.6 writer/reader 与完整性模型基线
 > 文件扩展名：.nlx
 > format major：1
 > 默认字节序：little-endian
@@ -345,11 +345,12 @@ Loss record：
 
 原因至少包含：
 
-- queue_full
-- trace_full
-- writer_error
-- stack_capture_failed
-- rotation_limit
+- unknown=0（无效）、queue_full=1、trace_full=2、writer_error=3。
+- stack_capture_failed=4、rotation_limit=5、decoder_error=6。
+
+发生位置编码：unknown=0（无效）、agent_queue=1、writer=2、rotation=3、decoder=4。
+estimated_event_count 缺省表示数量未知；存在时必须大于零。sequence range 的两个端点必须
+同时存在且从 1 开始，sequence/tick range 均不得反向。
 
 完整性维度：
 
@@ -361,6 +362,26 @@ Loss record：
 - unknown_record_skipped。
 
 任一影响生命周期的维度存在时，outstanding 结果标记 incomplete，默认退出码为 2。
+
+P2.6 将完整性问题保存为 uint32 bit mask：
+
+| bit | issue | lifecycle | stack detail | understanding |
+|---:|---|:---:|:---:|:---:|
+| 0 | capture_did_not_start_at_process_start | 否 | - | - |
+| 1 | preexisting_allocations_unknown | 否 | - | - |
+| 2 | event_loss | 否 | 否 | - |
+| 3 | trace_truncated | 否 | 否 | - |
+| 4 | writer_error | 否 | 否 | - |
+| 5 | unknown_record_skipped | 否 | 否 | partial |
+| 6 | missing_end_of_trace | 否 | 否 | - |
+| 7 | abnormal_stop | 否 | 否 | - |
+| 8 | stack_data_loss | 是 | 否 | - |
+| 9 | partially_understood_format | 否 | 否 | partial |
+
+表中的“是/否”表示该维度是否仍完整。未知的未来 bit 保留，并按 overall/lifecycle/stack
+incomplete、understanding partial 处理。只有 mask=0 时默认退出码为 0；任何 issue 均返回 2。
+stack_capture_failed 只设置 stack_data_loss，不伪称 allocation 生命周期已经丢失；其他 Loss
+reason 设置 event_loss，writer_error 还同时设置 writer_error bit。
 
 ## 14. Statistics 和 EndOfTrace
 
@@ -375,6 +396,9 @@ Statistics：
 - written uncompressed/compressed bytes。
 - per-API counts。
 
+P2.6 校验 successful+failed=observed、filtered+dropped<=observed、per-API ID 唯一且汇总值
+与 aggregate 完全一致；计数求和必须检查 uint64 overflow。
+
 EndOfTrace：
 
 - final sequence。
@@ -384,6 +408,10 @@ EndOfTrace：
 - aggregate completeness。
 
 缺少 EndOfTrace 表示 abnormal/truncated，但不使之前完整 chunk 失效。
+
+CompletenessTracker 在看到 EndOfTrace 前始终设置 missing_end_of_trace；正常 EndOfTrace 清除此
+bit，非正常结束增加 abnormal_stop，并合并 agent 写入的 aggregate completeness。重复 EndOfTrace、
+EndOfTrace 自称缺失以及 normal_stop 同时报告 abnormal_stop 都是无效状态。
 
 ## 15. Compression
 
