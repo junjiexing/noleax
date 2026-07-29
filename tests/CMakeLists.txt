@@ -1,9 +1,12 @@
 find_package(Catch2 3 CONFIG REQUIRED)
+find_package(lz4 CONFIG REQUIRED)
+find_package(zstd CONFIG REQUIRED)
 
 add_executable(noleax-unit-tests
   unit/command_line_test.cpp
   unit/configuration_test.cpp
   unit/event_test.cpp
+  unit/trace_writer_test.cpp
   unit/value_parser_test.cpp
   unit/version_test.cpp
 )
@@ -15,6 +18,8 @@ target_link_libraries(noleax-unit-tests
     noleax::config
     noleax::core
     noleax::trace
+    lz4::lz4
+    zstd::libzstd
 )
 
 target_compile_definitions(noleax-unit-tests PRIVATE

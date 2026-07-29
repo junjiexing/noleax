@@ -1,6 +1,6 @@
 # Noleax Trace Format
 
-> 状态：P0 逻辑格式基线
+> 状态：P2.4 writer 编码基线；reader 待实现
 > 文件扩展名：.nlx
 > format major：1
 > 默认字节序：little-endian
@@ -28,45 +28,48 @@
 
 ## 3. File Header
 
-固定头位于文件起始位置，至少包含：
+V1 固定头为 68 bytes，位于文件起始位置：
 
-| 字段 | 类型 | 含义 |
-|---|---|---|
-| magic | byte[8] | NLXTRACE |
-| header_size | uint16 | header 总长度 |
-| format_major | uint16 | major |
-| format_minor | uint16 | minor |
-| byte_order | uint8 | little/big |
-| pointer_width | uint8 | 4 或 8 |
-| platform | uint16 | windows/linux/macos |
-| architecture | uint16 | x86/x64/arm64 |
-| flags | uint32 | capture 属性 |
-| session_id | byte[16] | 同一轮捕获 UUID |
-| file_index | uint32 | rotation index |
-| monotonic_frequency | uint64 | tick frequency |
-| monotonic_origin | uint64 | trace 相对时间起点 |
-| utc_origin_ns | int64 | 展示用 UTC 起点 |
+| offset | 字段 | 类型 | V1 编码/含义 |
+|---:|---|---|---|
+| 0 | magic | byte[8] | ASCII `NLXTRACE` |
+| 8 | header_size | uint16 | 68 |
+| 10 | format_major | uint16 | 1 |
+| 12 | format_minor | uint16 | 0 |
+| 14 | byte_order | uint8 | little=1、big=2；V1 writer 写 1 |
+| 15 | pointer_width | uint8 | 4 或 8 |
+| 16 | platform | uint16 | unknown=0、windows=1、linux=2、macos=3 |
+| 18 | architecture | uint16 | unknown=0、x86=1、x64=2、arm64=3 |
+| 20 | flags | uint32 | capture 属性 |
+| 24 | session_id | byte[16] | 同一轮捕获 UUID |
+| 40 | file_index | uint32 | rotation index |
+| 44 | monotonic_frequency | uint64 | tick frequency，必须非零 |
+| 52 | monotonic_origin | uint64 | trace 相对时间起点 |
+| 60 | utc_origin_ns | int64 | 展示用 UTC 起点，二进制补码 |
 
-header_size 允许同一 major 版本追加字段。
+header_size 允许同一 major 版本在固定前缀后追加字段。V1 writer 拒绝 unknown
+platform/architecture、非 4/8 的 pointer_width 以及零 monotonic_frequency。
 
 ## 4. Chunk
 
-文件头后为顺序 chunk。每个 chunk header 包含：
+文件头后为顺序 chunk。V1 chunk header 为 56 bytes：
 
-| 字段 | 类型 | 含义 |
-|---|---|---|
-| chunk_type | uint16 | metadata/module/stack/event/statistics/end |
-| chunk_version | uint16 | chunk payload 版本 |
-| header_size | uint16 | chunk header 长度 |
-| flags | uint16 | chunk flags |
-| codec | uint8 | none/lz4/zstd |
-| reserved | byte[7] | 必须为零 |
-| sequence_begin | uint64 | 首事件序号，无事件时为零 |
-| sequence_end | uint64 | 末事件序号，无事件时为零 |
-| uncompressed_size | uint64 | 解压后 payload 大小 |
-| stored_size | uint64 | 文件中 payload 大小 |
-| crc32c | uint32 | 未压缩 payload 校验 |
-| reserved2 | uint32 | 必须为零 |
+| offset | 字段 | 类型 | V1 编码/含义 |
+|---:|---|---|---|
+| 0 | chunk_type | uint16 | metadata=1、module=2、stack=3、event=4、statistics=5、end=6 |
+| 2 | chunk_version | uint16 | chunk payload 版本，必须非零 |
+| 4 | header_size | uint16 | 56 |
+| 6 | flags | uint16 | chunk flags |
+| 8 | codec | uint8 | none=0、lz4=1、zstd=2 |
+| 9 | reserved | byte[7] | 必须为零 |
+| 16 | sequence_begin | uint64 | 首事件序号，无事件时为零 |
+| 24 | sequence_end | uint64 | 末事件序号，无事件时为零 |
+| 32 | uncompressed_size | uint64 | 解压后 payload 大小 |
+| 40 | stored_size | uint64 | 文件中 payload 大小 |
+| 48 | crc32c | uint32 | 未压缩 payload 的 CRC32C/Castagnoli |
+| 52 | reserved2 | uint32 | 必须为零 |
+
+sequence_begin 和 sequence_end 必须同时为零或同时非零；非零时 begin 不得大于 end。
 
 reader 必须在分配或解压前检查：
 
@@ -80,7 +83,7 @@ reader 必须在分配或解压前检查：
 
 ## 5. Record framing
 
-chunk payload 由 record 组成：
+chunk payload 由 record 组成。每个 record 固定头为 8 bytes：
 
 | 字段 | 类型 |
 |---|---|
@@ -90,6 +93,9 @@ chunk payload 由 record 组成：
 | payload | byte[record_size - 8] |
 
 同一 major 中未知 record 可以按 record_size 跳过。record_size 小于 header、超过 chunk 或违反实现上限时，该 chunk 无效。
+
+V1 writer 默认单 chunk 未压缩上限为 16 MiB、存储上限为 17 MiB。写入前会同时检查
+完整 chunk 是否可放入 max_file_size；不能完整容纳时返回 file-limit，不向 stream 写入半个 chunk。
 
 ## 6. 标识符
 
