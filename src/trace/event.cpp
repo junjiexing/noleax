@@ -17,6 +17,49 @@ Overloaded(Visitors...) -> Overloaded<Visitors...>;
 
 [[noreturn]] void fail(const char* message) { throw EventValidationError{message}; }
 
+[[nodiscard]] bool is_known_status(EventStatus status) noexcept {
+  switch (status) {
+    case EventStatus::kSuccess:
+    case EventStatus::kFailure:
+    case EventStatus::kUnmatched:
+    case EventStatus::kPreexisting:
+      return true;
+  }
+  return false;
+}
+
+[[nodiscard]] bool is_known_error_domain(SystemErrorDomain domain) noexcept {
+  switch (domain) {
+    case SystemErrorDomain::kNone:
+    case SystemErrorDomain::kWin32:
+    case SystemErrorDomain::kNtStatus:
+    case SystemErrorDomain::kPosix:
+    case SystemErrorDomain::kMach:
+      return true;
+  }
+  return false;
+}
+
+[[nodiscard]] bool is_known_process_scope(ProcessMemoryScope scope) noexcept {
+  switch (scope) {
+    case ProcessMemoryScope::kCurrentProcess:
+    case ProcessMemoryScope::kRemoteProcess:
+    case ProcessMemoryScope::kUnknown:
+      return true;
+  }
+  return false;
+}
+
+[[nodiscard]] bool is_known_reallocation_effect(ReallocationEffect effect) noexcept {
+  switch (effect) {
+    case ReallocationEffect::kNoChange:
+    case ReallocationEffect::kNewGeneration:
+    case ReallocationEffect::kFreed:
+      return true;
+  }
+  return false;
+}
+
 void validate_call_result_status(EventStatus status, const char* operation) {
   if (status != EventStatus::kSuccess && status != EventStatus::kFailure) {
     throw EventValidationError{std::string{operation} + " status must be success or failure"};
@@ -26,6 +69,12 @@ void validate_call_result_status(EventStatus status, const char* operation) {
 void validate_header(const EventHeader& header) {
   if (!header.sequence) {
     fail("event sequence must not be zero");
+  }
+  if (!is_known_status(header.status)) {
+    fail("event status is not supported");
+  }
+  if (!is_known_error_domain(header.system_error.domain)) {
+    fail("event error domain is not supported");
   }
   if (header.system_error.domain == SystemErrorDomain::kNone && header.system_error.code != 0U) {
     fail("an event without an error domain must have a zero error code");
@@ -65,6 +114,9 @@ void validate_allocation(const EventHeader& header, const AllocationEvent& event
 }
 
 void validate_reallocation(const EventHeader& header, const ReallocationEvent& event) {
+  if (!is_known_reallocation_effect(event.effect)) {
+    fail("reallocation effect is not supported");
+  }
   if ((header.status == EventStatus::kUnmatched || header.status == EventStatus::kPreexisting) &&
       event.old_allocation_id) {
     fail("unmatched or preexisting reallocation must not have an old allocation_id");
@@ -114,6 +166,9 @@ void validate_free(const EventHeader& header, const FreeEvent& event) {
 
 void validate_mapping_creation(const EventHeader& header, const ProcessTarget& target,
                                MappingId mapping_id) {
+  if (!is_known_process_scope(target.scope)) {
+    fail("process memory scope is not supported");
+  }
   validate_call_result_status(header.status, "mapping creation");
   if (!call_succeeded(header.status) && mapping_id) {
     fail("failed virtual memory operation must not have a mapping_id");
@@ -129,6 +184,9 @@ void validate_mapping_creation(const EventHeader& header, const ProcessTarget& t
 
 void validate_mapping_end(const EventHeader& header, const ProcessTarget& target,
                           MappingId mapping_id) {
+  if (!is_known_process_scope(target.scope)) {
+    fail("process memory scope is not supported");
+  }
   if (target.scope != ProcessMemoryScope::kCurrentProcess && mapping_id) {
     fail("non-local virtual memory events must not have a mapping_id");
   }

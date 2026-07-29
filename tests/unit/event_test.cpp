@@ -93,6 +93,12 @@ TEST_CASE("event headers reject missing sequences and inconsistent error domains
 
   header.system_error.domain = SystemErrorDomain::kWin32;
   CHECK_NOTHROW(validate_event(Event{header, allocation}));
+
+  header.status = static_cast<EventStatus>(0xFFU);
+  CHECK_THROWS_AS(validate_event(Event{header, allocation}), EventValidationError);
+  header.status = EventStatus::kSuccess;
+  header.system_error.domain = static_cast<SystemErrorDomain>(0xFFU);
+  CHECK_THROWS_AS(validate_event(Event{header, allocation}), EventValidationError);
 }
 
 TEST_CASE("reallocation lifecycle distinguishes failure in-place move and free", "[trace][event]") {
@@ -158,6 +164,10 @@ TEST_CASE("reallocation rejects reused IDs and failed-call side effects", "[trac
   const auto freed_without_old_id =
       reallocation(0x1000U, AllocationId{}, 0U, AllocationId{}, ReallocationEffect::kFreed);
   CHECK_THROWS_AS(validate_event(Event{header, freed_without_old_id}), EventValidationError);
+
+  const auto invalid_effect = reallocation(0x1000U, allocation_id, 0U, AllocationId{},
+                                           static_cast<ReallocationEffect>(0xFFU));
+  CHECK_THROWS_AS(validate_event(Event{header, invalid_effect}), EventValidationError);
 }
 
 TEST_CASE("free and heap destroy only end matched successful generations", "[trace][event]") {
@@ -209,4 +219,7 @@ TEST_CASE("remote virtual memory events never create local mapping IDs", "[trace
   CHECK_THROWS_AS(validate_event(Event{header, local_free}), EventValidationError);
   local_free.mapping_id = MappingId{1U};
   CHECK_NOTHROW(validate_event(Event{header, local_free}));
+
+  local_free.target.scope = static_cast<ProcessMemoryScope>(0xFFU);
+  CHECK_THROWS_AS(validate_event(Event{header, local_free}), EventValidationError);
 }
