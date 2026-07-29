@@ -1,6 +1,6 @@
 # Noleax Trace Format
 
-> 状态：P2.6 writer/reader 与完整性模型基线
+> 状态：P2.7 record codec 基线；合成 trace 生成器待完成
 > 文件扩展名：.nlx
 > format major：1
 > 默认字节序：little-endian
@@ -102,6 +102,20 @@ chunk payload 由 record 组成。每个 record 固定头为 8 bytes：
 P2.5 的 RecordCursor 返回原始 type/version 和零拷贝 payload view；上层 decoder 可以忽略未知
 type 后继续读取下一条 record。默认单 record 上限为 1 MiB，可由调用方收紧或放宽。
 
+record_type 在 chunk_type 内命名，不是跨 chunk 的全局编号。P2.7 V1 codec 均使用
+record_version=1：
+
+| chunk | record_type |
+|---|---|
+| metadata | CaptureScope=1 |
+| event | HeapCreate=1、HeapDestroy=2、Allocate=3、Reallocate=4、Free=5 |
+| event | VmAllocate=6、VmFree=7、Map=8、Unmap=9、Loss=10 |
+| statistics | CaptureStatistics=1 |
+| end | EndOfTrace=1 |
+
+同一 type 的更高 record_version 按未知 record 跳过并标记 partially understood，不能按 V1
+payload 猜测解析。
+
 V1 writer 默认单 chunk 未压缩上限为 16 MiB、存储上限为 17 MiB。写入前会同时检查
 完整 chunk 是否可放入 max_file_size；不能完整容纳时返回 file-limit，不向 stream 写入半个 chunk。
 
@@ -120,6 +134,10 @@ V1 writer 默认单 chunk 未压缩上限为 16 MiB、存储上限为 17 MiB。�
 ID 只在一个 session 中有意义。
 
 ## 7. Metadata records
+
+P2.7 首个可编码 metadata record 为 CaptureScope。payload 固定 8 bytes：
+started_at_process_start uint8、preexisting_allocations_unknown uint8、reserved byte[6]。
+两个布尔值只接受 0/1；process-start capture 不得同时声明 preexisting allocations unknown。
 
 ### 7.1 ProcessInfo
 
@@ -226,6 +244,25 @@ stack dictionary 有独立内存上限。达到上限时：
 - flags。
 - error domain（none、Win32、NTSTATUS、POSIX 或 Mach）和固定宽度 raw error code。
 
+V1 event record 的 payload 以前 56 bytes 作为公共头，随后紧跟具体 operation payload：
+
+| payload offset | 字段 | 类型 |
+|---:|---|---|
+| 0 | sequence | uint64 |
+| 8 | monotonic_ticks | uint64 |
+| 16 | thread_id | uint64 |
+| 24 | api_id | uint32 |
+| 28 | status | uint8 |
+| 29 | error_domain | uint8 |
+| 30 | reserved | byte[2]，必须为零 |
+| 32 | stack_id | uint64 |
+| 40 | flags | uint32 |
+| 44 | reserved2 | byte[4]，必须为零 |
+| 48 | raw_error_code | uint64 |
+
+status 编码：success=0、failure=1、unmatched=2、preexisting=3。error_domain 编码：none=0、
+win32=1、ntstatus=2、posix=3、mach=4。
+
 operation：
 
 - heap_create
@@ -247,6 +284,24 @@ status：
 
 failure 表示底层调用失败；unmatched 和 preexisting 表示调用成功，但无法匹配当前 session
 创建的 generation。后两者不得伪造 allocation_id、heap_id 或 mapping_id。
+
+V1 固定 operation payload 和完整 record 大小如下；大小包含 8-byte record framing 和
+56-byte event 公共头：
+
+| record | operation payload | record_size |
+|---|---:|---:|
+| HeapCreate | 40 | 104 |
+| HeapDestroy | 24 | 88 |
+| Allocate | 48 | 112 |
+| Reallocate | 72 | 136 |
+| Free | 48 | 112 |
+| VmAllocate | 72 | 136 |
+| VmFree | 56 | 120 |
+| Map | 72 | 136 |
+| Unmap | 40 | 104 |
+
+所有 operation payload 按本节后续字段出现顺序编码为 little-endian 固定宽度整数。需要对齐
+的位置显式写零 reserved bytes，不使用 C++ struct padding。
 
 ## 11. Heap events
 
@@ -284,6 +339,8 @@ Reallocate：
 - API flags。
 - effect：no_change、new_generation 或 freed；用于明确区分失败、原地/迁移 realloc
   和由 size-zero adapter 语义产生的释放。
+
+effect 编码：no_change=0、new_generation=1、freed=2；其后为 7 个必须为零的 reserved bytes。
 
 成功 realloc 即使结果地址不变也必须使用新的 allocation_id。失败时 effect 为 no_change，
 旧 generation 保持存活；effect 为 freed 时不得产生新 allocation_id。
@@ -334,6 +391,9 @@ Unmap：
 
 对其他进程地址空间的操作可以作为 raw event 输出，但不加入当前目标进程 outstanding 状态。
 
+ProcessTarget 固定为 24 bytes：scope uint8、reserved byte[7]、raw process handle uint64、
+process_id uint64。scope 编码为 current_process=0、remote_process=1、unknown=2。
+
 ## 13. Loss 和完整性
 
 Loss record：
@@ -351,6 +411,10 @@ Loss record：
 发生位置编码：unknown=0（无效）、agent_queue=1、writer=2、rotation=3、decoder=4。
 estimated_event_count 缺省表示数量未知；存在时必须大于零。sequence range 的两个端点必须
 同时存在且从 1 开始，sequence/tick range 均不得反向。
+
+V1 Loss payload 固定 48 bytes：reason uint8、location uint8、presence flags uint8、reserved
+byte[5]，随后依次为 count、sequence_begin、sequence_end、tick_begin、tick_end 五个 uint64。
+presence bit 0/1/2 分别表示 count/sequence/tick 是否存在；缺省字段的存储值必须为零。
 
 完整性维度：
 
@@ -399,6 +463,10 @@ Statistics：
 P2.6 校验 successful+failed=observed、filtered+dropped<=observed、per-API ID 唯一且汇总值
 与 aggregate 完全一致；计数求和必须检查 uint64 overflow。
 
+V1 CaptureStatistics payload 固定前缀为 80 bytes：9 个 aggregate uint64、per_api_count
+uint32、reserved uint32；随后每个 API 使用 48 bytes（api_id uint32、reserved uint32、
+5 个计数 uint64）。完整 record_size 为 88+48*per_api_count。
+
 EndOfTrace：
 
 - final sequence。
@@ -412,6 +480,10 @@ EndOfTrace：
 CompletenessTracker 在看到 EndOfTrace 前始终设置 missing_end_of_trace；正常 EndOfTrace 清除此
 bit，非正常结束增加 abnormal_stop，并合并 agent 写入的 aggregate completeness。重复 EndOfTrace、
 EndOfTrace 自称缺失以及 normal_stop 同时报告 abnormal_stop 都是无效状态。
+
+V1 EndOfTrace payload 固定 40 bytes：final_sequence uint64、final_monotonic_ticks uint64、
+normal_stop uint8、target_exit_code_present uint8、reserved byte[6]、target_exit_code int32、
+reserved uint32、completeness mask uint32、reserved uint32。缺省 target exit code 的存储值必须为零。
 
 ## 15. Compression
 

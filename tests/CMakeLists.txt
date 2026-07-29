@@ -7,6 +7,7 @@ add_executable(noleax-unit-tests
   unit/completeness_test.cpp
   unit/configuration_test.cpp
   unit/event_test.cpp
+  unit/record_codec_test.cpp
   unit/trace_reader_test.cpp
   unit/trace_writer_test.cpp
   unit/value_parser_test.cpp

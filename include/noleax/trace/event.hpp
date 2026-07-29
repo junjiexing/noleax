@@ -61,7 +61,7 @@ struct EventHeader {
   Sequence sequence;
   std::uint64_t monotonic_ticks{0};
   std::uint64_t thread_id{0};
-  ApiId api_id;
+  ApiId api_id{0};
   EventStatus status{EventStatus::kFailure};
   StackId stack_id;
   std::uint32_t flags{0};
