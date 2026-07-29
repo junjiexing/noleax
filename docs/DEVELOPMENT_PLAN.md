@@ -5,8 +5,8 @@
 > 更新日期：2026-07-29
 > 确认日期：2026-07-29
 > 当前阶段：P4 Windows Rtl hook 安全原型（`feat/windows-hook-agent`）
-> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3
-> 下一工作项：P4.4 recursion/internal-thread guard
+> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4
+> 下一工作项：P4.5 预分配 MPSC 事件队列
 
 ## 1. 文档目的
 
@@ -1265,6 +1265,15 @@ P4.3 已通过。`RtlAllocateHeap` adapter 使用精确 NTAPI 签名；HookBacke
 MD/MT workload 的 hooked/unhooked 摘要在 Debug/Release 完全一致，Release 8×20,000×2 长压力及
 双配置各 20 次重复通过。profile 仍保持 disabled。详见
 [RTL_ALLOCATE_HEAP_HOOK.md](RTL_ALLOCATE_HEAP_HOOK.md)。
+
+P4.4 已通过。开发中的 static `thread_local` 版本在新线程建立 TLS vector 时递归进入
+`RtlAllocateHeap`，CDB 确认 replacement 访问尚未发布的 TLS vector 而崩溃。最终实现安装前申请
+前 64 个固定 TEB TLS 槽之一，在热路径直接读写打包的 hook/internal depth，不调用 TLS API、heap、
+锁、I/O 或 loader；固定槽不足时拒绝安装。单元测试覆盖引用计数、嵌套、分类优先级和线程隔离，
+真实 hook harness 覆盖 outermost/recursive/internal 探针及 hook 后创建 worker 的原崩溃路径。
+Debug/Release 定向测试、双配置各 20 次 passthrough 和 Release 8×20,000×2 差分均通过。事件队列、
+SEH 门禁和 replacement quiescence 尚未完成，profile 继续保持 disabled。详见
+[HOOK_GUARD.md](HOOK_GUARD.md)。
 
 阶段门禁：
 

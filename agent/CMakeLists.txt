@@ -1,4 +1,5 @@
 add_library(noleax-hook-backend STATIC
+  hook_guard.cpp
   hook_backend.cpp
 )
 

@@ -25,6 +25,9 @@ class RtlAllocateHeapHook {
   [[nodiscard]] bool is_installed() const noexcept;
   [[nodiscard]] bool has_pending_teardown() const noexcept;
   [[nodiscard]] std::uint64_t call_count() const noexcept;
+  [[nodiscard]] std::uint64_t recordable_call_count() const noexcept;
+  [[nodiscard]] std::uint64_t recursive_call_count() const noexcept;
+  [[nodiscard]] std::uint64_t internal_call_count() const noexcept;
   [[nodiscard]] void* target_address() const noexcept;
 
  private:
@@ -39,6 +42,7 @@ class RtlAllocateHeapHook {
   HookBackend* backend_{nullptr};
   void* target_{nullptr};
   State state_{State::kInactive};
+  bool guard_runtime_acquired_{false};
 };
 
 }  // namespace noleax::agent::windows

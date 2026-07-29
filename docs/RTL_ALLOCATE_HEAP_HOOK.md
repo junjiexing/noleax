@@ -1,13 +1,13 @@
-# RtlAllocateHeap Passthrough Hook
+# RtlAllocateHeap Hook Prototype
 
-> 状态：P4.3 Windows x64 完成
-> 范围：ABI passthrough，不记录事件，不进入任何产品 profile
+> 状态：P4.4 Windows x64 完成
+> 范围：guarded ABI passthrough，不记录事件，不进入任何产品 profile
 
 ## 1. 目的
 
-P4.3 首次在正式测试路径 hook `ntdll!RtlAllocateHeap`，只验证 Hoox trampoline、精确 ABI、original
-发布顺序和卸载生命周期。replacement 不捕获栈、不写队列，也不执行 recursion/internal-thread
-判断；这些分别属于 P4.4 至 P4.8。
+P4.3 首次在正式测试路径 hook `ntdll!RtlAllocateHeap`，验证 Hoox trampoline、精确 ABI、original
+发布顺序和卸载生命周期。P4.4 增加无分配 recursion/internal-thread guard。replacement 仍不捕获
+栈、不写队列，也不生成内存事件；这些属于 P4.5 至 P4.8。
 
 精确函数类型为：
 
@@ -15,8 +15,10 @@ P4.3 首次在正式测试路径 hook `ntdll!RtlAllocateHeap`，只验证 Hoox t
 PVOID (NTAPI*)(PVOID heap, ULONG flags, SIZE_T size)
 ~~~
 
-replacement 只执行无锁原子调用计数、acquire-load original trampoline、一次 original 调用和返回。
-original 不可能安全缺失；若该不变量被破坏则 fail-fast，不能递归调用已被替换的 target。
+replacement 执行 guard 入口分类、无锁原子诊断计数、acquire-load original trampoline、一次
+original 调用和 guard 退出。original 不可能安全缺失；若该不变量被破坏则 fail-fast，不能递归调用
+已被替换的 target。guard 的 TLS 崩溃根因和固定 TEB 槽设计见
+[HOOK_GUARD.md](HOOK_GUARD.md)。
 
 ## 2. 激活前发布
 
@@ -57,8 +59,10 @@ noleax-rtl-heap-baseline-mt.exe ─┘
 - MT hooked。
 
 摘要覆盖成功/失败返回、零填充、live block 内容、释放结果、直接与间接入口、process/显式 heap、
-`LastError` change count/hash 和确定性 checksum。harness 另要求 replacement 调用数至少覆盖全部直接
-Rtl workload，防止“安装报告成功但 replacement 未执行”的假阳性。
+`LastError` change count/hash 和确定性 checksum。harness 安装后会先真实制造 outermost、recursive
+与 internal-thread 入口，要求只有对应分类计数增加；随后创建 worker 线程并运行 workload。它还
+要求 replacement 调用数至少覆盖全部直接 Rtl workload，防止“安装报告成功但 replacement 未执行”
+的假阳性。
 
 ## 4. 验证结果
 
@@ -73,26 +77,27 @@ win32_last_error_hash=0xdb3089d8201ac1a3
 checksum=0x7caf2ccfa0606232
 ~~~
 
-Release x64 object disassembly 中的 replacement 总长 39 字节；成功路径只包含栈对齐、`lock inc`、
-original 地址 load/null check、一次 `call rax` 和返回。参数寄存器 RCX/RDX/R8 未被覆盖；没有
-allocator、文件、loader、日志或锁调用。
+Release x64 object disassembly 中，replacement 只调用 guard 入口/分类/出口、执行无锁计数和一次
+original `call rax`。guard 正常路径直接访问 `gs:[TEB]` 中的固定 `TlsSlots`，没有 allocator、文件、
+loader、日志、锁或 TLS API 调用；guard object 也没有 `.tls$` 段或 CRT `_tls_index` 引用。
 
 运行方法：
 
 ~~~powershell
 . .\scripts\Enter-NoleaxDevShell.ps1
 cmake --build --preset windows-x64-release
+ctest --preset windows-x64-release -R "hook guard|rtl-allocate-heap-passthrough" --output-on-failure
 ctest --preset windows-x64-release -L passthrough --output-on-failure
 ctest --preset windows-x64-release -L passthrough --repeat until-fail:20
 ~~~
 
 ## 5. 未完成边界
 
-- P4.4：recursion/internal-thread guard。
 - P4.5：预分配事件队列与 overflow 语义。
 - P4.6：原始栈捕获。
 - P4.7：后台 trace writer。
 - P4.8：replacement 自有 in-flight/quiescence。
 - P4.9：Page Heap、Application Verifier、CFG/CET 和更长 race 压力。
 
-因此 `RtlAllocateHeap` 仍为 disabled，不得把 P4.3 的 passthrough 结论描述为内存事件捕获已完成。
+此外，`HEAP_GENERATE_EXCEPTIONS` 的 SEH 合同仍等待隔离进程门禁。因此 `RtlAllocateHeap` 继续保持
+disabled，不得把 P4.4 的 guarded passthrough 结论描述为内存事件捕获已完成。

@@ -71,6 +71,7 @@ set_tests_properties(config.print-effective PROPERTIES
 
 if(WIN32)
   target_sources(noleax-unit-tests PRIVATE
+    unit/hook_guard_test.cpp
     unit/hook_backend_test.cpp
   )
   target_link_libraries(noleax-unit-tests PRIVATE noleax::hook-backend)

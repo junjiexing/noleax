@@ -1,5 +1,7 @@
 #include "noleax/agent/windows/rtl_allocate_heap_hook.hpp"
 
+#include "noleax/agent/hook_guard.hpp"
+
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
@@ -20,6 +22,9 @@ using RtlAllocateHeapFunction = PVOID(NTAPI*)(PVOID heap, ULONG flags, SIZE_T si
 
 OriginalTrampolineSlot original_trampoline{nullptr};
 std::atomic<std::uint64_t> replacement_calls{0U};
+std::atomic<std::uint64_t> recordable_calls{0U};
+std::atomic<std::uint64_t> recursive_calls{0U};
+std::atomic<std::uint64_t> internal_calls{0U};
 std::atomic<RtlAllocateHeapHook*> active_owner{nullptr};
 
 static_assert(OriginalTrampolineSlot::is_always_lock_free);
@@ -34,7 +39,19 @@ static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
 }
 
 PVOID NTAPI replacement_rtl_allocate_heap(PVOID heap, ULONG flags, SIZE_T size) noexcept {
+  const HookInvocationGuard guard;
   replacement_calls.fetch_add(1U, std::memory_order_relaxed);
+  switch (guard.kind()) {
+    case HookEntryKind::kOutermost:
+      recordable_calls.fetch_add(1U, std::memory_order_relaxed);
+      break;
+    case HookEntryKind::kRecursive:
+      recursive_calls.fetch_add(1U, std::memory_order_relaxed);
+      break;
+    case HookEntryKind::kInternalThread:
+      internal_calls.fetch_add(1U, std::memory_order_relaxed);
+      break;
+  }
   void* const original_address = original_trampoline.load(std::memory_order_acquire);
   if (original_address == nullptr) {
     fail_missing_original();
@@ -66,6 +83,10 @@ RtlAllocateHeapHook::RtlAllocateHeapHook(HookBackend& backend) : backend_{&backe
     throw HookBackendError{"ntdll.dll does not export RtlAllocateHeap"};
   }
   target_ = reinterpret_cast<void*>(address);
+  if (!acquire_hook_guard_runtime()) {
+    throw HookBackendError{"a fixed Windows TLS slot is unavailable for the hook guard"};
+  }
+  guard_runtime_acquired_ = true;
 }
 
 RtlAllocateHeapHook::~RtlAllocateHeapHook() {
@@ -74,6 +95,10 @@ RtlAllocateHeapHook::~RtlAllocateHeapHook() {
   }
   if (state_ == State::kTeardownPending) {
     static_cast<void>(flush());
+  }
+  if (state_ == State::kInactive && guard_runtime_acquired_) {
+    release_hook_guard_runtime();
+    guard_runtime_acquired_ = false;
   }
 }
 
@@ -94,6 +119,9 @@ FastHookResult RtlAllocateHeapHook::install() {
 
   original_trampoline.store(nullptr, std::memory_order_relaxed);
   replacement_calls.store(0U, std::memory_order_relaxed);
+  recordable_calls.store(0U, std::memory_order_relaxed);
+  recursive_calls.store(0U, std::memory_order_relaxed);
+  internal_calls.store(0U, std::memory_order_relaxed);
   FastHookResult result;
   try {
     result = backend_->install_fast(target_, replacement_address(), &original_trampoline);
@@ -151,6 +179,18 @@ bool RtlAllocateHeapHook::has_pending_teardown() const noexcept {
 
 std::uint64_t RtlAllocateHeapHook::call_count() const noexcept {
   return replacement_calls.load(std::memory_order_relaxed);
+}
+
+std::uint64_t RtlAllocateHeapHook::recordable_call_count() const noexcept {
+  return recordable_calls.load(std::memory_order_relaxed);
+}
+
+std::uint64_t RtlAllocateHeapHook::recursive_call_count() const noexcept {
+  return recursive_calls.load(std::memory_order_relaxed);
+}
+
+std::uint64_t RtlAllocateHeapHook::internal_call_count() const noexcept {
+  return internal_calls.load(std::memory_order_relaxed);
 }
 
 void* RtlAllocateHeapHook::target_address() const noexcept { return target_; }
