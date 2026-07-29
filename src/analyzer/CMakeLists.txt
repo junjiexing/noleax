@@ -1,4 +1,5 @@
 add_library(noleax-analyzer STATIC
+  console.cpp
   event_stream.cpp
   filter.cpp
   generation_tracker.cpp

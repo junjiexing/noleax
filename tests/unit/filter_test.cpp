@@ -199,14 +199,14 @@ TEST_CASE("events mode streams only matching events", "[analyzer][filter]") {
   const noleax::analyzer::AnalysisFilter filter{std::move(criteria)};
 
   std::vector<std::uint64_t> matched_ids;
+  noleax::analyzer::EventStreamCallbacks callbacks;
+  callbacks.on_event = [&matched_ids](const noleax::trace::Event& event) {
+    matched_ids.push_back(
+        std::get<noleax::trace::AllocationEvent>(event.payload).allocation_id.value());
+  };
   std::istringstream input{encoded, std::ios::binary};
   const auto result = noleax::analyzer::analyze_filtered_events(
-      input, filter,
-      [&matched_ids](const noleax::trace::Event& event) {
-        matched_ids.push_back(
-            std::get<noleax::trace::AllocationEvent>(event.payload).allocation_id.value());
-      },
-      [](const noleax::trace::Event&) {
+      input, filter, callbacks, [](const noleax::trace::Event&) {
         noleax::analyzer::EventMetadata metadata;
         metadata.api_name = "RtlAllocateHeap";
         return metadata;

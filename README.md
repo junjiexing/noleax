@@ -19,6 +19,7 @@ Noleax（读音 “no leaks”）是一个基于 hook 的跨平台内存事件�
 - docs/CLI.md
 - docs/CONFIG.md
 - docs/TRACE_FORMAT.md
+- docs/CONSOLE_OUTPUT.md
 - docs/HOOK_API_MATRIX.md
 - docs/HOOK_BACKEND_AUDIT.md
 

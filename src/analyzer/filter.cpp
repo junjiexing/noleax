@@ -268,7 +268,7 @@ bool AnalysisFilter::matches_generation(const MemoryGeneration& generation,
 }
 
 FilteredEventsResult analyze_filtered_events(std::istream& input, const AnalysisFilter& filter,
-                                             const FilteredEventCallback& on_event,
+                                             const EventStreamCallbacks& callbacks,
                                              const EventMetadataResolver& resolver,
                                              EventStreamOptions options) {
   if (filter.requires_metadata() && !resolver) {
@@ -276,18 +276,19 @@ FilteredEventsResult analyze_filtered_events(std::istream& input, const Analysis
   }
 
   FilteredEventsResult result;
-  EventStreamCallbacks callbacks;
-  callbacks.on_event = [&filter, &on_event, &resolver, &result](const noleax::trace::Event& event) {
+  EventStreamCallbacks stream_callbacks = callbacks;
+  stream_callbacks.on_event = [&filter, &callbacks, &resolver,
+                               &result](const noleax::trace::Event& event) {
     if (!filter.matches_event(event, resolver)) {
       checked_increment(result.filtered_event_count, "filtered event");
       return;
     }
     checked_increment(result.matched_event_count, "matched event");
-    if (on_event) {
-      on_event(event);
+    if (callbacks.on_event) {
+      callbacks.on_event(event);
     }
   };
-  result.trace = analyze_event_stream(input, callbacks, options);
+  result.trace = analyze_event_stream(input, stream_callbacks, options);
   return result;
 }
 

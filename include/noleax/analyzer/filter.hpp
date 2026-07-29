@@ -33,7 +33,6 @@ struct EventMetadata {
 };
 
 using EventMetadataResolver = std::function<EventMetadata(const noleax::trace::Event&)>;
-using FilteredEventCallback = std::function<void(const noleax::trace::Event&)>;
 
 class AnalysisFilterError final : public std::runtime_error {
  public:
@@ -68,7 +67,7 @@ struct FilteredEventsResult {
 };
 
 [[nodiscard]] FilteredEventsResult analyze_filtered_events(
-    std::istream& input, const AnalysisFilter& filter, const FilteredEventCallback& on_event = {},
+    std::istream& input, const AnalysisFilter& filter, const EventStreamCallbacks& callbacks = {},
     const EventMetadataResolver& resolver = {}, EventStreamOptions options = {});
 
 }  // namespace noleax::analyzer

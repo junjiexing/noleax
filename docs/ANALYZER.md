@@ -1,6 +1,6 @@
 # Noleax Analyzer
 
-> 状态：P3.1 events、P3.2 generation 状态机、P3.3 outstanding 窗口与 P3.4 过滤器完成
+> 状态：P3.1 events 至 P3.5 console 输出完成
 
 ## 1. P3.1 范围
 
@@ -118,7 +118,18 @@ EventMetadataResolver 注入解析结果；配置 API/module/stack-module 过滤
 `analyze_filtered_outstanding` 始终先让所有事件进入 GenerationTracker，确定 c 时刻存活集合之后
 才过滤最终候选；结果中的 candidate_count、ended_by_c_count 和 filtered_out_count 可解释每个阶段。
 
-## 7. 后续阶段
+## 7. Console 输出
 
-P3.1-P3.4 尚未连接公开 CLI 输出。console、JSON、CSV 以及 module/stack 符号展示分别在后续 P3
-工作项接入。
+ConsoleWriter 支持 events 的逐事件流式输出和 outstanding 的最终候选输出。两种模式统一显示
+trace/capture 元数据、固定宽度地址、精确 size、相对纳秒与原始 ticks、API、payload、调用栈、
+summary 和完整性 warning。`analyze_events_to_console` 与 `analyze_outstanding_to_console` 把
+analyzer callback 直接接到 writer；events 不缓存全部结果。
+
+API/module/stack 定义尚不可用时分别回退为 api ID、原始 stack ID 和明确的 definition unavailable；
+ConsoleMetadataResolver 可注入 module+offset、symbol+offset 和绝对地址组成的多行 frame。可选 ANSI
+颜色由调用方在解析终端状态后启用。完整字段和 warning 名称见 [CONSOLE_OUTPUT.md](CONSOLE_OUTPUT.md)。
+
+## 8. 后续阶段
+
+P3.1-P3.5 的库管线已完成。JSON、CSV、三种格式共用的公开 CLI 调度以及 module/stack 符号展示在
+后续 P3 工作项接入。
