@@ -1,6 +1,6 @@
 # Noleax Analyzer
 
-> 状态：P3.1 events 至 P3.6 JSON 输出完成
+> 状态：P3.1 events 至 P3.7 CSV 输出完成
 
 ## 1. P3.1 范围
 
@@ -141,7 +141,16 @@ stack_id 去重；JSON 保留 ID 并为自包含消费展开可用帧。所有�
 payload 由 [JSON_OUTPUT.md](JSON_OUTPUT.md) 与
 [noleax-analysis-v1.schema.json](schema/noleax-analysis-v1.schema.json) 固定。
 
-## 9. 后续阶段
+## 9. CSV 输出
 
-P3.1-P3.6 的库管线已完成。CSV、三种格式共用的公开 CLI 调度以及 module/stack 符号展示在后续
-P3 工作项接入。
+CsvWriter 为 events 和 outstanding 提供两套 schema version 1 固定列。events 逐行写匹配 Event 和
+全部 Loss，outstanding 每个最终 generation 一行；两种模式都以 summary 行结束。CSV 固定 UTF-8、
+逗号和 CRLF，按 RFC 4180 引用包含逗号、双引号或换行的字段，并无损保留 64 位整数。
+
+调用栈在单字段中使用可逆的五元组子格式，仍保留 stack ID、capture status、绝对地址和可用符号。
+字段顺序、空值、summary 和转义规则见 [CSV_OUTPUT.md](CSV_OUTPUT.md)。
+
+## 10. 后续阶段
+
+P3.1-P3.7 的库管线已完成。三种格式共用的公开 CLI 调度以及 Windows module/stack 符号展示在
+后续 P3 工作项接入。

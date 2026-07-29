@@ -1,11 +1,13 @@
 add_library(noleax-analyzer STATIC
   console.cpp
+  csv.cpp
   event_stream.cpp
   filter.cpp
   generation_tracker.cpp
   json.cpp
   outstanding.cpp
   time.cpp
+  utf8.cpp
 )
 
 add_library(noleax::analyzer ALIAS noleax-analyzer)

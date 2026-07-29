@@ -3,11 +3,13 @@ find_package(lz4 CONFIG REQUIRED)
 find_package(zstd CONFIG REQUIRED)
 
 add_executable(noleax-unit-tests
+  support/csv_table.cpp
   support/json_dom.cpp
   support/json_schema.cpp
   support/synthetic_trace.cpp
   unit/analyzer_event_stream_test.cpp
   unit/console_test.cpp
+  unit/csv_test.cpp
   unit/filter_test.cpp
   unit/generation_tracker_test.cpp
   unit/json_test.cpp

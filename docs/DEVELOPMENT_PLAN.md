@@ -5,8 +5,8 @@
 > 更新日期：2026-07-29
 > 确认日期：2026-07-29
 > 当前阶段：P3 离线分析器
-> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6
-> 下一工作项：P3.7 CSV 输出
+> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7
+> 下一工作项：P3.8 Windows 离线 symbolizer
 
 ## 1. 文档目的
 
@@ -1209,12 +1209,13 @@ EndOfTrace，支持 none、LZ4、Zstd，并由正式 reader 与 record codec 反
 | P3.7 | CSV 输出 | CSV writer | quoting/Unicode 测试 |
 | P3.8 | Windows 离线 symbolizer | symbol service | PDB 缺失/匹配测试 |
 
-状态：P3.1-P3.6 已通过。events 过滤以及 console/JSON 输出保持流式处理；outstanding 过滤在完整状态
+状态：P3.1-P3.7 已通过。events 过滤以及 console/JSON/CSV 输出保持流式处理；outstanding 过滤在完整状态
 还原和 c 时刻存活判定后执行。过滤器覆盖大小、operation、线程、API、API 模块、栈模块、
 allocation ID 和 status，并通过可注入元数据 resolver 与后续 ApiDefinition/Module/Stack codec
 解耦。console snapshot 固定了全部 payload、Loss、完整性 warning、符号回退和颜色关闭时的
 纯文本布局。JSON schema version 1 固定 metadata、filters、两种分析模式、九类 payload、Loss、
-调用栈展示和 summary；events writer 不构造全量 DOM，并严格校验 UTF-8。
+调用栈展示和 summary；events writer 不构造全量 DOM，并严格校验 UTF-8。CSV version 1 固定两种
+模式的列顺序、RFC 4180 引用、CRLF、UTF-8、stack 单字段子格式以及末行 summary。
 
 人工验证：
 
