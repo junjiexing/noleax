@@ -6,7 +6,9 @@ add_library(noleax-hook-backend STATIC
 if(WIN32)
   target_sources(noleax-hook-backend PRIVATE
     windows/rtl_allocate_heap_hook.cpp
+    windows/rtl_allocate_heap_trace_writer.cpp
     windows/stack_capture.cpp
+    windows/stack_dictionary.cpp
   )
 endif()
 
@@ -21,6 +23,7 @@ target_include_directories(noleax-hook-backend
 target_link_libraries(noleax-hook-backend
   PRIVATE
     hoox::hoox
+    noleax::trace
 )
 
 noleax_set_project_warnings(noleax-hook-backend)

@@ -5,8 +5,8 @@
 > 更新日期：2026-07-29
 > 确认日期：2026-07-29
 > 当前阶段：P4 Windows Rtl hook 安全原型（`feat/windows-hook-agent`）
-> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6
-> 下一工作项：P4.7 后台 writer
+> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7
+> 下一工作项：P4.8 退出和卸载 quiescence
 
 ## 1. 文档目的
 
@@ -1286,10 +1286,18 @@ variable 和 I/O。队列满时立即拒绝 event，并用饱和 64-bit counter 
 
 P4.6 已通过。outermost event 取得 queue slot 后使用 `RtlCaptureStackBackTrace` 捕获最多 64 个原始
 地址，并以额外一帧区分 complete/truncated；adapter 与 replacement 自身帧被过滤。捕获失败显式
-编码为零帧 `kFailed`，不会伪装成空成功栈，P4.7 将据此生成 stack-only Loss。x64
+编码为零帧 `kFailed`，不会伪装成空成功栈，P4.7 据此生成 stack-only Loss。x64
 `RtlCaptureContext + RtlLookupFunctionEntry + RtlVirtualUnwind` 仅作为对照策略参与 8×2,000 并发
 压力和 caller-chain 交叉检查，不进入 hook 热路径。真实 hook 事件、LastError 和 hooked/unhooked
 差分均通过。详见 [STACK_CAPTURE.md](STACK_CAPTURE.md)。
+
+P4.7 已通过。安装 hook 前启动的 internal writer 线程持续 drain MPSC queue，把原始
+`RtlAllocateHeap` 事件规范化为 Allocation event，并以碰撞安全、固定容量、分段重置的 dictionary
+复用 stack_id。writer 显式生成 stack-capture、queue-full 和 trace-full Loss，校验 hook/queue/file
+计数守恒，并在 1 KiB 文件尾保留区中以 none codec 写 Statistics 与 EndOfTrace。正常、2-slot
+queue overflow 和 8 KiB 文件上限三种真实 hook trace 均由正式 EventStream 重新解码验证；文件大小
+不会超过硬上限。P4.8 前仍由调用者负责先停止 producer 并完成 hook 卸载，再结束 writer。详见
+[TRACE_WRITER.md](TRACE_WRITER.md)。
 
 阶段门禁：
 

@@ -1,7 +1,7 @@
 # Preallocated MPSC Event Queue
 
-> 状态：P4.6 Windows x64 完成
-> 范围：`RtlAllocateHeap` 原始事件和栈入队与 overflow 统计；尚不写 trace
+> 状态：P4.7 Windows x64 完成
+> 范围：`RtlAllocateHeap` 原始事件和栈入队、overflow 统计及后台 writer 消费边界
 
 ## 1. 合同
 
@@ -42,7 +42,7 @@ consumer 只按 reservation 顺序读取。它 acquire-load slot sequence，复�
 队列满时，当前 event 不获得 reservation 和 `queue_sequence`，生产者立即返回 false，并以饱和 CAS
 增加 64-bit dropped counter。计数到 `UINT64_MAX` 后保持饱和，不允许回绕为零。
 
-单 consumer 可以通过原子 exchange 获取一个精确的 dropped interval count。P4.7 writer 必须把非零
+单 consumer 可以通过原子 exchange 获取一个精确的 dropped interval count。P4.7 writer 把非零
 值转换为：
 
 ~~~text
@@ -74,7 +74,8 @@ Windows API 与队列操作不会改变目标可观察到的错误状态。栈�
 [STACK_CAPTURE.md](STACK_CAPTURE.md)。
 
 默认 adapter 容量为 16,384 个 event。包含 per-slot sequence 后预分配约 9 MiB；测试 harness 显式
-使用 256 个 slot 以稳定制造 overflow。容量最终由 agent 配置和 byte budget 推导属于 P4.7。
+使用 256 个 slot 以稳定制造 overflow。P4.7 writer 只消费该固定队列，不在 hook 热路径扩容；未来
+产品配置仍需由 agent 根据 byte budget 推导容量。
 
 ## 5. 验证
 

@@ -24,7 +24,7 @@ hook 热路径只捕获原始指令地址。它不得调用 DbgHelp、访问符�
 | `kTruncated` | requested | 至少还有一帧被深度上限截断 |
 | `kFailed` | 0 | 本次 unwind 未得到任何帧 |
 
-失败不能伪装成 disabled 或一个“成功的空栈”。P4.7 必须为每个 `kFailed` 结果生成
+失败不能伪装成 disabled 或一个“成功的空栈”。P4.7 writer 为每个 `kFailed` 结果生成
 `stack_capture_failed/agent_queue` Loss，同时仍保留 allocation 事件；该 Loss 只降低 stack
 completeness，不声称 allocation 生命周期已经丢失。
 
@@ -74,8 +74,8 @@ leaf 规则。
 - 真实 hook drain 的事件必须使用生产方法和配置深度，并且整批至少有一个成功栈；
 - hooked/unhooked workload 的返回、内容、`LastError` 和 checksum 保持逐字节一致。
 
-P4.6 不执行后台 drain、栈去重或 trace 编码。queue-full 和 stack-capture-failed 的 Loss record 均由
-P4.7 writer 接入。
+P4.6 捕获层自身不执行后台 drain、栈去重或 trace 编码；P4.7 writer 已接入 queue-full 和
+stack-capture-failed 的 Loss record。
 
 ## 5. 验证
 

@@ -1,6 +1,6 @@
 # Noleax Trace Format
 
-> 状态：P2 trace core 与合成 trace 生成器完成
+> 状态：P4.7 trace core、StackDefinition 与 Windows 原型 writer 完成
 > 文件扩展名：.nlx
 > format major：1
 > 默认字节序：little-endian
@@ -108,6 +108,7 @@ record_version=1：
 | chunk | record_type |
 |---|---|
 | metadata | CaptureScope=1 |
+| stack | StackDefinition=1 |
 | event | HeapCreate=1、HeapDestroy=2、Allocate=3、Reallocate=4、Free=5 |
 | event | VmAllocate=6、VmFree=7、Map=8、Unmap=9、Loss=10 |
 | statistics | CaptureStatistics=1 |
@@ -207,14 +208,29 @@ hook 回调为每个事件捕获原始 PC 数组，并把它临时放入预分�
 
 ### 9.2 StackDefinition
 
-- stack_id。
-- capture status。
-- frame count。
-- 每个 frame：
-  - module_id，未知时为 0。
-  - module-relative offset，未知时为 0。
-  - absolute address，始终保留。
-  - frame flags。
+V1 StackDefinition 的固定 payload 为 16 bytes，随后每帧 32 bytes；完整 `record_size` 为
+`24 + 32 * frame_count`：
+
+| payload offset | 字段 | 类型 | V1 编码/含义 |
+|---:|---|---|---|
+| 0 | stack_id | uint64 | 必须非零且在 session 内唯一 |
+| 8 | capture_status | uint8 | complete=0、truncated_by_depth=1、unwind_failed=2、unavailable=3 |
+| 9 | reserved | byte[3] | 必须为零 |
+| 12 | frame_count | uint32 | 必须与剩余 payload 精确匹配 |
+
+每个 frame 从 payload offset `16 + 32 * index` 开始：
+
+| frame offset | 字段 | 类型 | V1 编码/含义 |
+|---:|---|---|---|
+| 0 | module_id | uint64 | 未知时为 0 |
+| 8 | module_offset | uint64 | module_id 为 0 时必须为 0 |
+| 16 | absolute_address | uint64 | 必须非零，始终保留 |
+| 24 | flags | uint32 | V1 必须为 0 |
+| 28 | reserved | uint32 | 必须为 0 |
+
+complete/truncated 必须至少有一帧；unwind_failed/unavailable 必须为零帧。P4.7 Windows 原型尚未
+接入 P5.6 的模块 generation 跟踪，因此写 `module_id=0`、`module_offset=0` 并保留绝对地址。
+writer 总是在引用某个新 stack_id 的 Event chunk 之前写出相应 StackDefinition chunk。
 
 capture status：
 
@@ -229,6 +245,9 @@ stack dictionary 有独立内存上限。达到上限时：
 - 后续栈获得新的 stack_id。
 - 已写入的 definition 永不被覆盖。
 - 允许同一帧序列在不同 dictionary segment 获得不同 ID。
+
+P4.7 dictionary 以完整原始帧数组解决 hash 碰撞；segment reset 只释放进程内索引，stack_id 全局
+单调递增，已经落盘的 definition 不会重写或复用。
 
 ## 10. Event 公共字段
 
@@ -503,6 +522,9 @@ final_monotonic_ticks 必须大于等于 FileHeader.monotonic_origin。
 - V1 canonical writer 对空压缩 chunk 写入零长度 stored payload；reader 要求 compressed
   uncompressed_size/stored_size 同时为零或同时非零。
 - codec 不支持时返回格式不支持错误，不猜测内容。
+
+P4.7 Windows writer 对数据 chunk 使用所选 codec；最后的 Loss、Statistics 和 EndOfTrace 使用
+none。终止记录较小，固定为 none 可给文件尾保留空间建立不依赖压缩 bound 的硬上限证明。
 
 ## 16. Rotation
 

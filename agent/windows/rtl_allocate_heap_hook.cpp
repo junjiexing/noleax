@@ -25,6 +25,8 @@ std::atomic<std::uint64_t> replacement_calls{0U};
 std::atomic<std::uint64_t> recordable_calls{0U};
 std::atomic<std::uint64_t> recursive_calls{0U};
 std::atomic<std::uint64_t> internal_calls{0U};
+std::atomic<std::uint64_t> successful_calls{0U};
+std::atomic<std::uint64_t> failed_calls{0U};
 std::atomic<RtlAllocateHeapHook*> active_owner{nullptr};
 std::atomic<BoundedMpscQueue<RtlAllocateHeapEvent>*> active_event_queue{nullptr};
 std::atomic<std::uint16_t> active_maximum_stack_depth{0U};
@@ -66,6 +68,7 @@ PVOID NTAPI replacement_rtl_allocate_heap(PVOID heap, ULONG flags, SIZE_T size) 
   const DWORD original_last_error = GetLastError();
 
   if (entry_kind == HookEntryKind::kOutermost) {
+    (result == nullptr ? failed_calls : successful_calls).fetch_add(1U, std::memory_order_relaxed);
     auto* const queue = active_event_queue.load(std::memory_order_acquire);
     if (queue == nullptr) {
       fail_missing_original();
@@ -173,6 +176,8 @@ FastHookResult RtlAllocateHeapHook::install() {
   recordable_calls.store(0U, std::memory_order_relaxed);
   recursive_calls.store(0U, std::memory_order_relaxed);
   internal_calls.store(0U, std::memory_order_relaxed);
+  successful_calls.store(0U, std::memory_order_relaxed);
+  failed_calls.store(0U, std::memory_order_relaxed);
   FastHookResult result;
   try {
     result = backend_->install_fast(target_, replacement_address(), &original_trampoline);
@@ -244,8 +249,20 @@ std::uint64_t RtlAllocateHeapHook::internal_call_count() const noexcept {
   return internal_calls.load(std::memory_order_relaxed);
 }
 
+std::uint64_t RtlAllocateHeapHook::successful_call_count() const noexcept {
+  return successful_calls.load(std::memory_order_relaxed);
+}
+
+std::uint64_t RtlAllocateHeapHook::failed_call_count() const noexcept {
+  return failed_calls.load(std::memory_order_relaxed);
+}
+
 std::uint64_t RtlAllocateHeapHook::dropped_event_count() const noexcept {
   return event_queue_.dropped_count();
+}
+
+std::uint64_t RtlAllocateHeapHook::take_dropped_event_count() noexcept {
+  return event_queue_.take_dropped_count();
 }
 
 std::size_t RtlAllocateHeapHook::event_queue_capacity() const noexcept {

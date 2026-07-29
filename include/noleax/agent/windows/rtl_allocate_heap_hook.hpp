@@ -36,7 +36,10 @@ class RtlAllocateHeapHook {
   [[nodiscard]] std::uint64_t recordable_call_count() const noexcept;
   [[nodiscard]] std::uint64_t recursive_call_count() const noexcept;
   [[nodiscard]] std::uint64_t internal_call_count() const noexcept;
+  [[nodiscard]] std::uint64_t successful_call_count() const noexcept;
+  [[nodiscard]] std::uint64_t failed_call_count() const noexcept;
   [[nodiscard]] std::uint64_t dropped_event_count() const noexcept;
+  [[nodiscard]] std::uint64_t take_dropped_event_count() noexcept;
   [[nodiscard]] std::size_t event_queue_capacity() const noexcept;
   [[nodiscard]] std::uint16_t maximum_stack_depth() const noexcept;
   [[nodiscard]] bool try_dequeue_event(RtlAllocateHeapEvent& event) noexcept;

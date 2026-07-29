@@ -145,6 +145,8 @@ TEST_CASE("uncompressed chunk encoding has stable golden bytes", "[trace][writer
   CHECK(std::equal(expected_chunk.begin(), expected_chunk.end(),
                    actual.begin() + noleax::trace::kFileHeaderSize));
   CHECK(writer.bytes_written() == actual.size());
+  CHECK(writer.uncompressed_payload_bytes_written() == payload.size());
+  CHECK(writer.stored_payload_bytes_written() == payload.size());
 }
 
 TEST_CASE("LZ4 and Zstd chunks decompress to their original payload", "[trace][writer]") {
@@ -208,7 +210,31 @@ TEST_CASE("file size limit accepts an exact chunk and never writes a partial chu
           noleax::trace::ChunkWriteResult::kFileLimit);
     CHECK(stream_bytes(output).size() == noleax::trace::kFileHeaderSize);
     CHECK(writer.bytes_written() == noleax::trace::kFileHeaderSize);
+    CHECK(writer.uncompressed_payload_bytes_written() == 0U);
+    CHECK(writer.stored_payload_bytes_written() == 0U);
   }
+}
+
+TEST_CASE("file tail reserve is released only for terminal chunks", "[trace][writer]") {
+  const auto payload = bytes("abc");
+  constexpr std::uint64_t kChunkSize = noleax::trace::kChunkHeaderSize + 3U;
+  constexpr std::uint64_t kExactSize = noleax::trace::kFileHeaderSize + kChunkSize;
+  std::ostringstream output{std::ios::binary};
+  noleax::trace::TraceWriterOptions options;
+  options.max_file_size = kExactSize;
+  options.reserved_tail_size = kChunkSize;
+  noleax::trace::TraceWriter writer{output, minimal_file_header(), options};
+
+  CHECK(writer.write_chunk(descriptor(noleax::trace::CompressionCodec::kNone), payload) ==
+        noleax::trace::ChunkWriteResult::kFileLimit);
+  CHECK(writer.bytes_written() == noleax::trace::kFileHeaderSize);
+  CHECK(writer.remaining_bytes() == 0U);
+  writer.release_file_reserve();
+  CHECK(writer.remaining_bytes() == kChunkSize);
+  CHECK(writer.write_chunk(descriptor(noleax::trace::CompressionCodec::kNone), payload) ==
+        noleax::trace::ChunkWriteResult::kWritten);
+  CHECK(writer.bytes_written() == kExactSize);
+  CHECK(writer.remaining_bytes() == 0U);
 }
 
 TEST_CASE("wire format validation rejects invalid headers descriptors and records",
@@ -250,6 +276,14 @@ TEST_CASE("wire format validation rejects invalid headers descriptors and record
   noleax::trace::TraceWriterOptions invalid_options;
   invalid_options.zstd_level = 2;
   std::ostringstream invalid_options_output{std::ios::binary};
+  CHECK_THROWS_AS(
+      noleax::trace::TraceWriter(invalid_options_output, minimal_file_header(), invalid_options),
+      noleax::trace::TraceWriteError);
+  CHECK(stream_bytes(invalid_options_output).empty());
+
+  invalid_options = {};
+  invalid_options.max_file_size = noleax::trace::kFileHeaderSize;
+  invalid_options.reserved_tail_size = 1U;
   CHECK_THROWS_AS(
       noleax::trace::TraceWriter(invalid_options_output, minimal_file_header(), invalid_options),
       noleax::trace::TraceWriteError);

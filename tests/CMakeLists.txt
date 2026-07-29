@@ -75,6 +75,7 @@ if(WIN32)
     unit/hook_guard_test.cpp
     unit/hook_backend_test.cpp
     unit/stack_capture_test.cpp
+    unit/stack_dictionary_test.cpp
   )
   target_link_libraries(noleax-unit-tests PRIVATE noleax::hook-backend)
 
@@ -98,6 +99,28 @@ if(WIN32)
     noleax::hook-backend
   )
   noleax_set_project_warnings(noleax-rtl-allocate-heap-hook-harness)
+
+  add_executable(noleax-rtl-allocate-heap-trace-writer-test
+    integration/rtl_allocate_heap_trace_writer_test.cpp
+  )
+  target_link_libraries(noleax-rtl-allocate-heap-trace-writer-test PRIVATE
+    noleax::hook-backend
+    noleax::analyzer
+  )
+  noleax_set_project_warnings(noleax-rtl-allocate-heap-trace-writer-test)
+
+  foreach(trace_mode IN ITEMS empty normal queue-limit file-limit)
+    add_test(NAME hook.rtl-allocate-heap-trace-writer-${trace_mode}
+      COMMAND noleax-rtl-allocate-heap-trace-writer-test
+        "${trace_mode}"
+        "$<TARGET_FILE_DIR:noleax-rtl-allocate-heap-trace-writer-test>/rtl-allocate-heap-${trace_mode}.nlx"
+    )
+    set_tests_properties(hook.rtl-allocate-heap-trace-writer-${trace_mode} PROPERTIES
+      LABELS "hook;trace;writer;windows;rtl-heap;stress"
+      RUN_SERIAL TRUE
+      TIMEOUT 120
+    )
+  endforeach()
 
   set(noleax_rtl_heap_baseline_arguments
     --threads 4

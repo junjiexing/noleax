@@ -20,6 +20,8 @@ namespace {
 
 inline constexpr std::uint16_t kRecordVersion = 1;
 inline constexpr std::size_t kEventHeaderPayloadSize = 56U;
+inline constexpr std::size_t kStackDefinitionFixedPayloadSize = 16U;
+inline constexpr std::size_t kStackFramePayloadSize = 32U;
 inline constexpr std::size_t kStatisticsFixedPayloadSize = 80U;
 inline constexpr std::size_t kPerApiStatisticsSize = 48U;
 
@@ -151,6 +153,21 @@ class PayloadReader {
       return EventStatus::kPreexisting;
     default:
       throw RecordCodecError{"event status is not supported"};
+  }
+}
+
+[[nodiscard]] StackCaptureStatus decode_stack_capture_status(std::uint8_t value) {
+  switch (value) {
+    case static_cast<std::uint8_t>(StackCaptureStatus::kComplete):
+      return StackCaptureStatus::kComplete;
+    case static_cast<std::uint8_t>(StackCaptureStatus::kTruncatedByDepth):
+      return StackCaptureStatus::kTruncatedByDepth;
+    case static_cast<std::uint8_t>(StackCaptureStatus::kUnwindFailed):
+      return StackCaptureStatus::kUnwindFailed;
+    case static_cast<std::uint8_t>(StackCaptureStatus::kUnavailable):
+      return StackCaptureStatus::kUnavailable;
+    default:
+      throw RecordCodecError{"stack capture status is not supported"};
   }
 }
 
@@ -570,6 +587,77 @@ std::optional<CaptureScope> decode_capture_scope_record(const RecordView& record
     throw RecordCodecError{"invalid CaptureScope record: " + std::string{error.what()}};
   }
   return scope;
+}
+
+void append_stack_definition_record(std::vector<std::byte>& chunk_payload,
+                                    const StackDefinition& definition,
+                                    std::uint32_t maximum_record_size) {
+  validate_stack_definition(definition);
+  if (definition.frames.size() > std::numeric_limits<std::uint32_t>::max() ||
+      maximum_record_size < kRecordHeaderSize + kStackDefinitionFixedPayloadSize ||
+      definition.frames.size() >
+          (maximum_record_size - kRecordHeaderSize - kStackDefinitionFixedPayloadSize) /
+              kStackFramePayloadSize) {
+    throw RecordCodecError{"stack definition exceeds the configured record size limit"};
+  }
+
+  std::vector<std::byte> payload;
+  payload.reserve(kStackDefinitionFixedPayloadSize +
+                  definition.frames.size() * kStackFramePayloadSize);
+  append_u64(payload, definition.stack_id.value());
+  append_u8(payload, static_cast<std::uint8_t>(definition.status));
+  append_zeros(payload, 3U);
+  append_u32(payload, static_cast<std::uint32_t>(definition.frames.size()));
+  for (const StackFrame& frame : definition.frames) {
+    append_u64(payload, frame.module_id.value());
+    append_u64(payload, frame.module_offset);
+    append_u64(payload, frame.absolute_address);
+    append_u32(payload, frame.flags);
+    append_u32(payload, 0U);
+  }
+  append_record(chunk_payload, static_cast<std::uint16_t>(StackRecordType::kDefinition),
+                kRecordVersion, payload, maximum_record_size);
+}
+
+std::optional<StackDefinition> decode_stack_definition_record(const RecordView& record) {
+  if (record.type != static_cast<std::uint16_t>(StackRecordType::kDefinition) ||
+      record.version != kRecordVersion) {
+    return std::nullopt;
+  }
+  if (record.payload.size() < kStackDefinitionFixedPayloadSize) {
+    throw RecordCodecError{"stack definition payload is truncated"};
+  }
+
+  PayloadReader reader{record.payload};
+  StackDefinition definition;
+  definition.stack_id = StackId{reader.read_u64()};
+  definition.status = decode_stack_capture_status(reader.read_u8());
+  reader.expect_zeros(3U);
+  const std::uint32_t frame_count = reader.read_u32();
+  if (frame_count >
+          (record.payload.size() - kStackDefinitionFixedPayloadSize) / kStackFramePayloadSize ||
+      kStackDefinitionFixedPayloadSize +
+              static_cast<std::size_t>(frame_count) * kStackFramePayloadSize !=
+          record.payload.size()) {
+    throw RecordCodecError{"stack frame count does not match the record payload"};
+  }
+  definition.frames.reserve(frame_count);
+  for (std::uint32_t index = 0U; index < frame_count; ++index) {
+    StackFrame frame;
+    frame.module_id = ModuleId{reader.read_u64()};
+    frame.module_offset = reader.read_u64();
+    frame.absolute_address = reader.read_u64();
+    frame.flags = reader.read_u32();
+    reader.expect_zeros(4U);
+    definition.frames.push_back(frame);
+  }
+  reader.expect_done();
+  try {
+    validate_stack_definition(definition);
+  } catch (const StackValidationError& error) {
+    throw RecordCodecError{"invalid StackDefinition record: " + std::string{error.what()}};
+  }
+  return definition;
 }
 
 void append_event_record(std::vector<std::byte>& chunk_payload, const Event& event,

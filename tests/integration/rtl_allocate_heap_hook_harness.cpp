@@ -72,6 +72,9 @@ void destroy_harness() noexcept {
       dropped != hook->recordable_call_count() - dequeued) {
     return 7U;
   }
+  if (hook->successful_call_count() + hook->failed_call_count() != hook->recordable_call_count()) {
+    return 8U;
+  }
   return 0U;
 }
 
