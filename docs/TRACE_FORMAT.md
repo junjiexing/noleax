@@ -1,6 +1,6 @@
 # Noleax Trace Format
 
-> 状态：P2.4 writer 编码基线；reader 待实现
+> 状态：P2.5 writer/reader 编码基线
 > 文件扩展名：.nlx
 > format major：1
 > 默认字节序：little-endian
@@ -81,6 +81,11 @@ reader 必须在分配或解压前检查：
 
 最后一个 chunk 不完整时，保留之前所有完整 chunk 并将 trace 标记为 truncated。
 
+P2.5 reader 将“完整 chunk 后恰好 EOF”和“已出现下一个 chunk 的部分 header、header
+extension 或 payload”分别返回 end-of-file 和 truncated。完整但校验失败的 chunk 属于损坏输入，
+返回错误而不是伪装成 truncated。未知 chunk 按 header_size 和 stored_size 流式跳过，并将结果
+标记为 partially understood。
+
 ## 5. Record framing
 
 chunk payload 由 record 组成。每个 record 固定头为 8 bytes：
@@ -93,6 +98,9 @@ chunk payload 由 record 组成。每个 record 固定头为 8 bytes：
 | payload | byte[record_size - 8] |
 
 同一 major 中未知 record 可以按 record_size 跳过。record_size 小于 header、超过 chunk 或违反实现上限时，该 chunk 无效。
+
+P2.5 的 RecordCursor 返回原始 type/version 和零拷贝 payload view；上层 decoder 可以忽略未知
+type 后继续读取下一条 record。默认单 record 上限为 1 MiB，可由调用方收紧或放宽。
 
 V1 writer 默认单 chunk 未压缩上限为 16 MiB、存储上限为 17 MiB。写入前会同时检查
 完整 chunk 是否可放入 max_file_size；不能完整容纳时返回 file-limit，不向 stream 写入半个 chunk。
@@ -386,6 +394,8 @@ EndOfTrace：
 - hook 回调不执行压缩。
 - CRC32C 针对未压缩 payload，统一覆盖所有 codec。
 - reader 必须限制压缩展开比例和最大 uncompressed_size。
+- V1 canonical writer 对空压缩 chunk 写入零长度 stored payload；reader 要求 compressed
+  uncompressed_size/stored_size 同时为零或同时非零。
 - codec 不支持时返回格式不支持错误，不猜测内容。
 
 ## 16. Rotation
@@ -408,3 +418,6 @@ reader 将 trace 视为不可信输入：
 - 符号路径不从 trace 自动加载 DLL。
 - trace 内 URL 不触发联网。
 - fuzz target 覆盖 header、chunk、record、compression 和生命周期状态机。
+
+P2.5 reader 默认限制：file/chunk header 各 64 KiB、stored chunk 17 MiB、uncompressed
+chunk 16 MiB、最大展开比例 65536:1。所有长度在分配和解压前验证；调用方可以进一步收紧。

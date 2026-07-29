@@ -1,5 +1,6 @@
 add_library(noleax-trace STATIC
   event.cpp
+  trace_reader.cpp
   trace_writer.cpp
   wire_format.cpp
 )
