@@ -300,7 +300,7 @@ NTSTATUS NTAPI NtUnmapViewOfSection(
 |---|---:|---:|---:|---:|---:|---:|---:|
 | RtlCreateHeap | pending | pending | pending | pending | pending | pending | no |
 | RtlDestroyHeap | pending | pending | pending | pending | pending | pending | no |
-| RtlAllocateHeap | probe only | pending | pending | probe only | probe only | pending | no |
+| RtlAllocateHeap | probe only | pending | pending | unhooked baseline | probe only | pending | no |
 | RtlReAllocateHeap | pending | pending | pending | pending | pending | pending | no |
 | RtlFreeHeap | pending | pending | pending | pending | pending | pending | no |
 | NtAllocateVirtualMemory | pending | pending | pending | pending | pending | pending | no |
@@ -308,4 +308,6 @@ NTSTATUS NTAPI NtUnmapViewOfSection(
 | NtMapViewOfSection | pending | pending | pending | pending | pending | pending | no |
 | NtUnmapViewOfSection | pending | pending | pending | pending | pending | pending | no |
 
-P0 probe 不等价于 P4 contract test，所以默认 profile 在产品实现中仍保持 disabled，直到对应测试门禁通过。
+P0 probe 和 P4.1 未 hook baseline 都不等价于 hook contract test，所以默认 profile 在产品实现中仍保持
+disabled，直到对应测试门禁通过。P4.1 workload 和摘要规范见
+[RTL_HEAP_BASELINE.md](RTL_HEAP_BASELINE.md)。

@@ -70,6 +70,57 @@ set_tests_properties(config.print-effective PROPERTIES
   PASS_REGULAR_EXPRESSION "operation = \"doctor\" # source: config")
 
 if(WIN32)
+  set(noleax_rtl_heap_baseline_arguments
+    --threads 4
+    --iterations 2000
+    --rounds 2
+    --seed 5642812718451281972
+  )
+
+  function(noleax_add_rtl_heap_baseline target test_suffix runtime)
+    add_executable(${target}
+      targets/rtl_heap_baseline.cpp
+    )
+    noleax_set_project_warnings(${target})
+    if(MSVC)
+      set_property(TARGET ${target} PROPERTY MSVC_RUNTIME_LIBRARY "${runtime}")
+    endif()
+
+    add_test(NAME hook.rtl-heap-baseline-${test_suffix}
+      COMMAND ${target} ${noleax_rtl_heap_baseline_arguments}
+    )
+    set_tests_properties(hook.rtl-heap-baseline-${test_suffix} PROPERTIES
+      LABELS "hook;stress;windows;rtl-heap;baseline"
+      PASS_REGULAR_EXPRESSION "^status=ok version=1 "
+      RUN_SERIAL TRUE
+      TIMEOUT 60
+    )
+  endfunction()
+
+  noleax_add_rtl_heap_baseline(
+    noleax-rtl-heap-baseline-md
+    md
+    "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+  )
+  noleax_add_rtl_heap_baseline(
+    noleax-rtl-heap-baseline-mt
+    mt
+    "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+  )
+
+  add_test(NAME hook.rtl-heap-baseline.compare-crt
+    COMMAND "${CMAKE_COMMAND}"
+      "-DNOLEAX_BASELINE_MD=$<TARGET_FILE:noleax-rtl-heap-baseline-md>"
+      "-DNOLEAX_BASELINE_MT=$<TARGET_FILE:noleax-rtl-heap-baseline-mt>"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CompareRtlHeapBaselines.cmake"
+  )
+  set_tests_properties(hook.rtl-heap-baseline.compare-crt PROPERTIES
+    LABELS "hook;stress;windows;rtl-heap;baseline"
+    PASS_REGULAR_EXPRESSION "Matching Rtl heap baseline"
+    RUN_SERIAL TRUE
+    TIMEOUT 120
+  )
+
   add_library(noleax-symbolizer-fixture SHARED
     integration/symbolizer_fixture.cpp
   )

@@ -4,9 +4,9 @@
 > 文档版本：0.1
 > 更新日期：2026-07-29
 > 确认日期：2026-07-29
-> 当前阶段：P3 离线分析器（库组件完成）
-> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8
-> 下一工作项：P4.1 Windows Rtl hook 基线目标（需先创建 `feat/windows-hook-agent` 分支并人工确认）
+> 当前阶段：P4 Windows Rtl hook 安全原型（`feat/windows-hook-agent`）
+> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1
+> 下一工作项：P4.2 封装 Hoox HookBackend
 
 ## 1. 文档目的
 
@@ -1246,6 +1246,12 @@ Module/Stack record codec、EventStream 元数据装配和 `noleax analyze` 的�
 | P4.7 | 后台 writer | agent trace path | 文件上限测试 |
 | P4.8 | 退出和卸载 quiescence | lifecycle | race 测试 |
 | P4.9 | Page Heap/Verifier/CFG/CET 压力 | test report | 零 hook 引入 crash |
+
+状态：P4.1 已通过。未 hook 基线由同一源文件生成 MSVC 动态 CRT 和静态 CRT 两个目标，覆盖直接
+Rtl、Win32 Heap、CRT、process/显式 heap、零填充、确定失败、多线程 live block 内容验证和逆序
+释放。同参数的进程内多轮摘要必须一致，两种 CRT 的跨进程摘要必须逐字节一致。摘要保留原始
+`LastError` change count 和实际值 hash，供 P4.3 hooked 差分使用。详见
+[RTL_HEAP_BASELINE.md](RTL_HEAP_BASELINE.md)。
 
 阶段门禁：
 

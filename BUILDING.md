@@ -65,11 +65,22 @@ cmake --preset windows-x64-debug -DNOLEAX_ENABLE_CLANG_TIDY=ON
 cmake --build --preset windows-x64-debug
 ~~~
 
+The Windows Rtl Heap unhooked baselines can be run independently with:
+
+~~~powershell
+ctest --preset windows-x64-debug -L baseline --output-on-failure
+~~~
+
+These tests compare deterministic `/MD` and `/MT` workload summaries. See
+[docs/RTL_HEAP_BASELINE.md](docs/RTL_HEAP_BASELINE.md) for the workload and longer stress commands.
+
 ## Output
 
 - build/<preset>/bin/noleax.exe
 - build/<preset>/bin/noleax-agent.dll
 - build/<preset>/bin/noleax-unit-tests.exe
+- build/<preset>/bin/noleax-rtl-heap-baseline-md.exe
+- build/<preset>/bin/noleax-rtl-heap-baseline-mt.exe
 
 ## Clean builds
 
