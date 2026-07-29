@@ -1,0 +1,38 @@
+# Local research and references
+/_temp/
+
+# CMake and build output
+/build/
+/build-*/
+/out/
+/cmake-build-*/
+/CMakeFiles/
+/CMakeCache.txt
+/cmake_install.cmake
+/CTestTestfile.cmake
+/Testing/
+/compile_commands.json
+/CMakeUserPresets.json
+
+# vcpkg local state
+/vcpkg_installed/
+/.vcpkg/
+
+# IDE and editor state
+/.vs/
+/.vscode/
+/.idea/
+*.user
+*.suo
+
+# Runtime artifacts
+*.nlx
+*.nlx.*
+*.dmp
+*.core
+/symbol-cache/
+/test-results/
+
+# Platform noise
+.DS_Store
+Thumbs.db
