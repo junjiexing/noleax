@@ -309,7 +309,7 @@ NTSTATUS NTAPI NtUnmapViewOfSection(
 | NtUnmapViewOfSection | pending | pending | pending | pending | pending | pending | no |
 
 P4.6 raw-stack prototype 已通过真实 hook contract 差分、guard 探针、新线程 TLS 启动、强制 queue
-overflow 和双策略 unwind 压力，但尚无 writer、quiescence、SEH 和 Page Heap 门禁，所以默认
+overflow、双策略 unwind、writer 和 quiescence 压力，但尚无 SEH 和 Page Heap 门禁，所以默认
 profile 仍保持 disabled。workload 与 P4.6 证据见
 [RTL_HEAP_BASELINE.md](RTL_HEAP_BASELINE.md) 和
 [RTL_ALLOCATE_HEAP_HOOK.md](RTL_ALLOCATE_HEAP_HOOK.md)，guard 设计与崩溃根因见

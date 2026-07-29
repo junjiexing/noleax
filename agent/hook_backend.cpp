@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string_view>
@@ -49,8 +51,8 @@ class HookBackend::Impl {
   ~Impl() {
     std::scoped_lock lock{mutex_};
     if (interceptor_ != nullptr && !shutdown_locked(HookBackend::kDefaultFlushAttempts)) {
-      // Revert has already stopped new calls. Retain the Hoox references instead of freeing
-      // instrumentation that may still be executing. P4.8 adds replacement-level quiescence.
+      // Revert has already stopped new calls. Retain the Hoox references instead of freeing a
+      // trampoline covered by a replacement lease or instrumentation still being executed.
       interceptor_ = nullptr;
     }
   }
@@ -144,6 +146,24 @@ class HookBackend::Impl {
     return shutdown_locked(flush_attempts);
   }
 
+  [[nodiscard]] bool acquire_trampoline_lifetime_lease() noexcept {
+    std::scoped_lock lock{mutex_};
+    if (interceptor_ == nullptr || stopping_ ||
+        trampoline_lifetime_leases_ == std::numeric_limits<std::size_t>::max()) {
+      return false;
+    }
+    ++trampoline_lifetime_leases_;
+    return true;
+  }
+
+  void release_trampoline_lifetime_lease() noexcept {
+    std::scoped_lock lock{mutex_};
+    if (trampoline_lifetime_leases_ == 0U) {
+      std::terminate();
+    }
+    --trampoline_lifetime_leases_;
+  }
+
   [[nodiscard]] bool is_active() const noexcept {
     std::scoped_lock lock{mutex_};
     return interceptor_ != nullptr && !stopping_;
@@ -157,6 +177,11 @@ class HookBackend::Impl {
   [[nodiscard]] std::size_t installed_count() const noexcept {
     std::scoped_lock lock{mutex_};
     return entries_.size();
+  }
+
+  [[nodiscard]] std::size_t trampoline_lifetime_lease_count() const noexcept {
+    std::scoped_lock lock{mutex_};
+    return trampoline_lifetime_leases_;
   }
 
  private:
@@ -176,6 +201,9 @@ class HookBackend::Impl {
   [[nodiscard]] bool flush_locked(std::uint32_t max_attempts) noexcept {
     if (interceptor_ == nullptr) {
       return true;
+    }
+    if (trampoline_lifetime_leases_ != 0U) {
+      return false;
     }
     for (std::uint32_t attempt = 0U; attempt < max_attempts; ++attempt) {
       if (hoox_interceptor_flush(interceptor_) != 0) {
@@ -217,6 +245,7 @@ class HookBackend::Impl {
   mutable std::mutex mutex_;
   HooxInterceptor* interceptor_{nullptr};
   std::vector<Entry> entries_;
+  std::size_t trampoline_lifetime_leases_{0U};
   bool pending_teardown_{false};
   bool stopping_{false};
 };
@@ -280,10 +309,22 @@ bool HookBackend::shutdown(std::uint32_t flush_attempts) noexcept {
   return impl_->shutdown(flush_attempts);
 }
 
+bool HookBackend::acquire_trampoline_lifetime_lease() noexcept {
+  return impl_->acquire_trampoline_lifetime_lease();
+}
+
+void HookBackend::release_trampoline_lifetime_lease() noexcept {
+  impl_->release_trampoline_lifetime_lease();
+}
+
 bool HookBackend::is_active() const noexcept { return impl_->is_active(); }
 
 bool HookBackend::has_pending_teardown() const noexcept { return impl_->has_pending_teardown(); }
 
 std::size_t HookBackend::installed_count() const noexcept { return impl_->installed_count(); }
+
+std::size_t HookBackend::trampoline_lifetime_lease_count() const noexcept {
+  return impl_->trampoline_lifetime_lease_count();
+}
 
 }  // namespace noleax::agent

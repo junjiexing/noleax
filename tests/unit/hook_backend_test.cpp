@@ -316,6 +316,54 @@ TEST_CASE("hook backend exposes deferred teardown until an explicit flush",
         noleax::agent::HookUninstallStatus::kUninstalled);
 }
 
+TEST_CASE("hook backend lifetime lease blocks trampoline flush and deinit",
+          "[agent][hook-backend][quiescence]") {
+  const LoadedHookFixture fixture;
+  const OriginalReset reset;
+  const FixtureFunction target = fixture.function("noleax_hook_fixture_transform");
+  constexpr std::uint64_t left = 73U;
+  constexpr std::uint64_t right = 151U;
+  const std::uint64_t baseline = target(left, right);
+
+  SECTION("deferred uninstall") {
+    noleax::agent::HookBackend backend;
+    REQUIRE(backend.acquire_trampoline_lifetime_lease());
+    CHECK(backend.trampoline_lifetime_lease_count() == 1U);
+    const auto installed =
+        backend.install_fast(function_address(target), function_address(transform_replacement));
+    REQUIRE(installed.installed());
+    transform_original = reinterpret_cast<FixtureFunction>(installed.original);
+    REQUIRE(target(left, right) == (baseline ^ kTransformMask));
+
+    CHECK(backend.uninstall(function_address(target), 0U) ==
+          noleax::agent::HookUninstallStatus::kTeardownPending);
+    CHECK(target(left, right) == baseline);
+    CHECK_FALSE(backend.flush(32U));
+
+    backend.release_trampoline_lifetime_lease();
+    CHECK(backend.trampoline_lifetime_lease_count() == 0U);
+    CHECK(backend.flush(32U));
+    CHECK_FALSE(backend.has_pending_teardown());
+  }
+
+  SECTION("shutdown") {
+    noleax::agent::HookBackend backend;
+    REQUIRE(backend.acquire_trampoline_lifetime_lease());
+    const auto installed =
+        backend.install_fast(function_address(target), function_address(transform_replacement));
+    REQUIRE(installed.installed());
+    transform_original = reinterpret_cast<FixtureFunction>(installed.original);
+    REQUIRE(target(left, right) == (baseline ^ kTransformMask));
+
+    CHECK_FALSE(backend.shutdown(32U));
+    CHECK(target(left, right) == baseline);
+    CHECK(backend.has_pending_teardown());
+    backend.release_trampoline_lifetime_lease();
+    CHECK(backend.shutdown(32U));
+    CHECK_FALSE(backend.is_active());
+  }
+}
+
 TEST_CASE("hook backend reverts all hooks during shutdown and destruction",
           "[agent][hook-backend]") {
   const LoadedHookFixture fixture;

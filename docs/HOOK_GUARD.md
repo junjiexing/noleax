@@ -85,7 +85,8 @@ Release x64 object 反汇编确认 guard 正常路径只有原子 index load、`
 CRT `_tls_index` 引用。`TlsAlloc`/`TlsFree` 只存在于 adapter 安装前和安全 teardown 后的冷路径。
 
 `HEAP_GENERATE_EXCEPTIONS` 的 SEH 退出清理仍属于后续隔离进程合同门禁；在该门禁完成前 profile
-保持 disabled。replacement 自有 in-flight/quiescence 同样保留给 P4.8。
+保持 disabled。replacement 自有 in-flight/quiescence 已在 P4.8 完成，见
+[HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)；P4.9 平台门禁仍未完成。
 
 ## 5. 验证
 

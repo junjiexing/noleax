@@ -89,5 +89,5 @@ ctest --preset windows-x64-release -R "stack capture|rtl-allocate-heap-passthrou
 
 Release object 审计确认生产捕获函数唯一的外部调用是 `RtlCaptureStackBackTrace`；replacement 调用
 guard、original、错误状态/计时/thread API、无锁 queue 和该捕获入口，未出现 allocator、文件、
-日志、符号、loader 或显式锁调用。相关 object 也没有 `.tls$` section。P4.8 完成前，卸载时的
-replacement in-flight 生命周期仍不构成产品级保证。
+日志、符号、loader 或显式锁调用。相关 object 也没有 `.tls$` section。卸载时的 replacement
+in-flight 生命周期已在 P4.8 完成，见 [HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)。

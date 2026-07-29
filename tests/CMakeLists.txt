@@ -15,6 +15,7 @@ add_executable(noleax-unit-tests
   unit/generation_tracker_test.cpp
   unit/json_test.cpp
   unit/outstanding_test.cpp
+  unit/replacement_lifecycle_test.cpp
   unit/symbolizer_test.cpp
   unit/time_test.cpp
   unit/command_line_test.cpp
@@ -108,6 +109,44 @@ if(WIN32)
     noleax::analyzer
   )
   noleax_set_project_warnings(noleax-rtl-allocate-heap-trace-writer-test)
+
+  add_executable(noleax-rtl-allocate-heap-quiescence-test
+    integration/rtl_allocate_heap_quiescence_test.cpp
+  )
+  target_link_libraries(noleax-rtl-allocate-heap-quiescence-test PRIVATE
+    noleax::hook-backend
+  )
+  noleax_set_project_warnings(noleax-rtl-allocate-heap-quiescence-test)
+
+  add_test(NAME hook.rtl-allocate-heap-quiescence-race
+    COMMAND noleax-rtl-allocate-heap-quiescence-test
+  )
+  set_tests_properties(hook.rtl-allocate-heap-quiescence-race PROPERTIES
+    LABELS "hook;windows;rtl-heap;quiescence;race;stress"
+    PASS_REGULAR_EXPRESSION "^status=ok "
+    RUN_SERIAL TRUE
+    TIMEOUT 60
+  )
+
+  add_executable(noleax-rtl-allocate-heap-module-retention-test
+    integration/rtl_allocate_heap_module_retention_test.cpp
+  )
+  noleax_set_project_warnings(noleax-rtl-allocate-heap-module-retention-test)
+  add_dependencies(
+    noleax-rtl-allocate-heap-module-retention-test
+    noleax-rtl-allocate-heap-hook-harness
+  )
+
+  add_test(NAME hook.rtl-allocate-heap-module-retention
+    COMMAND noleax-rtl-allocate-heap-module-retention-test
+      "$<TARGET_FILE:noleax-rtl-allocate-heap-hook-harness>"
+  )
+  set_tests_properties(hook.rtl-allocate-heap-module-retention PROPERTIES
+    LABELS "hook;windows;rtl-heap;quiescence;unload"
+    PASS_REGULAR_EXPRESSION "^status=ok module-retained=1"
+    RUN_SERIAL TRUE
+    TIMEOUT 60
+  )
 
   foreach(trace_mode IN ITEMS empty normal queue-limit file-limit)
     add_test(NAME hook.rtl-allocate-heap-trace-writer-${trace_mode}

@@ -1,7 +1,7 @@
 # Windows RtlAllocateHeap Background Trace Writer
 
 > 状态：P4.7 Windows x64 完成
-> 范围：单一 `RtlAllocateHeap` API 的进程内 trace path；安全卸载 barrier 属于 P4.8
+> 范围：单一 `RtlAllocateHeap` API 的进程内 trace path；P4.8 已接入安全停止 barrier
 
 ## 1. 目标与边界
 
@@ -22,7 +22,7 @@ module_offset 为零。
    worker 上建立 `InternalThreadScope`。
 3. 安装 hook，再调用 `begin_capture()` 唤醒 worker。
 4. 目标线程调用 allocator；worker 并发 drain。
-5. 调用方停止所有已知 producer，卸载/flush hook。
+5. 卸载/flush hook；P4.8 gate 关闭新 producer 并等待已进入 replacement 的 producer 退出。
 6. 调用 `finish()`，worker 最终 drain、写终止记录并 join。
 7. 最后 shutdown HookBackend、关闭输出流。
 
@@ -31,8 +31,9 @@ module_offset 为零。
 internal，不会递归进入记录队列。`finish()` 会拒绝仍处于 installed 或 teardown-pending 状态的
 hook，避免调用方主动生成一个过早宣称正常结束的 trace。
 
-P4.7 的第 5 步依赖调用方协议。Hoox flush 与 replacement 尾部 queue publish 之间仍缺少 Noleax
-自己的 in-flight barrier；P4.8 将关闭该竞态并把停止顺序收敛到 lifecycle API。
+P4.8 后，hook 只有在 recording gate 已关闭、target 已恢复、replacement in-flight 为零且 Hoox
+flush 完成后才离开 teardown-pending。`finish()` 的 final drain 因此不会与 queue producer 并发。
+完整顺序见 [HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)。
 
 ## 3. Drain、时间与栈去重
 

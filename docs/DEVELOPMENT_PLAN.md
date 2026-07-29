@@ -5,8 +5,8 @@
 > 更新日期：2026-07-29
 > 确认日期：2026-07-29
 > 当前阶段：P4 Windows Rtl hook 安全原型（`feat/windows-hook-agent`）
-> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7
-> 下一工作项：P4.8 退出和卸载 quiescence
+> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8
+> 下一工作项：P4.9 Page Heap/Verifier/CFG/CET 压力
 
 ## 1. 文档目的
 
@@ -1257,8 +1257,8 @@ P4.2 已通过。`HookBackend` 隔离全部 Hoox 类型，固定使用 checked o
 安装错误、original 缺失、重复 target、revert、deferred teardown、flush 和 stopped 状态显式化。
 独立 Release fixture 验证 original trampoline、跨实例冲突、批量 shutdown、析构回滚和重复生命周期。
 Hoox v0.1.1 遗留 FLS callback 的 DLL 卸载缺陷由 overlay 生命周期补丁修复，并通过 Debug/Release
-各 20 次 unload/exit 回归。Hoox flush 不覆盖 replacement 自身的全部 in-flight 窗口，该
-quiescence 明确保留给 P4.8。详见 [HOOK_BACKEND.md](HOOK_BACKEND.md)。
+各 20 次 unload/exit 回归。Hoox flush 不覆盖 replacement 自身的全部 in-flight 窗口，该缺口已在
+P4.8 由 lifetime lease 和自有 quiescence 完成。详见 [HOOK_BACKEND.md](HOOK_BACKEND.md)。
 
 P4.3 已通过。`RtlAllocateHeap` adapter 使用精确 NTAPI 签名；HookBackend 在 Hoox transaction 提交
 前完成 bookkeeping 并原子发布 original，replacement 只执行无锁计数和一次 original 调用。同一
@@ -1272,7 +1272,7 @@ P4.4 已通过。开发中的 static `thread_local` 版本在新线程建立 TLS
 锁、I/O 或 loader；固定槽不足时拒绝安装。单元测试覆盖引用计数、嵌套、分类优先级和线程隔离，
 真实 hook harness 覆盖 outermost/recursive/internal 探针及 hook 后创建 worker 的原崩溃路径。
 Debug/Release 定向测试、双配置各 20 次 passthrough 和 Release 8×20,000×2 差分均通过。事件队列、
-SEH 门禁和 replacement quiescence 尚未完成，profile 继续保持 disabled。详见
+SEH 门禁当时尚未完成，profile 继续保持 disabled；replacement quiescence 后续已在 P4.8 完成。详见
 [HOOK_GUARD.md](HOOK_GUARD.md)。
 
 P4.5 已通过。`BoundedMpscQueue` 在安装前按 2 的幂预分配 slot，使用 per-slot generation sequence、
@@ -1296,8 +1296,17 @@ P4.7 已通过。安装 hook 前启动的 internal writer 线程持续 drain MPS
 复用 stack_id。writer 显式生成 stack-capture、queue-full 和 trace-full Loss，校验 hook/queue/file
 计数守恒，并在 1 KiB 文件尾保留区中以 none codec 写 Statistics 与 EndOfTrace。正常、2-slot
 queue overflow 和 8 KiB 文件上限三种真实 hook trace 均由正式 EventStream 重新解码验证；文件大小
-不会超过硬上限。P4.8 前仍由调用者负责先停止 producer 并完成 hook 卸载，再结束 writer。详见
+不会超过硬上限。P4.8 已把 producer stop 与 hook 卸载收敛到生命周期 barrier。详见
 [TRACE_WRITER.md](TRACE_WRITER.md)。
+
+P4.8 已通过。replacement 入口先计数再取得 `record/original/target` 路由快照；停止时先关闭记录，
+只 revert，不允许 Hoox 在 replacement 静默前 flush trampoline。backend lifetime lease 覆盖
+replacement 尚未进入 original 的窗口。Hoox Windows RWX overlay 在 18 字节 target patch 更新期间
+暂停 peer threads，并以重复快照覆盖 thread churn；未修补版本的并发测试在第 17 次崩溃，修补后
+Debug 含 thread churn 和 Release race 均连续 100 次、双配置全量均 175/175 通过。不可观测的旧跳转
+通过进程级 module pin 和恢复后的 target 路由 fail-safe，因此当前 adapter 明确限制为每进程安装
+一次，DLL 驻留到进程退出。Release 热路径反汇编和 MD/MT 8×20,000×2 ABI 长差分也已复核通过。
+详见 [HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)。
 
 阶段门禁：
 

@@ -1,6 +1,6 @@
 # Noleax HookBackend
 
-> 状态：P4.2 Windows x64 完成
+> 状态：P4.8 Windows x64 完成
 > 后端：Hoox v0.1.1 `replace_fast`
 
 ## 1. 边界
@@ -41,7 +41,8 @@ target/replacement 为空或相同会在进入 Hoox 前返回 `invalid_argument`
 
 1. 构造时 `hoox_init` 并取得带引用的 interceptor singleton。
 2. `install_fast` 记录 target、replacement 和 original。
-3. `uninstall` 先 revert，使新调用不再进入 replacement，再尝试 flush。
+3. 普通 target 的 `uninstall` 先 revert，再尝试 flush；allocator adapter 固定用
+   `uninstall(target, 0)` 将 revert 与 flush 分开。
 4. flush 完成后允许再次安装；未完成时进入 `teardown_pending`，拒绝新安装。
 5. `shutdown` 在一个 Hoox transaction 中 revert 全部 target，flush 成功后 unref interceptor 并
    `hoox_deinit`，随后永久进入 stopped 状态。
@@ -63,9 +64,10 @@ Hoox `flush` 只知道其 trampoline 是否仍被使用。`replace_fast` 是直�
 - original 已返回但 replacement 尚未退出；
 - replacement 选择不调用 original。
 
-因此 `shutdown() == true` 只证明 Hoox instrumentation teardown 完成，不能单独证明 agent DLL 可
-卸载。P4.8 必须增加 Noleax 自有的 replacement in-flight counter、停止接收新事件和 quiescence
-协议。该限制不能通过增大 flush 次数掩盖。
+P4.8 增加 trampoline lifetime lease：lease 存在时 backend 允许 revert，但拒绝 flush/deinit。
+allocator adapter 在 Noleax replacement in-flight 归零后才释放 lease。完整的三路 gate、Windows
+RWX patch 暂停和 module pin 见 [HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)。该协议不能通过单纯增大
+Hoox flush 次数替代。
 
 ## 5. 多实例与线程安全
 

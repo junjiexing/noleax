@@ -2,12 +2,14 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 
-#include "noleax/agent/bounded_mpsc_queue.hpp"
 #include "noleax/agent/hook_backend.hpp"
 #include "noleax/agent/windows/rtl_allocate_heap_event.hpp"
 
 namespace noleax::agent::windows {
+
+struct RtlAllocateHeapHookState;
 
 class RtlAllocateHeapHook {
  public:
@@ -32,6 +34,8 @@ class RtlAllocateHeapHook {
 
   [[nodiscard]] bool is_installed() const noexcept;
   [[nodiscard]] bool has_pending_teardown() const noexcept;
+  [[nodiscard]] bool replacement_module_is_pinned() const noexcept;
+  [[nodiscard]] std::uint64_t replacement_in_flight_count() const noexcept;
   [[nodiscard]] std::uint64_t call_count() const noexcept;
   [[nodiscard]] std::uint64_t recordable_call_count() const noexcept;
   [[nodiscard]] std::uint64_t recursive_call_count() const noexcept;
@@ -50,16 +54,22 @@ class RtlAllocateHeapHook {
     kInactive,
     kInstalled,
     kTeardownPending,
+    kRetired,
   };
 
+  [[nodiscard]] bool try_finish_teardown(std::uint32_t max_attempts) noexcept;
   void finish_teardown() noexcept;
+  void abandon_pending_teardown() noexcept;
 
-  BoundedMpscQueue<RtlAllocateHeapEvent> event_queue_;
+  std::unique_ptr<RtlAllocateHeapHookState> hook_state_;
   HookBackend* backend_{nullptr};
   void* target_{nullptr};
   std::uint16_t maximum_stack_depth_{kDefaultMaximumStackDepth};
   State state_{State::kInactive};
   bool guard_runtime_acquired_{false};
+  bool trampoline_lease_acquired_{false};
+  bool replacement_quiescent_{false};
+  bool backend_teardown_complete_{false};
 };
 
 }  // namespace noleax::agent::windows

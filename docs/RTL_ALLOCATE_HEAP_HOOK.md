@@ -1,6 +1,6 @@
 # RtlAllocateHeap Hook Prototype
 
-> 状态：P4.7 Windows x64 完成
+> 状态：P4.8 Windows x64 完成
 > 范围：guarded raw-stack event queue 与后台 trace writer，不进入任何产品 profile
 
 ## 1. 目的
@@ -9,7 +9,7 @@ P4.3 首次在正式测试路径 hook `ntdll!RtlAllocateHeap`，验证 Hoox tram
 发布顺序和卸载生命周期。P4.4 增加无分配 recursion/internal-thread guard，P4.5 为 outermost
 调用增加预分配 MPSC 原始事件队列，P4.6 在成功取得 queue slot 后捕获原始调用栈。replacement
 自身仍不写 trace；P4.7 由预先启动并标记为 internal 的后台线程消费队列、去重调用栈并写 trace。
-完整卸载生命周期属于 P4.8。
+P4.8 已增加 replacement gate、并发 revert 和 fail-safe 模块生命周期。
 
 精确函数类型为：
 
@@ -106,8 +106,8 @@ ctest --preset windows-x64-release -L passthrough --repeat until-fail:20
 
 ## 5. 未完成边界
 
-- P4.8：replacement 自有 in-flight/quiescence。
 - P4.9：Page Heap、Application Verifier、CFG/CET 和更长 race 压力。
 
 此外，`HEAP_GENERATE_EXCEPTIONS` 的 SEH 合同仍等待隔离进程门禁。因此 `RtlAllocateHeap` 继续保持
-disabled；P4.7 trace path 已可由 analyzer 解码，但在 P4.8/P4.9 门禁前仍不是产品级捕获能力。
+disabled；P4.7 trace path 已可由 analyzer 解码，P4.8 生命周期见
+[HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)，但在 P4.9 门禁前仍不是产品级捕获能力。

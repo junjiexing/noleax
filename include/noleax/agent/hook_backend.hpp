@@ -66,9 +66,15 @@ class HookBackend {
   [[nodiscard]] bool flush(std::uint32_t max_attempts = kDefaultFlushAttempts) noexcept;
   [[nodiscard]] bool shutdown(std::uint32_t flush_attempts = kDefaultFlushAttempts) noexcept;
 
+  // A direct replacement can be paused before it enters the Hoox trampoline. While a lease is
+  // held, revert is allowed but flush/deinit must retain the trampoline for that replacement.
+  [[nodiscard]] bool acquire_trampoline_lifetime_lease() noexcept;
+  void release_trampoline_lifetime_lease() noexcept;
+
   [[nodiscard]] bool is_active() const noexcept;
   [[nodiscard]] bool has_pending_teardown() const noexcept;
   [[nodiscard]] std::size_t installed_count() const noexcept;
+  [[nodiscard]] std::size_t trampoline_lifetime_lease_count() const noexcept;
 
  private:
   class Impl;

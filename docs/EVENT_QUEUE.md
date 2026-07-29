@@ -35,7 +35,8 @@ consumer 只按 reservation 顺序读取。它 acquire-load slot sequence，复�
 因此队列输出顺序与 reservation 顺序一致。
 
 `reset_quiescent` 只允许在没有 producer/consumer 时调用。adapter 每次安装前重置队列；卸载后才允许
-最终 drain。队列对象销毁和 replacement in-flight 的完整协调仍属于 P4.8。
+最终 drain。P4.8 已由 replacement lifecycle 保证 reset、final drain 和对象销毁前没有 producer；
+详见 [HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)。
 
 ## 3. Overflow 与 Loss
 

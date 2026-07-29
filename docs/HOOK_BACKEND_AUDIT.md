@@ -110,7 +110,7 @@ Noleax 只通过内部 HookBackend wrapper 使用以下 Hoox API：
 
 P4.2 已将上述 API 收口到 `noleax::agent::HookBackend`。公开 adapter 头文件不包含 Hoox 类型；安装
 状态、original trampoline、revert、deferred teardown、flush 和 shutdown 均有独立测试。实现和
-仍需 P4.8 解决的 replacement in-flight 边界见 [HOOK_BACKEND.md](HOOK_BACKEND.md)。
+replacement in-flight 边界后续已在 P4.8 解决，见 [HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)。
 
 P4.3 进一步要求 allocator hook 使用嵌套 transaction：在代码 patch 激活前完成 backend
 bookkeeping，并通过原子 slot 发布 original。真实 `RtlAllocateHeap` passthrough 的 MD/MT、
@@ -238,7 +238,7 @@ dumpbin 确认输出包含：
 - 同一进程 25 次 HookBackend init/install/call/revert/deinit 循环通过。
 
 该结论只证明当前无 replacement in-flight 的 P4.2 fixture 可安全卸载；真实 allocator replacement
-仍必须在 P4.8 通过 Noleax 自有 quiescence 门禁。
+已在 P4.8 增加 Noleax 自有 quiescence、trampoline lease 和 module pin 门禁。
 
 ## 7. 已知风险和缺口
 
