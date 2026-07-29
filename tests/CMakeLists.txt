@@ -6,6 +6,8 @@ add_executable(noleax-unit-tests
   support/synthetic_trace.cpp
   unit/analyzer_event_stream_test.cpp
   unit/generation_tracker_test.cpp
+  unit/outstanding_test.cpp
+  unit/time_test.cpp
   unit/command_line_test.cpp
   unit/completeness_test.cpp
   unit/configuration_test.cpp

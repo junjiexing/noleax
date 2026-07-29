@@ -44,7 +44,7 @@ V1 固定头为 68 bytes，位于文件起始位置：
 | 24 | session_id | byte[16] | 同一轮捕获 UUID |
 | 40 | file_index | uint32 | rotation index |
 | 44 | monotonic_frequency | uint64 | tick frequency，必须非零 |
-| 52 | monotonic_origin | uint64 | trace 相对时间起点 |
+| 52 | monotonic_origin | uint64 | 原始单调时钟中 trace 相对时间的零点 |
 | 60 | utc_origin_ns | int64 | 展示用 UTC 起点，二进制补码 |
 
 header_size 允许同一 major 版本在固定前缀后追加字段。V1 writer 拒绝 unknown
@@ -244,6 +244,10 @@ stack dictionary 有独立内存上限。达到上限时：
 - flags。
 - error domain（none、Win32、NTSTATUS、POSIX 或 Mach）和固定宽度 raw error code。
 
+monotonic_ticks 保存与 FileHeader 相同计数器的原始值，必须大于等于 monotonic_origin。用户看到的
+相对时间为 `(monotonic_ticks - monotonic_origin) / monotonic_frequency`；a/b/c 边界比较使用该
+有理数，不得先做有损浮点或整数取整。
+
 V1 event record 的 payload 以前 56 bytes 作为公共头，随后紧跟具体 operation payload：
 
 | payload offset | 字段 | 类型 |
@@ -415,6 +419,7 @@ estimated_event_count 缺省表示数量未知；存在时必须大于零。sequ
 V1 Loss payload 固定 48 bytes：reason uint8、location uint8、presence flags uint8、reserved
 byte[5]，随后依次为 count、sequence_begin、sequence_end、tick_begin、tick_end 五个 uint64。
 presence bit 0/1/2 分别表示 count/sequence/tick 是否存在；缺省字段的存储值必须为零。
+存在的 tick range 两端都必须大于等于 FileHeader.monotonic_origin。
 
 完整性维度：
 
@@ -484,6 +489,7 @@ EndOfTrace 自称缺失以及 normal_stop 同时报告 abnormal_stop 都是无�
 V1 EndOfTrace payload 固定 40 bytes：final_sequence uint64、final_monotonic_ticks uint64、
 normal_stop uint8、target_exit_code_present uint8、reserved byte[6]、target_exit_code int32、
 reserved uint32、completeness mask uint32、reserved uint32。缺省 target exit code 的存储值必须为零。
+final_monotonic_ticks 必须大于等于 FileHeader.monotonic_origin。
 
 ## 15. Compression
 

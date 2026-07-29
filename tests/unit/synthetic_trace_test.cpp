@@ -31,7 +31,7 @@ namespace {
   header.session_id[0] = std::byte{0xA5};
   header.file_index = 2U;
   header.monotonic_frequency = 10'000'000U;
-  header.monotonic_origin = 500U;
+  header.monotonic_origin = 0U;
   header.utc_origin_ns = -700;
   return header;
 }
@@ -315,4 +315,23 @@ TEST_CASE("finish normally derives capture and loss completeness", "[trace][synt
   tracker.observe_loss(stack_loss);
   tracker.observe_end_of_trace(*decoded.end);
   CHECK(tracker.report() == decoded.end->aggregate_completeness);
+}
+
+TEST_CASE("synthetic trace timestamps are anchored at the monotonic origin", "[trace][synthetic]") {
+  auto header = file_header();
+  header.monotonic_origin = 500U;
+
+  SECTION("empty normal trace ends at its origin") {
+    noleax::testing::SyntheticTraceBuilder builder{header, {true, false}};
+    const auto decoded = decode_trace(builder.finish_normally().build());
+    REQUIRE(decoded.end.has_value());
+    CHECK(decoded.end->final_monotonic_ticks == 500U);
+  }
+
+  SECTION("event before origin is rejected") {
+    const auto events = noleax::testing::make_all_memory_event_kinds();
+    noleax::testing::SyntheticTraceBuilder builder{header, {true, false}};
+    builder.add_event(events.front());
+    CHECK_THROWS_AS(builder.build(), noleax::testing::SyntheticTraceError);
+  }
 }

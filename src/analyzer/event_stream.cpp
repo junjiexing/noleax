@@ -238,6 +238,9 @@ class EventStreamDecoder {
         continue;
       }
       if (const auto* event = std::get_if<noleax::trace::Event>(&*decoded)) {
+        if (event->header.monotonic_ticks < result_.file_header.monotonic_origin) {
+          throw TraceAnalysisError{"event monotonic time precedes the trace origin"};
+        }
         const std::uint64_t sequence = event->header.sequence.value();
         if (has_previous_event && sequence <= previous_sequence) {
           throw TraceAnalysisError{"event sequences are not strictly increasing"};
@@ -257,6 +260,9 @@ class EventStreamDecoder {
                                   loss.sequence_range->end.value());
         }
         if (loss.tick_range.has_value()) {
+          if (loss.tick_range->begin < result_.file_header.monotonic_origin) {
+            throw TraceAnalysisError{"Loss tick range precedes the trace origin"};
+          }
           bounds.include_ticks(loss.tick_range->end);
         }
       }
@@ -360,6 +366,9 @@ class EventStreamDecoder {
     }
     if (!decoded_end.has_value()) {
       return;
+    }
+    if (decoded_end->final_monotonic_ticks < result_.file_header.monotonic_origin) {
+      throw TraceAnalysisError{"EndOfTrace monotonic time precedes the trace origin"};
     }
     if (decoded_end->final_sequence < result_.known_sequence_end ||
         decoded_end->final_monotonic_ticks < result_.known_monotonic_end) {

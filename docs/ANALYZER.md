@@ -1,6 +1,6 @@
 # Noleax Analyzer
 
-> 状态：P3.1 events 流式解码与 P3.2 generation 状态机完成
+> 状态：P3.1 events、P3.2 generation 状态机与 P3.3 outstanding 窗口完成
 
 ## 1. P3.1 范围
 
@@ -65,7 +65,26 @@ allocation_id 或 mapping_id 作为身份，不以可复用的地址作为身份
 创建和结束回调在状态变更点同步触发，供 P3.3 只保存候选窗口内的 generation。状态机同时保留
 所有历史 generation ID 的集合以检测 ID 重用；该索引受输入 trace 文件大小上限约束。
 
-## 5. 后续阶段
+## 5. Outstanding 窗口
 
-P3.1/P3.2 尚未连接公开 CLI 输出。P3.3 将组合事件流和 generation 回调实现 a/b/c
-outstanding 窗口；console、JSON、CSV 以及 module/stack 符号展示分别在后续 P3 工作项接入。
+`analyze_outstanding` 将 EventStream 与 GenerationTracker 组合，语义固定为：
+
+- 候选 creation time 满足 `a <= time < b`。
+- 要求 `0 <= a <= b <= c`；省略 c 时使用 trace end。
+- c 超过 trace end 时 clamp 到 trace end；clamp 后 b 若超过 trace end 则拒绝该窗口。
+- 观察点包含 time 等于 c 的全部 end event，因此恰好在 c free/realloc/destroy/unmap 的候选不再
+  outstanding。
+- c 之后才结束的候选仍在 c outstanding，即使读取完整 trace 后它已不在 tracker 的最终 live
+  集合中。
+- 只保存 `[a,b)` 中的候选及其可选结束时间；状态还原仍消费全部事件。
+- 输出保持候选创建顺序，覆盖 heap allocation、当前进程 virtual allocation 和 mapped view。
+
+用户时间是相对 FileHeader.monotonic_origin 的纳秒数。边界比较直接比较 tick/frequency 与纳秒
+有理数，避免乘法溢出和提前取整；展示 trace end 时向下取整到纳秒，同时保留原始
+trace_end_monotonic_ticks。若状态机发现引用缺失 creation 的有效 ID，结果增加 event_loss，继续
+输出可确定候选并使用退出码 2。
+
+## 6. 后续阶段
+
+P3.1-P3.3 尚未连接公开 CLI 输出。P3.4 将在完整状态还原后应用过滤器；console、JSON、CSV
+以及 module/stack 符号展示分别在后续 P3 工作项接入。

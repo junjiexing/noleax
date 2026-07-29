@@ -29,7 +29,8 @@ struct EventBounds {
 };
 
 [[nodiscard]] EventBounds validate_and_measure(
-    std::span<const std::variant<noleax::trace::Event, noleax::trace::LossRecord>> records) {
+    std::span<const std::variant<noleax::trace::Event, noleax::trace::LossRecord>> records,
+    std::uint64_t monotonic_origin) {
   EventBounds bounds;
   std::uint64_t previous_sequence = 0U;
   std::uint64_t previous_ticks = 0U;
@@ -45,6 +46,9 @@ struct EventBounds {
   for (const auto& record : records) {
     if (const auto* event = std::get_if<noleax::trace::Event>(&record)) {
       noleax::trace::validate_event(*event);
+      if (event->header.monotonic_ticks < monotonic_origin) {
+        throw SyntheticTraceError{"synthetic event ticks precede the trace origin"};
+      }
       const std::uint64_t sequence = event->header.sequence.value();
       if (has_event && sequence <= previous_sequence) {
         throw SyntheticTraceError{"synthetic event sequences must be strictly increasing"};
@@ -70,6 +74,9 @@ struct EventBounds {
       include_sequence_range(loss.sequence_range->begin.value(), loss.sequence_range->end.value());
     }
     if (loss.tick_range.has_value()) {
+      if (loss.tick_range->begin < monotonic_origin) {
+        throw SyntheticTraceError{"synthetic Loss ticks precede the trace origin"};
+      }
       bounds.maximum_ticks = std::max(bounds.maximum_ticks, loss.tick_range->end);
     }
   }
@@ -150,7 +157,7 @@ SyntheticTraceBuilder& SyntheticTraceBuilder::finish_normally(
   if (end_.has_value()) {
     throw SyntheticTraceError{"synthetic trace already has EndOfTrace"};
   }
-  const EventBounds bounds = validate_and_measure(event_records_);
+  const EventBounds bounds = validate_and_measure(event_records_, file_header_.monotonic_origin);
   noleax::trace::CompletenessTracker tracker{capture_scope_};
   for (const auto& record : event_records_) {
     if (const auto* loss = std::get_if<noleax::trace::LossRecord>(&record)) {
@@ -160,7 +167,7 @@ SyntheticTraceBuilder& SyntheticTraceBuilder::finish_normally(
 
   noleax::trace::EndOfTrace end;
   end.final_sequence = noleax::trace::Sequence{bounds.sequence_end};
-  end.final_monotonic_ticks = bounds.maximum_ticks;
+  end.final_monotonic_ticks = std::max(bounds.maximum_ticks, file_header_.monotonic_origin);
   end.normal_stop = true;
   end.target_exit_code = target_exit_code;
   end.aggregate_completeness = tracker.report();
@@ -170,7 +177,7 @@ SyntheticTraceBuilder& SyntheticTraceBuilder::finish_normally(
 }
 
 std::string SyntheticTraceBuilder::build() const {
-  const EventBounds bounds = validate_and_measure(event_records_);
+  const EventBounds bounds = validate_and_measure(event_records_, file_header_.monotonic_origin);
   if (statistics_.has_value()) {
     const std::uint64_t recorded_events = statistics_->observed_calls -
                                           statistics_->filtered_before_queue -
@@ -182,7 +189,8 @@ std::string SyntheticTraceBuilder::build() const {
   }
   if (end_.has_value()) {
     if (end_->final_sequence.value() < bounds.sequence_end ||
-        end_->final_monotonic_ticks < bounds.maximum_ticks) {
+        end_->final_monotonic_ticks <
+            std::max(bounds.maximum_ticks, file_header_.monotonic_origin)) {
       throw SyntheticTraceError{"synthetic EndOfTrace precedes encoded events or Loss ranges"};
     }
   }
