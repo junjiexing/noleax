@@ -70,6 +70,16 @@ function Convert-GlobalFlag {
     return [Convert]::ToUInt64($Value)
 }
 
+function Test-RegistryKeyEmpty {
+    param([Parameter(Mandatory)][string]$LiteralPath)
+
+    if (-not (Test-Path -LiteralPath $LiteralPath)) {
+        return $false
+    }
+    $key = Get-Item -LiteralPath $LiteralPath
+    return $key.SubKeyCount -eq 0 -and $key.ValueCount -eq 0
+}
+
 function Assert-MatchingWorkloads {
     param(
         [Parameter(Mandatory)]
@@ -174,18 +184,21 @@ try {
     foreach ($targetName in $targetNames) {
         $keyPath = Join-Path $ifeoRoot $targetName
         if (Test-Path -LiteralPath $keyPath) {
-            throw "Refusing to replace pre-existing IFEO settings: $keyPath"
+            $kind = if (Test-RegistryKeyEmpty $keyPath) { "empty IFEO key" } else { "IFEO settings" }
+            throw "Refusing to replace pre-existing ${kind}: $keyPath"
         }
     }
 
     $configuredTargets = [Collections.Generic.List[string]]::new()
     $cleanupFailures = [Collections.Generic.List[string]]::new()
+    $phaseFailure = $null
     try {
         foreach ($targetName in $targetNames) {
             # The target names were proven absent above, so track the cleanup responsibility before
             # invoking appverif. This also rolls back a partially-created IFEO key if appverif fails.
             $configuredTargets.Add($targetName)
-            Invoke-CheckedCommand $appVerifier -enable Heaps -for $targetName
+            Invoke-CheckedCommand $appVerifier -enable Heaps -for $targetName `
+                -with Heaps.Full=true
             $keyPath = Join-Path $ifeoRoot $targetName
             if (-not (Test-Path -LiteralPath $keyPath)) {
                 throw "Application Verifier did not create settings for $targetName."
@@ -212,22 +225,41 @@ try {
         Invoke-CheckedCommand ctest --preset $Preset `
             -R hook.rtl-allocate-heap-trace-writer-normal `
             --repeat "until-fail:$VerifierRepeats" --output-on-failure
+    } catch {
+        $phaseFailure = $_
     } finally {
         foreach ($targetName in $configuredTargets) {
             $keyPath = Join-Path $ifeoRoot $targetName
-            if (Test-Path -LiteralPath $keyPath) {
-                & $appVerifier -delete settings -for $targetName
-                if ($LASTEXITCODE -ne 0) {
-                    $cleanupFailures.Add("cleanup command failed for $targetName")
+            try {
+                if (Test-Path -LiteralPath $keyPath) {
+                    & $appVerifier -delete settings -for $targetName
+                    if ($LASTEXITCODE -ne 0) {
+                        $cleanupFailures.Add("cleanup command failed for $targetName")
+                    }
                 }
-            }
-            if (Test-Path -LiteralPath $keyPath) {
-                $cleanupFailures.Add("settings remain after cleanup: $keyPath")
+                # Current appverif builds can delete every value but retain the target's empty IFEO
+                # container. It is safe to remove here because preflight proved the key did not exist.
+                if (Test-RegistryKeyEmpty $keyPath) {
+                    Remove-Item -LiteralPath $keyPath
+                }
+                if (Test-Path -LiteralPath $keyPath) {
+                    $cleanupFailures.Add("settings remain after cleanup: $keyPath")
+                }
+            } catch {
+                $cleanupFailures.Add("cleanup raised for ${targetName}: $($_.Exception.Message)")
             }
         }
+    }
+
+    if ($null -ne $phaseFailure) {
         if ($cleanupFailures.Count -ne 0) {
-            throw "Application Verifier cleanup failed: $($cleanupFailures -join '; ')"
+            throw "Application Verifier phase failed: $($phaseFailure.Exception.Message); " +
+                "cleanup also failed: $($cleanupFailures -join '; ')"
         }
+        throw $phaseFailure
+    }
+    if ($cleanupFailures.Count -ne 0) {
+        throw "Application Verifier cleanup failed: $($cleanupFailures -join '; ')"
     }
 
     Write-Host "Windows hook hardening gate passed (CFG, CET metadata/runtime, SEH, Page Heap, AppVerifier)."
