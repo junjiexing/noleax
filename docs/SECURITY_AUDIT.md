@@ -1,7 +1,9 @@
 # P8 Windows x64 security audit
 
-> Review date: 2026-07-30  
-> Scope: V1 Windows x64 controller, agent, IPC, trace writer/reader, analyzer and supported packaging  
+> Review date: 2026-07-30
+>
+> Scope: V1 Windows x64 controller, agent, IPC, trace writer/reader, analyzer and supported packaging
+>
 > Excluded: deferred P7 thread hijack, entrypoint injection and static PE patch
 
 ## 1. Result
@@ -93,6 +95,11 @@ future hardening option may disable all trace-path image loading while retaining
 - Named-pipe tests cover client/server PID queries, connection timeout and a partial malicious frame.
 - Controller run/attach/E2E tests prove bootstrap v2 and bidirectional identity checks in real targets.
 - The hardened suite and P8 soak remain the crash/ABI/quiescence evidence for actual hooks.
+
+The clean `4397e5b` formal corpus used 10 truncations, 68 header bit flips and 128 deterministic
+random mutations: 206/206 completed without crash or hang, with 0 timeouts, 0 unexpected exits and a
+75 ms maximum process time. Exit distribution was 44 complete, 6 incomplete and 156 invalid-input;
+no exit outside 0/2/4 occurred.
 
 Raw mutation reports and generated corpus files live under ignored `_temp` paths. The P8 RC report
 records the clean-commit aggregate so machine-specific paths and potentially sensitive bytes are not
