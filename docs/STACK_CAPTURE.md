@@ -1,7 +1,7 @@
 # Windows Raw Stack Capture
 
-> 状态：P4.6 Windows x64 完成；P5.1 复用于 `RtlFreeHeap`
-> 范围：`RtlAllocateHeap`/`RtlFreeHeap` 原始地址捕获；不解析符号、不去重、不写 trace
+> 状态：P4.6 Windows x64 完成；P5.2 复用于三个 NT Heap adapter
+> 范围：NT Heap 三个 adapter 的原始地址捕获；不解析符号、不去重、不写 trace
 
 ## 1. 合同
 
@@ -32,7 +32,7 @@ completeness，不声称生命周期事件已经丢失。
 
 Windows x64 生产路径使用 `RtlCaptureStackBackTrace`：
 
-1. `RtlAllocateHeap` 或 `RtlFreeHeap` original 返回后立即保存原始 `LastError`；
+1. NT Heap original 返回后立即保存原始 `LastError`；
 2. 仅在 MPSC queue 成功取得 slot 后执行捕获，queue-full 事件不再承担 unwind 成本；
 3. 请求 `maximum_depth + 1` 帧，用额外一帧区分 complete 与 truncated；
 4. 跳过捕获实现、adapter 和 replacement 帧，使第一帧从目标调用方开始；
@@ -62,7 +62,7 @@ leaf 规则。
 
 ## 4. 事件与失败边界
 
-P4.6 的 allocate event 加入栈后为 576 bytes；P5.1 统一为同时容纳 alloc/free 字段的 600-byte
+P4.6 的 allocate event 加入栈后为 576 bytes；P5.2 统一为同时容纳三种 heap 字段的 600-byte
 `RtlHeapEvent`。默认 queue 为 16,384 个 slot，预分配约 9.5 MiB；测试 harness 使用 256 个 slot
 稳定制造 overflow。
 

@@ -125,7 +125,7 @@ if(WIN32)
   )
   set_tests_properties(hook.rtl-heap-trace-writer-lifecycle PROPERTIES
     LABELS "hook;trace;writer;windows;rtl-heap;free;lifecycle;cross-thread"
-    PASS_REGULAR_EXPRESSION "^status=ok events=[0-9]+ matched=1 cross-thread=1 "
+    PASS_REGULAR_EXPRESSION "^status=ok events=[0-9]+ alloc-free=1 realloc=5 cross-thread=1 "
     RUN_SERIAL TRUE
     TIMEOUT 120
   )
@@ -145,6 +145,14 @@ if(WIN32)
     noleax::hook-backend
   )
   noleax_set_project_warnings(noleax-rtl-free-heap-quiescence-test)
+
+  add_executable(noleax-rtl-reallocate-heap-quiescence-test
+    integration/rtl_reallocate_heap_quiescence_test.cpp
+  )
+  target_link_libraries(noleax-rtl-reallocate-heap-quiescence-test PRIVATE
+    noleax::hook-backend
+  )
+  noleax_set_project_warnings(noleax-rtl-reallocate-heap-quiescence-test)
 
   if(MSVC)
     add_executable(noleax-rtl-free-heap-contract-test
@@ -182,6 +190,42 @@ if(WIN32)
       RUN_SERIAL TRUE
       TIMEOUT 180
     )
+
+    add_executable(noleax-rtl-reallocate-heap-contract-test
+      integration/rtl_reallocate_heap_contract_test.cpp
+    )
+    target_link_libraries(noleax-rtl-reallocate-heap-contract-test PRIVATE
+      noleax::hook-backend
+    )
+    noleax_set_project_warnings(noleax-rtl-reallocate-heap-contract-test)
+
+    add_test(NAME hook.rtl-reallocate-heap-contract
+      COMMAND noleax-rtl-reallocate-heap-contract-test
+    )
+    set_tests_properties(hook.rtl-reallocate-heap-contract PROPERTIES
+      LABELS "hook;windows;rtl-heap;reallocate;contract;generation"
+      PASS_REGULAR_EXPRESSION "^status=ok cases=4 move=1 "
+      RUN_SERIAL TRUE
+      TIMEOUT 120
+    )
+
+    add_executable(noleax-rtl-reallocate-heap-fail-fast-test
+      integration/rtl_reallocate_heap_fail_fast_test.cpp
+    )
+    target_link_libraries(noleax-rtl-reallocate-heap-fail-fast-test PRIVATE
+      noleax::hook-backend
+    )
+    noleax_set_project_warnings(noleax-rtl-reallocate-heap-fail-fast-test)
+
+    add_test(NAME hook.rtl-reallocate-heap-fail-fast-contract
+      COMMAND noleax-rtl-reallocate-heap-fail-fast-test
+    )
+    set_tests_properties(hook.rtl-reallocate-heap-fail-fast-contract PROPERTIES
+      LABELS "hook;windows;rtl-heap;reallocate;contract;fail-fast;isolated"
+      PASS_REGULAR_EXPRESSION "^status=ok cases=3 exits=0x[0-9a-f]+,0x[0-9a-f]+,0x[0-9a-f]+ baseline=hooked"
+      RUN_SERIAL TRUE
+      TIMEOUT 180
+    )
   endif()
 
   add_test(NAME hook.rtl-allocate-heap-quiescence-race
@@ -193,6 +237,15 @@ if(WIN32)
   )
   set_tests_properties(hook.rtl-free-heap-quiescence-race PROPERTIES
     LABELS "hook;windows;rtl-heap;free;quiescence;race;stress"
+    PASS_REGULAR_EXPRESSION "^status=ok "
+    RUN_SERIAL TRUE
+    TIMEOUT 60
+  )
+  add_test(NAME hook.rtl-reallocate-heap-quiescence-race
+    COMMAND noleax-rtl-reallocate-heap-quiescence-test
+  )
+  set_tests_properties(hook.rtl-reallocate-heap-quiescence-race PROPERTIES
+    LABELS "hook;windows;rtl-heap;reallocate;quiescence;race;stress"
     PASS_REGULAR_EXPRESSION "^status=ok "
     RUN_SERIAL TRUE
     TIMEOUT 60
@@ -219,6 +272,24 @@ if(WIN32)
     set_tests_properties(hook.rtl-allocate-heap-seh-contract PROPERTIES
       LABELS "hook;windows;rtl-heap;seh;contract"
       PASS_REGULAR_EXPRESSION "^status=ok exception=0x[0-9a-f]+ last_error=[0-9]+ event=1 cleanup=1"
+      RUN_SERIAL TRUE
+      TIMEOUT 60
+    )
+
+    add_executable(noleax-rtl-reallocate-heap-exception-test
+      integration/rtl_reallocate_heap_exception_test.cpp
+    )
+    target_link_libraries(noleax-rtl-reallocate-heap-exception-test PRIVATE
+      noleax::hook-backend
+    )
+    noleax_set_project_warnings(noleax-rtl-reallocate-heap-exception-test)
+
+    add_test(NAME hook.rtl-reallocate-heap-seh-contract
+      COMMAND noleax-rtl-reallocate-heap-exception-test
+    )
+    set_tests_properties(hook.rtl-reallocate-heap-seh-contract PROPERTIES
+      LABELS "hook;windows;rtl-heap;reallocate;seh;contract"
+      PASS_REGULAR_EXPRESSION "^status=ok exception=0x[0-9a-f]+ last_error=[0-9]+ event=1 old-valid=1 cleanup=1"
       RUN_SERIAL TRUE
       TIMEOUT 60
     )
@@ -378,9 +449,13 @@ if(WIN32)
         noleax-rtl-heap-trace-writer-test
         noleax-rtl-allocate-heap-quiescence-test
         noleax-rtl-free-heap-quiescence-test
+        noleax-rtl-reallocate-heap-quiescence-test
         noleax-rtl-free-heap-contract-test
         noleax-rtl-free-heap-fail-fast-test
-        noleax-rtl-allocate-heap-exception-test)
+        noleax-rtl-reallocate-heap-contract-test
+        noleax-rtl-reallocate-heap-fail-fast-test
+        noleax-rtl-allocate-heap-exception-test
+        noleax-rtl-reallocate-heap-exception-test)
       add_test(NAME hook.windows-mitigations.${mitigation_target}
         COMMAND "${CMAKE_COMMAND}"
           "-DNOLEAX_DUMPBIN=${NOLEAX_DUMPBIN_EXECUTABLE}"

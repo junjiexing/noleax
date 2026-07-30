@@ -125,16 +125,24 @@ try {
         Join-Path $binaryDirectory "noleax-rtl-allocate-heap-quiescence-test.exe"
     $freeQuiescenceExecutable =
         Join-Path $binaryDirectory "noleax-rtl-free-heap-quiescence-test.exe"
+    $reallocateQuiescenceExecutable =
+        Join-Path $binaryDirectory "noleax-rtl-reallocate-heap-quiescence-test.exe"
     $allocateTraceWriterExecutable =
         Join-Path $binaryDirectory "noleax-rtl-allocate-heap-trace-writer-test.exe"
     $heapTraceWriterExecutable =
         Join-Path $binaryDirectory "noleax-rtl-heap-trace-writer-test.exe"
     $freeContractExecutable =
         Join-Path $binaryDirectory "noleax-rtl-free-heap-contract-test.exe"
+    $reallocateContractExecutable =
+        Join-Path $binaryDirectory "noleax-rtl-reallocate-heap-contract-test.exe"
+    $reallocateExceptionExecutable =
+        Join-Path $binaryDirectory "noleax-rtl-reallocate-heap-exception-test.exe"
     foreach ($path in @($mdExecutable, $mtExecutable, $hookHarness,
             $allocateQuiescenceExecutable, $freeQuiescenceExecutable,
+            $reallocateQuiescenceExecutable,
             $allocateTraceWriterExecutable, $heapTraceWriterExecutable,
-            $freeContractExecutable)) {
+            $freeContractExecutable, $reallocateContractExecutable,
+            $reallocateExceptionExecutable)) {
         if (-not (Test-Path -LiteralPath $path)) {
             throw "Required hardened artifact is missing: $path"
         }
@@ -142,7 +150,7 @@ try {
 
     Invoke-CheckedCommand ctest --preset $Preset --output-on-failure
     foreach ($quiescenceExecutable in @($allocateQuiescenceExecutable,
-            $freeQuiescenceExecutable)) {
+            $freeQuiescenceExecutable, $reallocateQuiescenceExecutable)) {
         $mitigationOutput = @(& $quiescenceExecutable)
         if ($LASTEXITCODE -ne 0 -or $mitigationOutput.Count -ne 1 -or
             $mitigationOutput[0] -notmatch " cfg=1 ") {
@@ -160,7 +168,7 @@ try {
         }
     }
     Invoke-CheckedCommand ctest --preset $Preset `
-        -R "hook.rtl-(allocate|free)-heap-quiescence-race" `
+        -R "hook.rtl-(allocate|reallocate|free)-heap-quiescence-race" `
         --repeat "until-fail:$RaceRepeats" --output-on-failure
 
     $longArguments = @(
@@ -193,9 +201,12 @@ try {
         [IO.Path]::GetFileName($mtExecutable),
         [IO.Path]::GetFileName($allocateQuiescenceExecutable),
         [IO.Path]::GetFileName($freeQuiescenceExecutable),
+        [IO.Path]::GetFileName($reallocateQuiescenceExecutable),
         [IO.Path]::GetFileName($allocateTraceWriterExecutable),
         [IO.Path]::GetFileName($heapTraceWriterExecutable),
-        [IO.Path]::GetFileName($freeContractExecutable)
+        [IO.Path]::GetFileName($freeContractExecutable),
+        [IO.Path]::GetFileName($reallocateContractExecutable),
+        [IO.Path]::GetFileName($reallocateExceptionExecutable)
     )
     $ifeoRoot = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options"
     foreach ($targetName in $targetNames) {
@@ -244,10 +255,10 @@ try {
         Assert-MatchingWorkloads $mdExecutable $mtExecutable $hookHarness $verifierArguments `
             $VerifierRepeats "appverifier-pageheap"
         Invoke-CheckedCommand ctest --preset $Preset `
-            -R "hook.rtl-(allocate|free)-heap-quiescence-race" `
+            -R "hook.rtl-(allocate|reallocate|free)-heap-quiescence-race" `
             --repeat "until-fail:$VerifierRepeats" --output-on-failure
         Invoke-CheckedCommand ctest --preset $Preset `
-            -R "hook.rtl-allocate-heap-trace-writer-normal|hook.rtl-heap-trace-writer-lifecycle|hook.rtl-free-heap-contract" `
+            -R "hook.rtl-allocate-heap-trace-writer-normal|hook.rtl-heap-trace-writer-lifecycle|hook.rtl-(free|reallocate)-heap-contract|hook.rtl-reallocate-heap-seh-contract" `
             --repeat "until-fail:$VerifierRepeats" --output-on-failure
     } catch {
         $phaseFailure = $_
@@ -296,7 +307,7 @@ try {
         throw "Application Verifier cleanup failed: $($cleanupFailures -join '; ')"
     }
 
-    Write-Host ("Windows allocate/free hook hardening gate passed " +
+    Write-Host ("Windows allocate/reallocate/free hook hardening gate passed " +
         "(CFG, CET metadata/runtime, fail-fast, Page Heap, AppVerifier).")
 } finally {
     Pop-Location

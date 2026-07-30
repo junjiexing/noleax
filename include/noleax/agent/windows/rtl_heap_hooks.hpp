@@ -7,14 +7,18 @@
 #include "noleax/agent/hook_backend.hpp"
 #include "noleax/agent/windows/rtl_allocate_heap_hook.hpp"
 #include "noleax/agent/windows/rtl_free_heap_hook.hpp"
+#include "noleax/agent/windows/rtl_reallocate_heap_hook.hpp"
 
 namespace noleax::agent::windows {
 
 struct RtlHeapHookInstallResult {
   FastHookResult allocate;
+  FastHookResult reallocate;
   FastHookResult free;
 
-  [[nodiscard]] bool installed() const noexcept { return allocate.installed() && free.installed(); }
+  [[nodiscard]] bool installed() const noexcept {
+    return allocate.installed() && reallocate.installed() && free.installed();
+  }
 };
 
 class RtlHeapHooks final {
@@ -42,6 +46,8 @@ class RtlHeapHooks final {
 
   [[nodiscard]] RtlAllocateHeapHook& allocate_hook() noexcept;
   [[nodiscard]] const RtlAllocateHeapHook& allocate_hook() const noexcept;
+  [[nodiscard]] RtlReAllocateHeapHook& reallocate_hook() noexcept;
+  [[nodiscard]] const RtlReAllocateHeapHook& reallocate_hook() const noexcept;
   [[nodiscard]] RtlFreeHeapHook& free_hook() noexcept;
   [[nodiscard]] const RtlFreeHeapHook& free_hook() const noexcept;
   [[nodiscard]] RtlHeapEventQueue& event_queue() noexcept;
@@ -50,6 +56,7 @@ class RtlHeapHooks final {
  private:
   std::unique_ptr<RtlHeapEventQueue> event_queue_;
   RtlAllocateHeapHook allocate_hook_;
+  RtlReAllocateHeapHook reallocate_hook_;
   RtlFreeHeapHook free_hook_;
 };
 

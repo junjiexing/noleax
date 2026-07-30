@@ -10,6 +10,7 @@ namespace noleax::agent::windows {
 
 enum class RtlHeapEventOperation : std::uint8_t {
   kAllocate,
+  kReallocate,
   kFree,
 };
 
