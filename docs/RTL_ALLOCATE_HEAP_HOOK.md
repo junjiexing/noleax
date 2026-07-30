@@ -1,7 +1,7 @@
 # RtlAllocateHeap Hook Prototype
 
-> 状态：P4.9 Windows x64 完成；P5.2 已接入三 hook 共享队列，产品 profile 仍 disabled
-> 范围：guarded raw-stack event queue 与后台 trace writer，可独立或参与三 hook 组合
+> 状态：P5.7 Windows x64 完成；已接入 NT Heap/native 产品 profile 与热路径过滤
+> 范围：guarded raw-stack event queue 与后台 trace writer，可独立或参与五 hook 组合
 
 ## 1. 目的
 
@@ -12,9 +12,11 @@ P4.3 首次在正式测试路径 hook `ntdll!RtlAllocateHeap`，验证 Hoox tram
 P4.8 已增加 replacement gate、并发 revert 和 fail-safe 模块生命周期。P4.9 增加 SEH-safe 清理、
 异常失败事件以及 CFG/CET hardened 门禁。
 
-P5.2 保留原 allocate-only 构造方式，同时把 raw event 扩展为统一 `RtlHeapEvent`；组合路径由
-`RtlHeapHooks` 让 allocate/reallocate/free 引用同一个 queue，跨 API 共用唯一 sequence。生命周期
-语义见 [RTL_FREE_HEAP_HOOK.md](RTL_FREE_HEAP_HOOK.md) 和 [TRACE_WRITER.md](TRACE_WRITER.md)。
+P5.3 保留原 allocate-only 构造方式并统一 raw event；P5.5 加入 NT VM 与 section 字段后当前为 664-byte
+`RtlHeapEvent`。heap 组合路径由
+`RtlHeapHooks` 让 create/allocate/reallocate/free/destroy 引用同一个 queue，跨 API 共用唯一
+sequence。生命周期语义见 [RTL_FREE_HEAP_HOOK.md](RTL_FREE_HEAP_HOOK.md)、
+[RTL_HEAP_LIFECYCLE_HOOK.md](RTL_HEAP_LIFECYCLE_HOOK.md) 和 [TRACE_WRITER.md](TRACE_WRITER.md)。
 
 精确函数类型为：
 
@@ -96,15 +98,15 @@ ID。Noleax 正常路径没有 allocator、文件、loader、日志、符号或�
 
 writer 以 empty、normal、2-slot queue-limit、8 KiB file-limit 和 exception 五种模式验证。每个
 生成文件均由正式 EventStream 回读，检查 StackDefinition 引用、Loss、统计守恒、终止记录和文件
-硬上限；exception 模式额外检查 NTSTATUS failure event 和 SEH stack-detail Loss。P5.1 当前
-Debug/Release 全量各 182 项通过。writer 重复压力和完整说明见
+硬上限；exception 模式额外检查 NTSTATUS failure event 和 SEH stack-detail Loss。P5.3 当前
+Debug/Release 全量各 189 项通过。writer 重复压力和完整说明见
 [TRACE_WRITER.md](TRACE_WRITER.md)。
 
 P4.9 的隔离进程 SEH 合同确认 baseline/hooked 都抛出 `STATUS_NO_MEMORY (0xc0000017)`，exception
 flags/parameters 一致，且 `LastError` 同为 8。异常 unwind 后 hook depth 和 replacement in-flight
-均为零，下一次普通 allocation 仍被记录，hook 可正常 quiesce/shutdown。P5.1 hardened 产物全量
-192/192 通过，10 个真实 PE 都包含 CFG/CET 标记；当前机器的 allocate/free hook 进程均报告
-`cfg=1, cet=1`，两个 quiescence 目标各 100 次及 MD/MT 8×20,000×2 三轮长差分通过。详见
+均为零，下一次普通 allocation 仍被记录，hook 可正常 quiesce/shutdown。P5.3 hardened 产物全量
+206/206 通过，17 个真实 PE 都包含 CFG/CET 标记；当前机器的四个 hook quiescence 进程均报告
+`cfg=1, cet=1`，四组 race 各 100 次及 MD/MT 8×20,000×2 三轮长差分通过。详见
 [WINDOWS_HOOK_HARDENING.md](WINDOWS_HOOK_HARDENING.md)。
 
 运行方法：
@@ -117,9 +119,9 @@ ctest --preset windows-x64-release -L passthrough --output-on-failure
 ctest --preset windows-x64-release -L passthrough --repeat until-fail:20
 ~~~
 
-## 5. 未完成边界
+## 5. 产品边界
 
-P5.1 的 alloc/free Application Verifier/Full Page Heap 三轮压力、日志 review 和 IFEO 回滚均已通过。
-产品 profile 仍保持 disabled，不是因为 NT Heap 三个 adapter 留有稳定性门禁，而是 P5 尚未实现
-heap generation、VM/section-view 等配套生命周期 API。P4.8 生命周期见
-[HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)。
+P5.7 已补齐 section-view、模块 generation、registry、过滤与组合 trace，并启用
+`windows-nt-heap`/`windows-native` profile。产品停止先逻辑停录和 final drain，目标 worker 停止后
+才物理 revert；完整生命周期见 [HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)，profile 语义见
+[WINDOWS_HOOK_PROFILES.md](WINDOWS_HOOK_PROFILES.md)。

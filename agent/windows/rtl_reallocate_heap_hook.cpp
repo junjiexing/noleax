@@ -116,6 +116,7 @@ void increment_saturating(std::atomic<std::uint64_t>& value) noexcept {
     const bool queued = hook_state->event_queue->try_emplace(
         [heap, flags, address, size, exception_status, maximum_stack_depth](
             RtlReAllocateHeapEvent& event, std::uint64_t queue_sequence) noexcept {
+          event = RtlReAllocateHeapEvent{};
           LARGE_INTEGER ticks{};
           static_cast<void>(QueryPerformanceCounter(&ticks));
           event.queue_sequence = queue_sequence;
@@ -126,6 +127,7 @@ void increment_saturating(std::atomic<std::uint64_t>& value) noexcept {
           event.result_address = 0U;
           event.address = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(address));
           event.raw_result = 0U;
+          event.auxiliary_address = 0U;
           event.flags = flags;
           event.exception_status = exception_status;
           event.operation = RtlHeapEventOperation::kReallocate;
@@ -205,6 +207,7 @@ PVOID NTAPI replacement_rtl_reallocate_heap(PVOID heap, ULONG flags, PVOID addre
             const bool queued = hook_state->event_queue->try_emplace(
                 [heap, flags, address, size, result, maximum_stack_depth](
                     RtlReAllocateHeapEvent& event, std::uint64_t queue_sequence) noexcept {
+                  event = RtlReAllocateHeapEvent{};
                   LARGE_INTEGER ticks{};
                   static_cast<void>(QueryPerformanceCounter(&ticks));
                   event.queue_sequence = queue_sequence;
@@ -218,6 +221,7 @@ PVOID NTAPI replacement_rtl_reallocate_heap(PVOID heap, ULONG flags, PVOID addre
                   event.address =
                       static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(address));
                   event.raw_result = 0U;
+                  event.auxiliary_address = 0U;
                   event.flags = flags;
                   event.exception_status = 0U;
                   event.operation = RtlHeapEventOperation::kReallocate;
@@ -238,7 +242,7 @@ PVOID NTAPI replacement_rtl_reallocate_heap(PVOID heap, ULONG flags, PVOID addre
       if (guard_entered) {
         leave_hook_invocation_unscoped();
       }
-      replacement_lifecycle.leave_unscoped();
+      replacement_lifecycle.leave_unscoped(route);
     }
   } __except (record_exception_filter(GetExceptionInformation(), route, hook_state, guard_entered,
                                       entry_kind, original_completed, heap, flags, address, size)) {
@@ -248,7 +252,7 @@ PVOID NTAPI replacement_rtl_reallocate_heap(PVOID heap, ULONG flags, PVOID addre
   if (guard_entered) {
     leave_hook_invocation_unscoped();
   }
-  replacement_lifecycle.leave_unscoped();
+  replacement_lifecycle.leave_unscoped(route);
 #endif
   return result;
 }
@@ -340,6 +344,7 @@ RtlReAllocateHeapHook::~RtlReAllocateHeapHook() {
 }
 
 FastHookResult RtlReAllocateHeapHook::install() {
+  const InternalThreadScope internal_thread;
   if (state_ == State::kInstalled) {
     return {HookInstallStatus::kAlreadyInstalled,
             hook_state_->original_trampoline.load(std::memory_order_acquire)};
@@ -399,6 +404,7 @@ FastHookResult RtlReAllocateHeapHook::install() {
 }
 
 HookUninstallStatus RtlReAllocateHeapHook::uninstall(std::uint32_t flush_attempts) noexcept {
+  const InternalThreadScope internal_thread;
   if (state_ == State::kInactive || state_ == State::kRetired) {
     return HookUninstallStatus::kNotInstalled;
   }
@@ -427,7 +433,23 @@ bool RtlReAllocateHeapHook::flush(std::uint32_t max_attempts) noexcept {
   return try_finish_teardown(max_attempts);
 }
 
+bool RtlReAllocateHeapHook::stop_recording(std::uint32_t max_attempts) noexcept {
+  if (state_ != State::kInstalled) {
+    return state_ == State::kInactive || state_ == State::kRetired;
+  }
+  replacement_lifecycle.stop_recording();
+  return replacement_lifecycle.wait_for_recording_quiescence(max_attempts);
+}
+
 bool RtlReAllocateHeapHook::is_installed() const noexcept { return state_ == State::kInstalled; }
+
+bool RtlReAllocateHeapHook::is_recording() const noexcept {
+  return state_ == State::kInstalled && replacement_lifecycle.route() == ReplacementRoute::kRecord;
+}
+
+std::uint64_t RtlReAllocateHeapHook::recording_in_flight_count() const noexcept {
+  return replacement_lifecycle.recording_in_flight();
+}
 
 bool RtlReAllocateHeapHook::has_pending_teardown() const noexcept {
   return state_ == State::kTeardownPending;

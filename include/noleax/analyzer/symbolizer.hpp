@@ -1,6 +1,5 @@
 #pragma once
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -14,23 +13,12 @@
 #include "noleax/analyzer/presentation.hpp"
 #include "noleax/trace/event.hpp"
 #include "noleax/trace/identifiers.hpp"
+#include "noleax/trace/module.hpp"
 
 namespace noleax::analyzer {
 
-struct PeImageIdentity {
-  std::uint32_t timestamp{0};
-  std::uint32_t checksum{0};
-  std::uint32_t image_size{0};
-
-  bool operator==(const PeImageIdentity&) const = default;
-};
-
-struct PdbIdentity {
-  std::array<std::byte, 16> guid{};
-  std::uint32_t age{0};
-
-  bool operator==(const PdbIdentity&) const = default;
-};
+using PeImageIdentity = noleax::trace::PeImageIdentity;
+using PdbIdentity = noleax::trace::PdbIdentity;
 
 struct SymbolModule {
   noleax::trace::ModuleId module_id;

@@ -138,6 +138,8 @@ struct VmAllocateEvent {
   Address result_base{0};
   std::uint64_t requested_size{0};
   std::uint64_t result_size{0};
+  Address mapping_base{0};
+  std::uint64_t mapping_size{0};
   std::uint32_t allocation_type{0};
   std::uint32_t protection{0};
   MappingId mapping_id;

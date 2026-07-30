@@ -92,6 +92,8 @@ namespace {
   allocation.result_base = address;
   allocation.requested_size = 4096U;
   allocation.result_size = 8192U;
+  allocation.mapping_base = address;
+  allocation.mapping_size = 8192U;
   allocation.allocation_type = 0x3000U;
   allocation.protection = 4U;
   allocation.mapping_id = noleax::trace::MappingId{id};
@@ -200,6 +202,37 @@ TEST_CASE("failed and unmatched operations preserve live generations", "[analyze
   CHECK(live->created_by == allocation);
   CHECK(tracker.ended_count() == 0U);
   CHECK(tracker.orphaned_allocation_end_count() == 0U);
+}
+
+TEST_CASE("virtual commit and decommit preserve the reservation generation",
+          "[analyzer][generation][vm]") {
+  using namespace noleax::trace;
+  noleax::analyzer::GenerationTracker tracker;
+
+  auto reserve = vm_allocate_event(1U, 20U, 0x4000U);
+  auto commit = vm_allocate_event(2U, 20U, 0x5000U);
+  auto& commit_payload = std::get<VmAllocateEvent>(commit.payload);
+  commit_payload.result_size = 4096U;
+  commit_payload.mapping_base = 0x4000U;
+  commit_payload.mapping_size = 8192U;
+  commit_payload.allocation_type = 0x1000U;
+  auto decommit = vm_free_event(3U, 20U, 0x5000U);
+  auto& decommit_payload = std::get<VmFreeEvent>(decommit.payload);
+  decommit_payload.region_size = 4096U;
+  decommit_payload.free_type = 0x4000U;
+  const auto release = vm_free_event(4U, 20U, 0x4000U);
+
+  tracker.observe(reserve);
+  tracker.observe(commit);
+  tracker.observe(decommit);
+  CHECK(tracker.created_count() == 1U);
+  CHECK(tracker.ended_count() == 0U);
+  CHECK(tracker.live_count() == 1U);
+
+  tracker.observe(release);
+  CHECK(tracker.created_count() == 1U);
+  CHECK(tracker.ended_count() == 1U);
+  CHECK(tracker.live_count() == 0U);
 }
 
 TEST_CASE("reallocation effects preserve free or replace the correct generation",

@@ -1,6 +1,6 @@
 # Windows V1 Hook API Matrix
 
-> 状态：P0 基线
+> 状态：P5.7；九个逻辑 API、十个物理入口和三个产品 profile 已启用
 > backend：Hoox v0.1.1 replace_fast
 > target：Windows x64
 
@@ -9,7 +9,7 @@
 | Profile | API |
 |---|---|
 | windows-nt-heap | RtlCreateHeap、RtlDestroyHeap、RtlAllocateHeap、RtlReAllocateHeap、RtlFreeHeap |
-| windows-virtual-memory | NtAllocateVirtualMemory、NtFreeVirtualMemory、NtMapViewOfSection、NtUnmapViewOfSection |
+| windows-virtual-memory | NtAllocateVirtualMemory、NtFreeVirtualMemory、NtMapViewOfSection、NtUnmapViewOfSection（含 Ex 兼容入口） |
 | windows-native | 两组并集 |
 
 ## 2. 通用合同
@@ -279,6 +279,9 @@ NTSTATUS NTAPI NtUnmapViewOfSection(
 - 重复 unmap。
 - UnmapViewOfFile 包装路径。
 
+新版 Windows 的 `UnmapViewOfFile` 实际进入三参数 `NtUnmapViewOfSectionEx`。P5.5 同时安装精确
+Ex adapter；它与 legacy 入口共享逻辑 API ID、统计和 generation，但保留独立 trampoline/lease。
+
 ## 5. 间接覆盖但不直接 hook
 
 默认 profile 不直接 hook：
@@ -300,15 +303,15 @@ NTSTATUS NTAPI NtUnmapViewOfSection(
 
 | API | Adapter | Unit | Contract | Concurrency | CFG/CET | Page Heap | Enabled |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| RtlCreateHeap | pending | pending | pending | pending | pending | pending | no |
-| RtlDestroyHeap | pending | pending | pending | pending | pending | pending | no |
-| RtlAllocateHeap | P5.2 combined candidate | guard/shared-queue/stack/SEH pass | ABI/LastError/exception/overflow/stack/trace pass | 8x20k + three-hook quiescence pass | PE + runtime pass | combined Full Page Heap 3/3 pass | no |
-| RtlReAllocateHeap | P5.2 combined candidate | guard/shared-queue/stack/SEH pass | in-place/move/zero/OOM/LastError/exception/fail-fast/trace pass | cross-thread + 8x20k + quiescence pass | PE + runtime pass | combined Full Page Heap 3/3 pass | no |
-| RtlFreeHeap | P5.2 combined candidate | guard/shared-queue/stack/SEH pass | return/LastError/exception/fail-fast/trace pass | cross-thread + 8x20k + quiescence pass | PE + runtime pass | AppVerifier Full 3/3 pass | no |
-| NtAllocateVirtualMemory | pending | pending | pending | pending | pending | pending | no |
-| NtFreeVirtualMemory | pending | pending | pending | pending | pending | pending | no |
-| NtMapViewOfSection | pending | pending | pending | pending | pending | pending | no |
-| NtUnmapViewOfSection | pending | pending | pending | pending | pending | pending | no |
+| RtlCreateHeap | P5.7 enabled | guard/shared-queue/stack/SEH pass | ABI/LastError/failure/exception-mode/overflow/raw-event pass | five-hook + native-profile quiescence pass | PE + runtime pass | combined Full Page Heap pass | yes |
+| RtlDestroyHeap | P5.7 enabled | guard/shared-queue/stack/SEH pass | ABI/LastError/null/bad/double/raw-event pass | five-hook + native-profile quiescence pass | PE + runtime pass | combined Full Page Heap pass | yes |
+| RtlAllocateHeap | P5.7 enabled | guard/shared-queue/stack/SEH pass | ABI/LastError/exception/overflow/stack/trace/filter pass | native-profile thread churn pass | PE + runtime pass | combined Full Page Heap pass | yes |
+| RtlReAllocateHeap | P5.7 enabled | guard/shared-queue/stack/SEH pass | in-place/move/zero/OOM/LastError/exception/fail-fast/trace pass | cross-thread + native-profile pass | PE + runtime pass | combined Full Page Heap pass | yes |
+| RtlFreeHeap | P5.7 enabled | guard/shared-queue/stack/SEH pass | return/LastError/exception/fail-fast/trace pass | cross-thread + native-profile pass | PE + runtime pass | AppVerifier Full pass | yes |
+| NtAllocateVirtualMemory | P5.7 enabled | guard/shared-queue/stack/SEH pass | ABI/LastError/reserve/commit/failure/remote/trace/filter pass | native-profile thread churn pass | PE + runtime pass | AppVerifier Full pass | yes |
+| NtFreeVirtualMemory | P5.7 enabled | guard/shared-queue/stack/SEH pass | ABI/LastError/decommit/release/failure/remote/trace pass | native-profile thread churn pass | PE + runtime pass | AppVerifier Full pass | yes |
+| NtMapViewOfSection | P5.7 enabled | guard/shared-queue/stack/SEH pass | pagefile/file/offset/multi-view/failure/remote/filter pass | native-profile quiescence pass | PE + runtime pass | combined Full Page Heap pass | yes |
+| NtUnmapViewOfSection/Ex | P5.7 enabled | guard/shared-queue/stack/SEH pass | interior/repeat/wrapper/preexisting/unmatched pass | native-profile quiescence pass | PE + runtime pass | combined Full Page Heap pass | yes |
 
 P5.1 在 P4.9 allocate prototype 上增加 `RtlFreeHeap`，并把两种事件放入同一个预分配 MPSC queue，
 形成跨 API 的唯一 sequence。组合 writer 按 `(heap,address)` 关联 allocation_id，覆盖 matched、
@@ -333,3 +336,37 @@ preexisting/unmatched。合同覆盖原地、真实移动、零大小、OOM、SE
 address 隔离和 quiescence。Debug/Release 全量各 186/186、hardened 200/200、三个 quiescence race
 各 100/100、14 个 PE 的 CFG/CET 及 Full Page Heap 三轮均通过。设计与证据见
 [RTL_REALLOCATE_HEAP_HOOK.md](RTL_REALLOCATE_HEAP_HOOK.md)。
+
+P5.3 增加 `RtlCreateHeap`/`RtlDestroyHeap`，五种事件共享唯一 sequence。writer 为每次成功 create
+分配不复用的 `HeapId`；handle reuse 产生新 ID，destroy 成功结束该 heap 的全部 live allocation。
+合同覆盖失败/异常模式、LastError、guard、overflow、null/bad/double destroy 隔离、多 heap、
+destroy-with-live、handle reuse 和 analyzer 回读。Debug/Release 各 189/189、hardened 206/206、四组
+quiescence race 各 100/100、17 个 PE 的 CFG/CET 及 Full Page Heap 三轮均通过。设计与证据见
+[RTL_HEAP_LIFECYCLE_HOOK.md](RTL_HEAP_LIFECYCLE_HOOK.md)。
+
+P5.4 增加 `NtAllocateVirtualMemory`/`NtFreeVirtualMemory`。两个 API 共享 queue sequence，reserve 创建
+MappingId，commit 复用或补建 reservation generation，decommit 不结束 generation，release 才结束。
+当前进程真实 handle 与 pseudo handle 均正确分类；remote child 事件保留 PID/raw 参数但不进入本进程
+状态。Debug/Release 各 193/193、hardened 213/213，20 个 PE 通过 CFG/CET；NT VM quiescence
+100/100、Full Page Heap 三轮及 15 个 IFEO key 清理均通过。设计与证据见
+[NT_VIRTUAL_MEMORY_HOOK.md](NT_VIRTUAL_MEMORY_HOOK.md)。
+
+P5.5 增加 section map/unmap，并将 `NtUnmapViewOfSectionEx` 作为 legacy unmap 的兼容物理入口。
+`MapViewOfFile`/`UnmapViewOfFile`、pagefile/file-backed、offset、multi-view、内部地址 unmap、remote、
+preexisting/unmatched 和正式 trace generation 回读均由自动测试覆盖。设计与证据见
+[NT_SECTION_VIEW_HOOK.md](NT_SECTION_VIEW_HOOK.md)。
+
+P5.5 完整门禁为 Debug/Release 195/195、hardened 216/216、21 个 PE 的 CFG/CET 检查、五组
+quiescence race 各 100/100、长 ABI 差分 3/3，以及 Application Verifier/Full Page Heap 三轮；本轮
+16 个目标 IFEO key 全部清理。
+
+P5.6 增加 `LdrRegisterDllNotification` 模块跟踪。loader callback 只复制固定数据并写入预分配 queue；
+writer 分配 ModuleId、编码 ModuleLoad/Unload，并用 generation-aware 相对帧去重。真实 DLL fixture
+覆盖 load/unload/reload、同一基址和绝对 PC 复用、不同 StackId，以及卸载后的离线符号化。设计与
+门禁见 [MODULE_TRACKING.md](MODULE_TRACKING.md)。
+
+P5.7 增加唯一产品/test registry、三个 profile、creation-side 热路径过滤和逻辑停录协调器。
+`windows-native` 的十个物理入口共用一个 queue，九个逻辑 API 在同一 trace 中通过正式 analyzer
+回读。最终门禁为 Debug/Release 205/205、hardened 230/230、25 个 CFG/CET PE、五组既有 race 与
+native profile 各 100/100、长差分 3/3，以及 Application Verifier/Full Page Heap 三轮；19 个 IFEO
+key 全部清理。详见 [WINDOWS_HOOK_PROFILES.md](WINDOWS_HOOK_PROFILES.md)。

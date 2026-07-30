@@ -77,6 +77,7 @@ if(WIN32)
     unit/hook_backend_test.cpp
     unit/stack_capture_test.cpp
     unit/stack_dictionary_test.cpp
+    unit/windows_hook_registry_test.cpp
   )
   target_link_libraries(noleax-unit-tests PRIVATE noleax::hook-backend)
 
@@ -119,6 +120,107 @@ if(WIN32)
   )
   noleax_set_project_warnings(noleax-rtl-heap-trace-writer-test)
 
+  add_executable(noleax-nt-virtual-memory-trace-writer-test
+    integration/nt_virtual_memory_trace_writer_test.cpp
+  )
+  target_link_libraries(noleax-nt-virtual-memory-trace-writer-test PRIVATE
+    noleax::hook-backend
+    noleax::analyzer
+  )
+  noleax_set_project_warnings(noleax-nt-virtual-memory-trace-writer-test)
+
+  add_executable(noleax-windows-native-profile-test
+    integration/windows_native_profile_test.cpp
+  )
+  target_link_libraries(noleax-windows-native-profile-test PRIVATE
+    noleax::hook-backend
+    noleax::analyzer
+  )
+  noleax_set_project_warnings(noleax-windows-native-profile-test)
+
+  add_test(NAME hook.windows-native-profile
+    COMMAND noleax-windows-native-profile-test
+      "$<TARGET_FILE_DIR:noleax-windows-native-profile-test>/windows-native-profile.nlx"
+  )
+  set_tests_properties(hook.windows-native-profile PROPERTIES
+    LABELS "hook;trace;writer;windows;profile;registry;filter;statistics;quiescence;stress"
+    PASS_REGULAR_EXPRESSION
+      "^status=ok profile=windows-native apis=9 events=[0-9]+ filtered=[1-9][0-9]* stable=1 writer-before-revert=1 operations=[1-9][0-9]*"
+    RUN_SERIAL TRUE
+    TIMEOUT 180
+  )
+
+  add_library(noleax-module-generation-fixture SHARED
+    integration/module_generation_fixture.cpp
+  )
+  noleax_set_project_warnings(noleax-module-generation-fixture)
+  if(MSVC)
+    target_compile_options(noleax-module-generation-fixture PRIVATE /Od /Zi)
+    target_link_options(noleax-module-generation-fixture PRIVATE /DEBUG:FULL /OPT:NOREF /OPT:NOICF)
+  endif()
+
+  add_executable(noleax-module-generation-trace-test
+    integration/module_generation_trace_test.cpp
+  )
+  target_link_libraries(noleax-module-generation-trace-test PRIVATE
+    noleax::hook-backend
+    noleax::analyzer
+  )
+  noleax_set_project_warnings(noleax-module-generation-trace-test)
+  add_dependencies(noleax-module-generation-trace-test noleax-module-generation-fixture)
+
+  add_test(NAME hook.module-generation-trace
+    COMMAND noleax-module-generation-trace-test
+      "$<TARGET_FILE:noleax-module-generation-fixture>"
+      "$<TARGET_FILE_DIR:noleax-module-generation-trace-test>/module-generation.nlx"
+  )
+  set_tests_properties(hook.module-generation-trace PROPERTIES
+    LABELS "hook;trace;writer;windows;module;generation;unload;reload;symbolizer"
+    PASS_REGULAR_EXPRESSION
+      "^status=ok loads=2 unload=1 base-reuse=1 relative-stack=1 symbolized=1 events=[0-9]+"
+    RUN_SERIAL TRUE
+    TIMEOUT 120
+  )
+
+  add_executable(noleax-module-tracker-test
+    integration/module_tracker_test.cpp
+  )
+  target_link_libraries(noleax-module-tracker-test PRIVATE noleax::hook-backend)
+  noleax_set_project_warnings(noleax-module-tracker-test)
+  add_dependencies(noleax-module-tracker-test noleax-module-generation-fixture)
+  add_test(NAME hook.module-tracker-bounded-queue
+    COMMAND noleax-module-tracker-test "$<TARGET_FILE:noleax-module-generation-fixture>"
+  )
+  set_tests_properties(hook.module-tracker-bounded-queue PROPERTIES
+    LABELS "hook;windows;module;loader;queue;overflow"
+    PASS_REGULAR_EXPRESSION
+      "^status=ok initial=[0-9]+ queued=2 dropped=4 load=1 unload=1"
+    RUN_SERIAL TRUE
+    TIMEOUT 60
+  )
+
+  add_test(NAME hook.nt-virtual-memory-trace-writer
+    COMMAND noleax-nt-virtual-memory-trace-writer-test
+      "$<TARGET_FILE_DIR:noleax-nt-virtual-memory-trace-writer-test>/nt-virtual-memory.nlx"
+  )
+  set_tests_properties(hook.nt-virtual-memory-trace-writer PROPERTIES
+    LABELS "hook;trace;writer;windows;nt-vm;generation;remote"
+    PASS_REGULAR_EXPRESSION "^status=ok events=[0-9]+ reserve=1 commit=1 decommit=1 "
+    RUN_SERIAL TRUE
+    TIMEOUT 120
+  )
+
+  add_test(NAME hook.nt-section-view-unmatched-trace
+    COMMAND noleax-nt-virtual-memory-trace-writer-test --unmatched
+      "$<TARGET_FILE_DIR:noleax-nt-virtual-memory-trace-writer-test>/nt-section-unmatched.nlx"
+  )
+  set_tests_properties(hook.nt-section-view-unmatched-trace PROPERTIES
+    LABELS "hook;trace;writer;windows;nt-vm;generation;unmap;unmatched"
+    PASS_REGULAR_EXPRESSION "^status=ok unmatched=1 events=[0-9]+"
+    RUN_SERIAL TRUE
+    TIMEOUT 120
+  )
+
   add_test(NAME hook.rtl-heap-trace-writer-lifecycle
     COMMAND noleax-rtl-heap-trace-writer-test
       "$<TARGET_FILE_DIR:noleax-rtl-heap-trace-writer-test>/rtl-heap-lifecycle.nlx"
@@ -153,6 +255,25 @@ if(WIN32)
     noleax::hook-backend
   )
   noleax_set_project_warnings(noleax-rtl-reallocate-heap-quiescence-test)
+
+  add_executable(noleax-rtl-heap-lifecycle-quiescence-test
+    integration/rtl_heap_lifecycle_quiescence_test.cpp
+  )
+  target_link_libraries(noleax-rtl-heap-lifecycle-quiescence-test PRIVATE
+    noleax::hook-backend
+  )
+  noleax_set_project_warnings(noleax-rtl-heap-lifecycle-quiescence-test)
+
+  add_executable(noleax-nt-virtual-memory-quiescence-test
+    integration/nt_virtual_memory_quiescence_test.cpp
+  )
+  target_link_libraries(noleax-nt-virtual-memory-quiescence-test PRIVATE
+    noleax::hook-backend
+  )
+  target_compile_definitions(noleax-nt-virtual-memory-quiescence-test PRIVATE
+    $<$<BOOL:${NOLEAX_WINDOWS_HARDENED_TESTING}>:NOLEAX_WINDOWS_HARDENED_TESTING=1>
+  )
+  noleax_set_project_warnings(noleax-nt-virtual-memory-quiescence-test)
 
   if(MSVC)
     add_executable(noleax-rtl-free-heap-contract-test
@@ -226,6 +347,78 @@ if(WIN32)
       RUN_SERIAL TRUE
       TIMEOUT 180
     )
+
+    add_executable(noleax-rtl-heap-lifecycle-contract-test
+      integration/rtl_heap_lifecycle_contract_test.cpp
+    )
+    target_link_libraries(noleax-rtl-heap-lifecycle-contract-test PRIVATE
+      noleax::hook-backend
+    )
+    noleax_set_project_warnings(noleax-rtl-heap-lifecycle-contract-test)
+
+    add_test(NAME hook.rtl-heap-lifecycle-contract
+      COMMAND noleax-rtl-heap-lifecycle-contract-test
+    )
+    set_tests_properties(hook.rtl-heap-lifecycle-contract PROPERTIES
+      LABELS "hook;windows;rtl-heap;create;destroy;contract;generation;seh"
+      PASS_REGULAR_EXPRESSION "^status=ok create=4 destroy=2 exception-mode=matched "
+      RUN_SERIAL TRUE
+      TIMEOUT 120
+    )
+
+    add_executable(noleax-nt-virtual-memory-contract-test
+      integration/nt_virtual_memory_contract_test.cpp
+    )
+    target_link_libraries(noleax-nt-virtual-memory-contract-test PRIVATE
+      noleax::hook-backend
+    )
+    noleax_set_project_warnings(noleax-nt-virtual-memory-contract-test)
+
+    add_test(NAME hook.nt-virtual-memory-contract
+      COMMAND noleax-nt-virtual-memory-contract-test
+    )
+    set_tests_properties(hook.nt-virtual-memory-contract PROPERTIES
+      LABELS "hook;windows;nt-vm;allocate;free;contract;generation;recursion"
+      PASS_REGULAR_EXPRESSION "^status=ok reserve=1 commit=1 decommit=1 release=1 "
+      RUN_SERIAL TRUE
+      TIMEOUT 120
+    )
+
+    add_executable(noleax-nt-section-view-contract-test
+      integration/nt_section_view_contract_test.cpp
+    )
+    target_link_libraries(noleax-nt-section-view-contract-test PRIVATE
+      noleax::hook-backend
+    )
+    noleax_set_project_warnings(noleax-nt-section-view-contract-test)
+
+    add_test(NAME hook.nt-section-view-contract
+      COMMAND noleax-nt-section-view-contract-test
+    )
+    set_tests_properties(hook.nt-section-view-contract PROPERTIES
+      LABELS "hook;windows;nt-vm;map;unmap;contract;generation;remote;recursion"
+      PASS_REGULAR_EXPRESSION "^status=ok pagefile=1 file=1 offset=1 multi-view=1 wrapper=1 remote=1 "
+      RUN_SERIAL TRUE
+      TIMEOUT 180
+    )
+
+    add_executable(noleax-rtl-destroy-heap-isolation-test
+      integration/rtl_destroy_heap_isolation_test.cpp
+    )
+    target_link_libraries(noleax-rtl-destroy-heap-isolation-test PRIVATE
+      noleax::hook-backend
+    )
+    noleax_set_project_warnings(noleax-rtl-destroy-heap-isolation-test)
+
+    add_test(NAME hook.rtl-destroy-heap-isolation
+      COMMAND noleax-rtl-destroy-heap-isolation-test
+    )
+    set_tests_properties(hook.rtl-destroy-heap-isolation PROPERTIES
+      LABELS "hook;windows;rtl-heap;destroy;contract;fail-fast;isolated"
+      PASS_REGULAR_EXPRESSION "^status=ok cases=3 exits=0x[0-9a-f]+,0x[0-9a-f]+,0x[0-9a-f]+ baseline=hooked"
+      RUN_SERIAL TRUE
+      TIMEOUT 180
+    )
   endif()
 
   add_test(NAME hook.rtl-allocate-heap-quiescence-race
@@ -249,6 +442,25 @@ if(WIN32)
     PASS_REGULAR_EXPRESSION "^status=ok "
     RUN_SERIAL TRUE
     TIMEOUT 60
+  )
+  add_test(NAME hook.rtl-heap-lifecycle-quiescence-race
+    COMMAND noleax-rtl-heap-lifecycle-quiescence-test
+  )
+  set_tests_properties(hook.rtl-heap-lifecycle-quiescence-race PROPERTIES
+    LABELS "hook;windows;rtl-heap;create;destroy;quiescence;race;stress"
+    PASS_REGULAR_EXPRESSION "^status=ok "
+    RUN_SERIAL TRUE
+    TIMEOUT 120
+  )
+
+  add_test(NAME hook.nt-virtual-memory-quiescence-race
+    COMMAND noleax-nt-virtual-memory-quiescence-test
+  )
+  set_tests_properties(hook.nt-virtual-memory-quiescence-race PROPERTIES
+    LABELS "hook;windows;nt-vm;allocate;free;quiescence;race;stress"
+    PASS_REGULAR_EXPRESSION "^status=ok operations=[0-9]+ thread_creations=[0-9]+ "
+    RUN_SERIAL TRUE
+    TIMEOUT 120
   )
   set_tests_properties(hook.rtl-allocate-heap-quiescence-race PROPERTIES
     LABELS "hook;windows;rtl-heap;quiescence;race;stress"
@@ -450,10 +662,21 @@ if(WIN32)
         noleax-rtl-allocate-heap-quiescence-test
         noleax-rtl-free-heap-quiescence-test
         noleax-rtl-reallocate-heap-quiescence-test
+        noleax-rtl-heap-lifecycle-quiescence-test
+        noleax-nt-virtual-memory-quiescence-test
         noleax-rtl-free-heap-contract-test
         noleax-rtl-free-heap-fail-fast-test
         noleax-rtl-reallocate-heap-contract-test
         noleax-rtl-reallocate-heap-fail-fast-test
+        noleax-rtl-heap-lifecycle-contract-test
+        noleax-rtl-destroy-heap-isolation-test
+        noleax-nt-virtual-memory-contract-test
+        noleax-nt-section-view-contract-test
+        noleax-nt-virtual-memory-trace-writer-test
+        noleax-windows-native-profile-test
+        noleax-module-generation-fixture
+        noleax-module-generation-trace-test
+        noleax-module-tracker-test
         noleax-rtl-allocate-heap-exception-test
         noleax-rtl-reallocate-heap-exception-test)
       add_test(NAME hook.windows-mitigations.${mitigation_target}

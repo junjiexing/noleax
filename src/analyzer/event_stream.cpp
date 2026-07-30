@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <optional>
 #include <span>
 #include <string>
@@ -14,6 +15,7 @@
 
 #include "noleax/trace/completeness.hpp"
 #include "noleax/trace/event.hpp"
+#include "noleax/trace/module.hpp"
 #include "noleax/trace/record_codec.hpp"
 #include "noleax/trace/stack.hpp"
 #include "noleax/trace/trace_reader.hpp"
@@ -164,7 +166,7 @@ class EventStreamDecoder {
         break;
       case noleax::trace::ChunkType::kModule:
         require_empty_sequence_range(descriptor);
-        process_unsupported_records(chunk.payload);
+        process_modules(chunk.payload);
         break;
       case noleax::trace::ChunkType::kStack:
         require_empty_sequence_range(descriptor);
@@ -214,11 +216,104 @@ class EventStreamDecoder {
     }
   }
 
-  void process_unsupported_records(std::span<const std::byte> payload) {
-    noleax::trace::RecordCursor cursor{payload, maximum_record_size_};
-    while (cursor.next().has_value()) {
+  struct ModuleState {
+    noleax::trace::ModuleLoad load;
+    bool live{true};
+  };
+
+  static void validate_module_range(const noleax::trace::ModuleLoad& load,
+                                    const std::map<std::uint64_t, std::uint64_t>& live_modules,
+                                    const std::unordered_map<std::uint64_t, ModuleState>& states) {
+    const std::uint64_t end = load.base_address + load.image_size;
+    const auto next = live_modules.lower_bound(load.base_address);
+    if (next != live_modules.end()) {
+      const auto state = states.find(next->second);
+      if (state == states.end() || state->second.load.base_address < end) {
+        throw TraceAnalysisError{"live module address ranges overlap"};
+      }
     }
-    mark_unknown_record_skipped();
+    if (next != live_modules.begin()) {
+      const auto previous = std::prev(next);
+      const auto state = states.find(previous->second);
+      if (state == states.end() ||
+          state->second.load.base_address + state->second.load.image_size > load.base_address) {
+        throw TraceAnalysisError{"live module address ranges overlap"};
+      }
+    }
+  }
+
+  void process_modules(std::span<const std::byte> payload) {
+    require_capture_scope("module record appears before CaptureScope");
+    noleax::trace::RecordCursor cursor{payload, maximum_record_size_};
+    std::vector<noleax::trace::ModuleRecord> records;
+    bool skipped_unknown = false;
+    while (const auto record = cursor.next()) {
+      auto decoded = noleax::trace::decode_module_record(*record);
+      if (!decoded.has_value()) {
+        skipped_unknown = true;
+        continue;
+      }
+      records.push_back(std::move(*decoded));
+    }
+
+    auto states = module_states_;
+    auto live_modules = live_modules_;
+    std::uint64_t previous_ticks = previous_module_ticks_;
+    for (const auto& record : records) {
+      const std::uint64_t ticks =
+          std::visit([](const auto& value) { return value.monotonic_ticks; }, record);
+      if (ticks < result_.file_header.monotonic_origin) {
+        throw TraceAnalysisError{"module record monotonic time precedes the trace origin"};
+      }
+      if (ticks < previous_ticks) {
+        throw TraceAnalysisError{"module record monotonic ticks move backwards"};
+      }
+      previous_ticks = ticks;
+
+      if (const auto* load = std::get_if<noleax::trace::ModuleLoad>(&record)) {
+        if (states.contains(load->module_id.value())) {
+          throw TraceAnalysisError{"trace contains a duplicate ModuleLoad ID"};
+        }
+        validate_module_range(*load, live_modules, states);
+        states.emplace(load->module_id.value(), ModuleState{*load, true});
+        if (!live_modules.emplace(load->base_address, load->module_id.value()).second) {
+          throw TraceAnalysisError{"trace loads two live modules at the same base"};
+        }
+      } else {
+        const auto& unload = std::get<noleax::trace::ModuleUnload>(record);
+        const auto state = states.find(unload.module_id.value());
+        if (state == states.end() || !state->second.live) {
+          throw TraceAnalysisError{"ModuleUnload does not reference a live module generation"};
+        }
+        if (unload.monotonic_ticks < state->second.load.monotonic_ticks) {
+          throw TraceAnalysisError{"ModuleUnload precedes its ModuleLoad"};
+        }
+        live_modules.erase(state->second.load.base_address);
+        state->second.live = false;
+      }
+    }
+
+    module_states_ = std::move(states);
+    live_modules_ = std::move(live_modules);
+    previous_module_ticks_ = previous_ticks;
+    result_.known_monotonic_end = std::max(result_.known_monotonic_end, previous_ticks);
+    if (skipped_unknown) {
+      mark_unknown_record_skipped();
+    }
+    for (const auto& record : records) {
+      if (const auto* load = std::get_if<noleax::trace::ModuleLoad>(&record)) {
+        checked_increment(result_.module_load_count, "module load");
+        if (callbacks_.on_module_load) {
+          callbacks_.on_module_load(*load);
+        }
+      } else {
+        const auto& unload = std::get<noleax::trace::ModuleUnload>(record);
+        checked_increment(result_.module_unload_count, "module unload");
+        if (callbacks_.on_module_unload) {
+          callbacks_.on_module_unload(unload);
+        }
+      }
+    }
   }
 
   void process_stacks(std::span<const std::byte> payload) {
@@ -236,6 +331,19 @@ class EventStreamDecoder {
       const std::uint64_t stack_id = definition->stack_id.value();
       if (stack_ids_.contains(stack_id) || !chunk_ids.insert(stack_id).second) {
         throw TraceAnalysisError{"trace contains a duplicate StackDefinition ID"};
+      }
+      for (const auto& frame : definition->frames) {
+        if (!frame.module_id) {
+          continue;
+        }
+        const auto module = module_states_.find(frame.module_id.value());
+        if (module == module_states_.end()) {
+          throw TraceAnalysisError{"StackDefinition references an unknown module generation"};
+        }
+        if (frame.module_offset >= module->second.load.image_size ||
+            module->second.load.base_address + frame.module_offset != frame.absolute_address) {
+          throw TraceAnalysisError{"StackDefinition module-relative frame is inconsistent"};
+        }
       }
       definitions.push_back(std::move(*definition));
     }
@@ -492,7 +600,10 @@ class EventStreamDecoder {
   std::optional<noleax::trace::CaptureScope> capture_scope_;
   std::optional<noleax::trace::CompletenessTracker> completeness_;
   std::unordered_map<noleax::trace::ApiId, std::uint64_t> events_per_api_;
+  std::unordered_map<std::uint64_t, ModuleState> module_states_;
+  std::map<std::uint64_t, std::uint64_t> live_modules_;
   std::unordered_set<std::uint64_t> stack_ids_;
+  std::uint64_t previous_module_ticks_{0};
   std::uint64_t previous_event_sequence_{0};
   std::uint64_t previous_event_ticks_{0};
   bool saw_event_{false};

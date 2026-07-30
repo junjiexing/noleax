@@ -16,6 +16,15 @@ namespace {
   return stack;
 }
 
+[[nodiscard]] noleax::agent::windows::NormalizedStack normalized_stack(
+    std::uint64_t module_id, std::uint64_t absolute_address) {
+  noleax::agent::windows::NormalizedStack stack;
+  stack.frame_count = 1U;
+  stack.status = noleax::trace::StackCaptureStatus::kComplete;
+  stack.frames[0] = {noleax::trace::ModuleId{module_id}, 0x20U, absolute_address, 0U};
+  return stack;
+}
+
 }  // namespace
 
 TEST_CASE("raw stack dictionary compares full stacks after hash collisions",
@@ -77,4 +86,30 @@ TEST_CASE("raw stack hash includes status count and every frame", "[agent][stack
         noleax::agent::windows::hash_captured_stack(changed_count));
   CHECK(noleax::agent::windows::hash_captured_stack(first) !=
         noleax::agent::windows::hash_captured_stack(changed_status));
+}
+
+TEST_CASE("normalized stack dictionary distinguishes module generations at reused addresses",
+          "[agent][stack][dictionary][module]") {
+  noleax::agent::windows::NormalizedStackDictionary dictionary{4U};
+  const auto first = normalized_stack(10U, 0x100020U);
+  const auto reloaded = normalized_stack(11U, 0x100020U);
+
+  const auto first_insert =
+      dictionary.intern(first, noleax::agent::windows::hash_normalized_stack(first));
+  const auto first_reuse =
+      dictionary.intern(first, noleax::agent::windows::hash_normalized_stack(first));
+  const auto reload_insert =
+      dictionary.intern(reloaded, noleax::agent::windows::hash_normalized_stack(reloaded));
+
+  CHECK(first_insert.inserted);
+  CHECK_FALSE(first_reuse.inserted);
+  CHECK(first_reuse.stack_id == first_insert.stack_id);
+  CHECK(reload_insert.inserted);
+  CHECK(reload_insert.stack_id != first_insert.stack_id);
+  CHECK(noleax::agent::windows::hash_normalized_stack(first) !=
+        noleax::agent::windows::hash_normalized_stack(reloaded));
+
+  auto invalid = first;
+  invalid.frames[0].module_id = {};
+  CHECK_THROWS_AS(dictionary.intern(invalid, 1U), std::invalid_argument);
 }

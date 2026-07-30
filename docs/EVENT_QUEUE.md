@@ -1,7 +1,7 @@
 # Preallocated MPSC Event Queue
 
-> 状态：P5.2 Windows x64 alloc/reallocate/free 共享队列完成
-> 范围：NT Heap 三种原始事件、overflow 归因及后台 writer 消费边界
+> 状态：P5.5 Windows x64 NT Heap 与 NT memory 共享队列域完成
+> 范围：固定宽度原始事件、跨 API 顺序、overflow 归因及后台 writer 消费边界
 
 ## 1. 合同
 
@@ -35,8 +35,9 @@ consumer 只按 reservation 顺序读取。它 acquire-load slot sequence，复�
 因此队列输出顺序与 reservation 顺序一致。
 
 `reset_quiescent` 只允许在没有 producer/consumer 时调用。独立 hook 拥有的 queue 在安装前重置；
-P5.2 组合对象拥有的共享 queue 随对象新建，且当前 adapter 每进程只允许一次成功安装。卸载后才允许
-最终 drain。replacement lifecycle 保证 reset、final drain 和对象销毁前没有 producer；
+P5.3 heap 组合对象和 P5.5 `NtMemoryHooks` 各自拥有一个共享 queue 域；同一域内 API 共用 sequence，
+两个域之间不依赖时间戳合并。当前 adapter 每进程只允许一次成功安装。卸载后才允许最终 drain。
+replacement lifecycle 保证 reset、final drain 和对象销毁前没有 producer；
 详见 [HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)。
 
 ## 3. Overflow 与 Loss
@@ -44,8 +45,8 @@ P5.2 组合对象拥有的共享 queue 随对象新建，且当前 adapter 每�
 队列满时，当前 event 不获得 reservation 和 `queue_sequence`，生产者立即返回 false，并以饱和 CAS
 增加 64-bit dropped counter。计数到 `UINT64_MAX` 后保持饱和，不允许回绕为零。
 
-底层 queue 保留总 dropped counter；P5.2 的 allocate/reallocate/free hook 还分别维护饱和 dropped
-counter，使单 consumer 能把 overflow 归因到 api_id。writer 把三个 API 的非零 interval count 汇总为：
+底层 queue 保留总 dropped counter；五个 NT Heap hook 与 NT memory 的四种逻辑 operation 都分别维护饱和 dropped
+counter，使单 consumer 能把 overflow 归因到 api_id。writer 把所选 API 的非零 interval count汇总为：
 
 ~~~text
 LossReason   = queue_full
@@ -58,15 +59,16 @@ tick_range = absent
 被拒绝的 event 没有 reservation，因此不能编造精确 sequence/tick range。任何 queue Loss 都设置
 `event_loss`，使 outstanding 分析保持 incomplete。
 
-## 4. RtlHeap 原始事件
+## 4. Windows 原始事件
 
-P5.2 的统一 in-process event 固定为 600 bytes，包含：
+P5.5 的统一 in-process event 固定为 664 bytes，并加入 section handle、offset、commit size 和第三组 flags，包含：
 
 - queue sequence；
 - QueryPerformanceCounter ticks；
 - thread id；
-- allocate/reallocate/free operation；
-- heap handle、flags、requested size/address；
+- create/allocate/reallocate/free/destroy/VM allocate/VM free operation；
+- heap handle、flags、requested size/address、create lock/parameters；
+- NT VM target PID、调用前后 base/size、zero bits、protection/free type 和规范化 mapping base/size；
 - result address、raw BOOLEAN result 和 success/failure/exception；
 - exception NTSTATUS；
 - 最多 64 帧、520-byte 的定长 `CapturedStack`。
@@ -77,7 +79,7 @@ replacement 在 original 返回后立即保存 `LastError`，完成计时、捕�
 Windows API 与队列操作不会改变目标可观察到的错误状态。栈状态和失败合同见
 [STACK_CAPTURE.md](STACK_CAPTURE.md)。
 
-默认 adapter 容量为 16,384 个 event。包含 per-slot sequence 和对齐后预分配约 9.5 MiB；测试
+默认 adapter 容量为 16,384 个 event。包含 per-slot sequence 后预分配约 10.1 MiB；测试
 harness 显式使用 256 个 slot 以稳定制造 overflow。writer 只消费该固定队列，不在 hook 热路径
 扩容；未来产品配置仍需由 agent 根据 byte budget 推导容量。
 
@@ -90,12 +92,13 @@ harness 显式使用 256 个 slot 以稳定制造 overflow。writer 只消费该
 - 8 producer 固定满队列，验证每次失败均进入 dropped count；
 - 8 producer 与单 consumer 同时运行，验证 publish/acquire 和 reuse。
 
-真实组合 hook harness 在卸载后 drain 队列，逐项检查 sequence、ticks、thread、operation、
-status/result 和 stack 编码一致性，并要求：
+真实组合 hook harness 与 NT VM race 在卸载后 drain 各自队列，逐项检查 sequence、ticks、thread、
+operation、status/result 和 stack 编码一致性，并要求：
 
 ~~~text
-allocate_recordable + free_recordable == dequeued + allocate_dropped + free_dropped
-allocate_dropped + free_dropped > 0
+sum(five_api_recordable) == dequeued + sum(five_api_dropped)
+sum(five_api_dropped) > 0
+sum(two_vm_api_recordable) == dequeued + sum(two_vm_api_dropped)
 ~~~
 
 同一 MD/MT workload 的 hooked/unhooked 摘要仍须逐字节一致。

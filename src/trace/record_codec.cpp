@@ -1,5 +1,7 @@
 #include "noleax/trace/record_codec.hpp"
 
+#include <algorithm>
+#include <array>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
@@ -7,11 +9,13 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <variant>
 #include <vector>
 
 #include "noleax/trace/completeness.hpp"
 #include "noleax/trace/event.hpp"
+#include "noleax/trace/module.hpp"
 #include "noleax/trace/trace_reader.hpp"
 #include "noleax/trace/wire_format.hpp"
 
@@ -20,6 +24,8 @@ namespace {
 
 inline constexpr std::uint16_t kRecordVersion = 1;
 inline constexpr std::size_t kEventHeaderPayloadSize = 56U;
+inline constexpr std::size_t kModuleLoadFixedPayloadSize = 80U;
+inline constexpr std::size_t kModuleUnloadPayloadSize = 16U;
 inline constexpr std::size_t kStackDefinitionFixedPayloadSize = 16U;
 inline constexpr std::size_t kStackFramePayloadSize = 32U;
 inline constexpr std::size_t kStatisticsFixedPayloadSize = 80U;
@@ -60,6 +66,13 @@ void append_i32(std::vector<std::byte>& output, std::int32_t value) {
 
 void append_zeros(std::vector<std::byte>& output, std::size_t count) {
   output.insert(output.end(), count, std::byte{0});
+}
+
+void append_string_bytes(std::vector<std::byte>& output, std::string_view value) {
+  output.reserve(output.size() + value.size());
+  for (const char byte : value) {
+    output.push_back(static_cast<std::byte>(static_cast<unsigned char>(byte)));
+  }
 }
 
 class PayloadReader {
@@ -105,6 +118,26 @@ class PayloadReader {
   }
 
   [[nodiscard]] std::int32_t read_i32() { return std::bit_cast<std::int32_t>(read_u32()); }
+
+  [[nodiscard]] std::string read_string(std::size_t size) {
+    require(size);
+    std::string value;
+    value.reserve(size);
+    for (std::size_t index = 0U; index < size; ++index) {
+      value.push_back(static_cast<char>(std::to_integer<unsigned char>(payload_[offset_ + index])));
+    }
+    offset_ += size;
+    return value;
+  }
+
+  [[nodiscard]] std::array<std::byte, 16> read_guid() {
+    require(16U);
+    std::array<std::byte, 16> value{};
+    std::copy_n(payload_.begin() + static_cast<std::ptrdiff_t>(offset_), value.size(),
+                value.begin());
+    offset_ += value.size();
+    return value;
+  }
 
   void expect_zeros(std::size_t count) {
     require(count);
@@ -357,6 +390,8 @@ void append_event_payload(std::vector<std::byte>& output, const EventPayload& pa
                    append_u64(output, event.result_base);
                    append_u64(output, event.requested_size);
                    append_u64(output, event.result_size);
+                   append_u64(output, event.mapping_base);
+                   append_u64(output, event.mapping_size);
                    append_u32(output, event.allocation_type);
                    append_u32(output, event.protection);
                    append_u64(output, event.mapping_id.value());
@@ -476,6 +511,8 @@ void append_event_payload(std::vector<std::byte>& output, const EventPayload& pa
       event.result_base = reader.read_u64();
       event.requested_size = reader.read_u64();
       event.result_size = reader.read_u64();
+      event.mapping_base = reader.read_u64();
+      event.mapping_size = reader.read_u64();
       event.allocation_type = reader.read_u32();
       event.protection = reader.read_u32();
       event.mapping_id = MappingId{reader.read_u64()};
@@ -587,6 +624,132 @@ std::optional<CaptureScope> decode_capture_scope_record(const RecordView& record
     throw RecordCodecError{"invalid CaptureScope record: " + std::string{error.what()}};
   }
   return scope;
+}
+
+void append_module_load_record(std::vector<std::byte>& chunk_payload, const ModuleLoad& load,
+                               std::uint32_t maximum_record_size) {
+  validate_module_load(load);
+  if (load.image_path.size() > std::numeric_limits<std::uint32_t>::max() ||
+      load.pdb_path.size() > std::numeric_limits<std::uint32_t>::max() ||
+      maximum_record_size < kRecordHeaderSize + kModuleLoadFixedPayloadSize ||
+      load.image_path.size() + load.pdb_path.size() >
+          maximum_record_size - kRecordHeaderSize - kModuleLoadFixedPayloadSize) {
+    throw RecordCodecError{"module load exceeds the configured record size limit"};
+  }
+
+  std::vector<std::byte> payload;
+  payload.reserve(kModuleLoadFixedPayloadSize + load.image_path.size() + load.pdb_path.size());
+  append_u64(payload, load.module_id.value());
+  append_u64(payload, load.monotonic_ticks);
+  append_u64(payload, load.base_address);
+  append_u64(payload, load.image_size);
+  append_u32(payload, load.flags);
+  std::uint8_t presence = 0U;
+  if (load.image_identity.has_value()) {
+    presence |= 0x01U;
+  }
+  if (load.pdb_identity.has_value()) {
+    presence |= 0x02U;
+  }
+  append_u8(payload, presence);
+  append_zeros(payload, 3U);
+  append_u32(payload, load.image_identity.has_value() ? load.image_identity->timestamp : 0U);
+  append_u32(payload, load.image_identity.has_value() ? load.image_identity->checksum : 0U);
+  append_u32(payload, load.image_identity.has_value() ? load.image_identity->image_size : 0U);
+  append_u32(payload, load.pdb_identity.has_value() ? load.pdb_identity->age : 0U);
+  append_u32(payload, static_cast<std::uint32_t>(load.image_path.size()));
+  append_u32(payload, static_cast<std::uint32_t>(load.pdb_path.size()));
+  if (load.pdb_identity.has_value()) {
+    payload.insert(payload.end(), load.pdb_identity->guid.begin(), load.pdb_identity->guid.end());
+  } else {
+    append_zeros(payload, 16U);
+  }
+  append_string_bytes(payload, load.image_path);
+  append_string_bytes(payload, load.pdb_path);
+  append_record(chunk_payload, static_cast<std::uint16_t>(ModuleRecordType::kLoad), kRecordVersion,
+                payload, maximum_record_size);
+}
+
+void append_module_unload_record(std::vector<std::byte>& chunk_payload, const ModuleUnload& unload,
+                                 std::uint32_t maximum_record_size) {
+  validate_module_unload(unload);
+  std::vector<std::byte> payload;
+  payload.reserve(kModuleUnloadPayloadSize);
+  append_u64(payload, unload.module_id.value());
+  append_u64(payload, unload.monotonic_ticks);
+  append_record(chunk_payload, static_cast<std::uint16_t>(ModuleRecordType::kUnload),
+                kRecordVersion, payload, maximum_record_size);
+}
+
+std::optional<ModuleRecord> decode_module_record(const RecordView& record) {
+  if (record.version != kRecordVersion) {
+    return std::nullopt;
+  }
+  if (record.type == static_cast<std::uint16_t>(ModuleRecordType::kLoad)) {
+    if (record.payload.size() < kModuleLoadFixedPayloadSize) {
+      throw RecordCodecError{"module load payload is truncated"};
+    }
+    PayloadReader reader{record.payload};
+    ModuleLoad load;
+    load.module_id = ModuleId{reader.read_u64()};
+    load.monotonic_ticks = reader.read_u64();
+    load.base_address = reader.read_u64();
+    load.image_size = reader.read_u64();
+    load.flags = reader.read_u32();
+    const std::uint8_t presence = reader.read_u8();
+    if ((presence & ~0x03U) != 0U) {
+      throw RecordCodecError{"module load presence flags are not supported"};
+    }
+    reader.expect_zeros(3U);
+    const std::uint32_t timestamp = reader.read_u32();
+    const std::uint32_t checksum = reader.read_u32();
+    const std::uint32_t identity_image_size = reader.read_u32();
+    const std::uint32_t pdb_age = reader.read_u32();
+    const std::uint32_t image_path_size = reader.read_u32();
+    const std::uint32_t pdb_path_size = reader.read_u32();
+    const auto guid = reader.read_guid();
+    if (static_cast<std::uint64_t>(image_path_size) + pdb_path_size !=
+        record.payload.size() - kModuleLoadFixedPayloadSize) {
+      throw RecordCodecError{"module path sizes do not match the record payload"};
+    }
+    load.image_path = reader.read_string(image_path_size);
+    load.pdb_path = reader.read_string(pdb_path_size);
+    reader.expect_done();
+    if ((presence & 0x01U) != 0U) {
+      load.image_identity = PeImageIdentity{timestamp, checksum, identity_image_size};
+    } else if (timestamp != 0U || checksum != 0U || identity_image_size != 0U) {
+      throw RecordCodecError{"absent module PE identity must be zero"};
+    }
+    if ((presence & 0x02U) != 0U) {
+      load.pdb_identity = PdbIdentity{guid, pdb_age};
+    } else if (pdb_age != 0U || std::any_of(guid.begin(), guid.end(),
+                                            [](std::byte byte) { return byte != std::byte{0}; })) {
+      throw RecordCodecError{"absent module PDB identity must be zero"};
+    }
+    try {
+      validate_module_load(load);
+    } catch (const ModuleValidationError& error) {
+      throw RecordCodecError{"invalid ModuleLoad record: " + std::string{error.what()}};
+    }
+    return ModuleRecord{std::move(load)};
+  }
+  if (record.type == static_cast<std::uint16_t>(ModuleRecordType::kUnload)) {
+    if (record.payload.size() != kModuleUnloadPayloadSize) {
+      throw RecordCodecError{"module unload payload has an invalid size"};
+    }
+    PayloadReader reader{record.payload};
+    ModuleUnload unload;
+    unload.module_id = ModuleId{reader.read_u64()};
+    unload.monotonic_ticks = reader.read_u64();
+    reader.expect_done();
+    try {
+      validate_module_unload(unload);
+    } catch (const ModuleValidationError& error) {
+      throw RecordCodecError{"invalid ModuleUnload record: " + std::string{error.what()}};
+    }
+    return ModuleRecord{unload};
+  }
+  return std::nullopt;
 }
 
 void append_stack_definition_record(std::vector<std::byte>& chunk_payload,

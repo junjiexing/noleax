@@ -1,6 +1,6 @@
 # Windows RtlFreeHeap Hook
 
-> 状态：P5.1 Windows x64 自动门禁与人工合并完成；P5.2 已接入三 hook 组合
+> 状态：P5.1 Windows x64 adapter 完成；P5.3 已接入五 hook 组合并通过完整门禁
 > 分支：`feat/rtl-free-heap-hook`
 
 ## 1. ABI 与行为基线
@@ -40,14 +40,14 @@ outermost 的 `successful + failed == recordable`；SEH 异常同时计入 faile
 
 ## 3. 统一事件与共享队列
 
-P5.1 把原 allocate-only raw event 扩展为统一的 600-byte `RtlHeapEvent`。free event 保存：
+P5.5 的统一 664-byte `RtlHeapEvent` 保留 P5.1 定义的 free 字段：
 
 - 全局 queue sequence、QPC tick、thread ID；
 - heap handle、address、flags 和 original raw BOOLEAN result；
 - success/failure/exception 及 NTSTATUS；
 - 固定容量原始调用栈。
 
-`RtlFreeHeapHook` 可单独拥有 queue，用于隔离合同测试；产品组合路径使用 `RtlHeapHooks`，让三个
+`RtlFreeHeapHook` 可单独拥有 queue，用于隔离合同测试；产品组合路径使用 `RtlHeapHooks`，让五个
 NT Heap adapter 引用同一个 `RtlHeapEventQueue`。唯一 reservation sequence
 保证跨线程、跨 API 的生命周期总顺序。组合 writer 会拒绝两个独立 queue，不能退化为按时间戳猜测
 allocate/free 先后。
@@ -90,9 +90,9 @@ allocation 和 free 可以来自不同线程。配对与调用栈去重都在 in
 
 ## 6. 安全卸载
 
-free hook 与 allocate hook 使用独立的 replacement lifecycle 和 trampoline lifetime lease。卸载顺序
+五个 hook 使用独立的 replacement lifecycle 和 trampoline lifetime lease。卸载顺序
 仍遵守：关闭 recording gate、revert target、发布 restored-target route、等待 replacement quiescence、
-释放 trampoline lease、完成 Hoox flush。`RtlHeapHooks` 负责让两个 hook 都达到完成态；任一仍处于
+释放 trampoline lease、完成 Hoox flush。`RtlHeapHooks` 负责让五个 hook 都达到完成态；任一仍处于
 teardown-pending 时，组合 writer 不允许写正常 EndOfTrace。
 
 当前 adapter 与 P4 一样限制为每进程安装一次，replacement module pin 到进程退出。析构时若有限次
@@ -102,7 +102,7 @@ flush 仍无法证明 quiescence，会把仍可能被旧 replacement 读取的 s
 
 ## 7. 自动验证
 
-P5.1 新增或扩展的门禁包括：
+P5.1 新增或扩展、并在 P5.3 五 hook 组合中持续执行的门禁包括：
 
 - free return/LastError/outermost/recursive/internal/SEH 合同；
 - bad address、wrong heap、double free 隔离 fail-fast 差分；
@@ -111,7 +111,7 @@ P5.1 新增或扩展的门禁包括：
 - matched、cross-thread、preexisting、unmatched 和 outstanding generation 的正式 trace 回读；
 - MD/MT 8×20,000×2 baseline/hooked 长差分；
 - 10 个 PE 的 CFG/CET metadata、allocate/free runtime mitigation；
-- Application Verifier/Full Page Heap 三轮和 27 份零记录 XML 日志。
+- Application Verifier/Full Page Heap 三轮；P5.4 结束后 15 个目标 IFEO key 全部不存在。
 
 结果汇总见 [WINDOWS_HOOK_HARDENING.md](WINDOWS_HOOK_HARDENING.md)。常用定向命令：
 
@@ -124,6 +124,7 @@ ctest --preset windows-x64-release -R "rtl-free-heap|rtl-heap-trace-writer" --ou
 
 ## 8. 尚未启用的范围
 
-当前仍不启用产品 profile，也没有新增最终用户 CLI。heap create/destroy、NT VM、
-section view、模块 generation 和注入链路仍待后续阶段；在这些 API 完成前，当前 alloc/free 组合只能
+当前仍不启用产品 profile，也没有新增最终用户 CLI。heap create/destroy 已在 P5.3 完成，NT VM
+allocate/free 已在 P5.4 完成；section view、模块 generation 和注入链路仍待后续阶段。在这些能力
+完成前，当前五 hook 组合只能
 作为经过硬化的 agent building block，不能宣称完整 Windows 内存泄漏覆盖。

@@ -10,7 +10,9 @@ TEST_CASE("replacement lifecycle snapshots routes and exposes deterministic quie
   ReplacementLifecycle lifecycle;
   CHECK(lifecycle.route() == ReplacementRoute::kTarget);
   CHECK(lifecycle.in_flight() == 0U);
+  CHECK(lifecycle.recording_in_flight() == 0U);
   CHECK(lifecycle.wait_for_quiescence(0U));
+  CHECK(lifecycle.wait_for_recording_quiescence(0U));
 
   lifecycle.start_recording();
   {
@@ -18,14 +20,17 @@ TEST_CASE("replacement lifecycle snapshots routes and exposes deterministic quie
     CHECK(held_entry.route() == ReplacementRoute::kRecord);
     CHECK(held_entry.should_record());
     CHECK(lifecycle.in_flight() == 1U);
+    CHECK(lifecycle.recording_in_flight() == 1U);
 
     lifecycle.stop_recording();
     lifecycle.route_to_target();
     CHECK_FALSE(lifecycle.wait_for_quiescence(4U));
+    CHECK_FALSE(lifecycle.wait_for_recording_quiescence(4U));
     CHECK(held_entry.route() == ReplacementRoute::kRecord);
   }
 
   CHECK(lifecycle.wait_for_quiescence(0U));
+  CHECK(lifecycle.wait_for_recording_quiescence(0U));
   CHECK(lifecycle.in_flight() == 0U);
   {
     const auto delayed_entry = lifecycle.enter();
@@ -42,8 +47,11 @@ TEST_CASE("replacement lifecycle snapshots routes and exposes deterministic quie
   CHECK(lifecycle.wait_for_quiescence(0U));
 
   lifecycle.start_recording();
-  CHECK(lifecycle.enter_unscoped() == ReplacementRoute::kRecord);
+  const auto route = lifecycle.enter_unscoped();
+  CHECK(route == ReplacementRoute::kRecord);
   CHECK(lifecycle.in_flight() == 1U);
-  lifecycle.leave_unscoped();
+  CHECK(lifecycle.recording_in_flight() == 1U);
+  lifecycle.leave_unscoped(route);
   CHECK(lifecycle.wait_for_quiescence(0U));
+  CHECK(lifecycle.wait_for_recording_quiescence(0U));
 }

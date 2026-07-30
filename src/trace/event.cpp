@@ -169,7 +169,10 @@ void validate_mapping_creation(const EventHeader& header, const ProcessTarget& t
   if (!is_known_process_scope(target.scope)) {
     fail("process memory scope is not supported");
   }
-  validate_call_result_status(header.status, "mapping creation");
+  if (header.status != EventStatus::kSuccess && header.status != EventStatus::kFailure &&
+      header.status != EventStatus::kPreexisting) {
+    fail("mapping creation status must be success, failure, or preexisting");
+  }
   if (!call_succeeded(header.status) && mapping_id) {
     fail("failed virtual memory operation must not have a mapping_id");
   }

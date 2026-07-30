@@ -127,6 +127,10 @@ try {
         Join-Path $binaryDirectory "noleax-rtl-free-heap-quiescence-test.exe"
     $reallocateQuiescenceExecutable =
         Join-Path $binaryDirectory "noleax-rtl-reallocate-heap-quiescence-test.exe"
+    $heapLifecycleQuiescenceExecutable =
+        Join-Path $binaryDirectory "noleax-rtl-heap-lifecycle-quiescence-test.exe"
+    $ntVirtualMemoryQuiescenceExecutable =
+        Join-Path $binaryDirectory "noleax-nt-virtual-memory-quiescence-test.exe"
     $allocateTraceWriterExecutable =
         Join-Path $binaryDirectory "noleax-rtl-allocate-heap-trace-writer-test.exe"
     $heapTraceWriterExecutable =
@@ -137,12 +141,33 @@ try {
         Join-Path $binaryDirectory "noleax-rtl-reallocate-heap-contract-test.exe"
     $reallocateExceptionExecutable =
         Join-Path $binaryDirectory "noleax-rtl-reallocate-heap-exception-test.exe"
+    $heapLifecycleContractExecutable =
+        Join-Path $binaryDirectory "noleax-rtl-heap-lifecycle-contract-test.exe"
+    $destroyIsolationExecutable =
+        Join-Path $binaryDirectory "noleax-rtl-destroy-heap-isolation-test.exe"
+    $ntVirtualMemoryContractExecutable =
+        Join-Path $binaryDirectory "noleax-nt-virtual-memory-contract-test.exe"
+    $ntSectionViewContractExecutable =
+        Join-Path $binaryDirectory "noleax-nt-section-view-contract-test.exe"
+    $ntVirtualMemoryTraceWriterExecutable =
+        Join-Path $binaryDirectory "noleax-nt-virtual-memory-trace-writer-test.exe"
+    $nativeProfileExecutable =
+        Join-Path $binaryDirectory "noleax-windows-native-profile-test.exe"
+    $moduleGenerationTraceExecutable =
+        Join-Path $binaryDirectory "noleax-module-generation-trace-test.exe"
+    $moduleTrackerExecutable =
+        Join-Path $binaryDirectory "noleax-module-tracker-test.exe"
     foreach ($path in @($mdExecutable, $mtExecutable, $hookHarness,
             $allocateQuiescenceExecutable, $freeQuiescenceExecutable,
-            $reallocateQuiescenceExecutable,
+            $reallocateQuiescenceExecutable, $heapLifecycleQuiescenceExecutable,
+            $ntVirtualMemoryQuiescenceExecutable,
             $allocateTraceWriterExecutable, $heapTraceWriterExecutable,
             $freeContractExecutable, $reallocateContractExecutable,
-            $reallocateExceptionExecutable)) {
+            $reallocateExceptionExecutable, $heapLifecycleContractExecutable,
+            $destroyIsolationExecutable, $ntVirtualMemoryContractExecutable,
+            $ntSectionViewContractExecutable, $ntVirtualMemoryTraceWriterExecutable,
+            $nativeProfileExecutable, $moduleGenerationTraceExecutable,
+            $moduleTrackerExecutable)) {
         if (-not (Test-Path -LiteralPath $path)) {
             throw "Required hardened artifact is missing: $path"
         }
@@ -150,7 +175,8 @@ try {
 
     Invoke-CheckedCommand ctest --preset $Preset --output-on-failure
     foreach ($quiescenceExecutable in @($allocateQuiescenceExecutable,
-            $freeQuiescenceExecutable, $reallocateQuiescenceExecutable)) {
+            $freeQuiescenceExecutable, $reallocateQuiescenceExecutable,
+            $heapLifecycleQuiescenceExecutable, $ntVirtualMemoryQuiescenceExecutable)) {
         $mitigationOutput = @(& $quiescenceExecutable)
         if ($LASTEXITCODE -ne 0 -or $mitigationOutput.Count -ne 1 -or
             $mitigationOutput[0] -notmatch " cfg=1 ") {
@@ -168,7 +194,10 @@ try {
         }
     }
     Invoke-CheckedCommand ctest --preset $Preset `
-        -R "hook.rtl-(allocate|reallocate|free)-heap-quiescence-race" `
+        -R "hook.(rtl-((allocate|reallocate|free)-heap|heap-lifecycle)|nt-virtual-memory)-quiescence-race" `
+        --repeat "until-fail:$RaceRepeats" --output-on-failure
+    Invoke-CheckedCommand ctest --preset $Preset `
+        -R "^hook.windows-native-profile$" `
         --repeat "until-fail:$RaceRepeats" --output-on-failure
 
     $longArguments = @(
@@ -202,11 +231,20 @@ try {
         [IO.Path]::GetFileName($allocateQuiescenceExecutable),
         [IO.Path]::GetFileName($freeQuiescenceExecutable),
         [IO.Path]::GetFileName($reallocateQuiescenceExecutable),
+        [IO.Path]::GetFileName($heapLifecycleQuiescenceExecutable),
+        [IO.Path]::GetFileName($ntVirtualMemoryQuiescenceExecutable),
         [IO.Path]::GetFileName($allocateTraceWriterExecutable),
         [IO.Path]::GetFileName($heapTraceWriterExecutable),
         [IO.Path]::GetFileName($freeContractExecutable),
         [IO.Path]::GetFileName($reallocateContractExecutable),
-        [IO.Path]::GetFileName($reallocateExceptionExecutable)
+        [IO.Path]::GetFileName($reallocateExceptionExecutable),
+        [IO.Path]::GetFileName($heapLifecycleContractExecutable),
+        [IO.Path]::GetFileName($ntVirtualMemoryContractExecutable),
+        [IO.Path]::GetFileName($ntSectionViewContractExecutable),
+        [IO.Path]::GetFileName($ntVirtualMemoryTraceWriterExecutable),
+        [IO.Path]::GetFileName($nativeProfileExecutable),
+        [IO.Path]::GetFileName($moduleGenerationTraceExecutable),
+        [IO.Path]::GetFileName($moduleTrackerExecutable)
     )
     $ifeoRoot = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options"
     foreach ($targetName in $targetNames) {
@@ -255,10 +293,10 @@ try {
         Assert-MatchingWorkloads $mdExecutable $mtExecutable $hookHarness $verifierArguments `
             $VerifierRepeats "appverifier-pageheap"
         Invoke-CheckedCommand ctest --preset $Preset `
-            -R "hook.rtl-(allocate|reallocate|free)-heap-quiescence-race" `
+            -R "hook.(rtl-((allocate|reallocate|free)-heap|heap-lifecycle)|nt-virtual-memory)-quiescence-race" `
             --repeat "until-fail:$VerifierRepeats" --output-on-failure
         Invoke-CheckedCommand ctest --preset $Preset `
-            -R "hook.rtl-allocate-heap-trace-writer-normal|hook.rtl-heap-trace-writer-lifecycle|hook.rtl-(free|reallocate)-heap-contract|hook.rtl-reallocate-heap-seh-contract" `
+            -R "hook.rtl-allocate-heap-trace-writer-normal|hook.rtl-heap-trace-writer-lifecycle|hook.rtl-(free|reallocate)-heap-contract|hook.rtl-reallocate-heap-seh-contract|hook.rtl-heap-lifecycle-contract|hook.nt-virtual-memory-(contract|trace-writer)|hook.nt-section-view-(contract|unmatched-trace)|hook.windows-native-profile|hook.module-(generation-trace|tracker-bounded-queue)" `
             --repeat "until-fail:$VerifierRepeats" --output-on-failure
     } catch {
         $phaseFailure = $_
@@ -307,7 +345,7 @@ try {
         throw "Application Verifier cleanup failed: $($cleanupFailures -join '; ')"
     }
 
-    Write-Host ("Windows allocate/reallocate/free hook hardening gate passed " +
+    Write-Host ("Windows memory hook hardening gate passed " +
         "(CFG, CET metadata/runtime, fail-fast, Page Heap, AppVerifier).")
 } finally {
     Pop-Location

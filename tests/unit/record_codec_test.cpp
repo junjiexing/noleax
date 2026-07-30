@@ -10,6 +10,7 @@
 
 #include "noleax/trace/completeness.hpp"
 #include "noleax/trace/event.hpp"
+#include "noleax/trace/module.hpp"
 #include "noleax/trace/trace_reader.hpp"
 #include "noleax/trace/wire_format.hpp"
 
@@ -86,6 +87,8 @@ namespace {
   vm_allocate.result_base = 0x4000U;
   vm_allocate.requested_size = 4096U;
   vm_allocate.result_size = 8192U;
+  vm_allocate.mapping_base = 0x4000U;
+  vm_allocate.mapping_size = 8192U;
   vm_allocate.allocation_type = 0x3000U;
   vm_allocate.protection = 4U;
   vm_allocate.mapping_id = MappingId{20U};
@@ -156,6 +159,23 @@ namespace {
       noleax::trace::StackFrame{{}, 0U, 0x00007FF698765432ULL, 0U},
   };
   return definition;
+}
+
+[[nodiscard]] noleax::trace::ModuleLoad module_load() {
+  noleax::trace::ModuleLoad load;
+  load.module_id = noleax::trace::ModuleId{7U};
+  load.monotonic_ticks = 55U;
+  load.base_address = 0x00007FF612340000ULL;
+  load.image_size = 0x5000U;
+  load.image_path = "C:/fixtures/noleax-module.dll";
+  load.image_identity = noleax::trace::PeImageIdentity{0x12345678U, 0x90ABCDEFU, 0x5000U};
+  noleax::trace::PdbIdentity pdb;
+  pdb.guid[0] = std::byte{0x42};
+  pdb.guid[15] = std::byte{0x99};
+  pdb.age = 3U;
+  load.pdb_identity = pdb;
+  load.pdb_path = "noleax-module.pdb";
+  return load;
 }
 
 [[nodiscard]] noleax::trace::EndOfTrace end_of_trace() {
@@ -247,6 +267,53 @@ TEST_CASE("stack definition record has stable layout and round trips", "[trace][
   REQUIRE(decoded.has_value());
   CHECK(*decoded == expected);
   CHECK(cursor.done());
+}
+
+TEST_CASE("module generation records have stable layouts and round trip",
+          "[trace][record-codec][module]") {
+  using namespace noleax::trace;
+  const ModuleLoad expected_load = module_load();
+  const ModuleUnload expected_unload{expected_load.module_id, 99U};
+  std::vector<std::byte> encoded;
+  append_module_load_record(encoded, expected_load);
+  const std::size_t unload_offset = encoded.size();
+  append_module_unload_record(encoded, expected_unload);
+
+  REQUIRE(unload_offset == 88U + expected_load.image_path.size() + expected_load.pdb_path.size());
+  CHECK(read_u32(encoded, 4U) == unload_offset);
+  CHECK(read_u64(encoded, 8U) == expected_load.module_id.value());
+  CHECK(read_u64(encoded, 16U) == expected_load.monotonic_ticks);
+  CHECK(read_u64(encoded, 24U) == expected_load.base_address);
+  CHECK(read_u64(encoded, 32U) == expected_load.image_size);
+  CHECK(read_u32(encoded, 48U) == expected_load.image_identity->timestamp);
+  CHECK(read_u32(encoded, 64U) == expected_load.image_path.size());
+  CHECK(read_u32(encoded, unload_offset + 4U) == 24U);
+
+  RecordCursor cursor{encoded};
+  const auto decoded_load = decode_module_record(*cursor.next());
+  REQUIRE(decoded_load.has_value());
+  REQUIRE(std::holds_alternative<ModuleLoad>(*decoded_load));
+  CHECK(std::get<ModuleLoad>(*decoded_load) == expected_load);
+  const auto decoded_unload = decode_module_record(*cursor.next());
+  REQUIRE(decoded_unload.has_value());
+  REQUIRE(std::holds_alternative<ModuleUnload>(*decoded_unload));
+  CHECK(std::get<ModuleUnload>(*decoded_unload) == expected_unload);
+  CHECK(cursor.done());
+}
+
+TEST_CASE("module codec rejects inconsistent identities and path lengths",
+          "[trace][record-codec][module]") {
+  using namespace noleax::trace;
+  auto load = module_load();
+  load.image_identity->image_size += 1U;
+  std::vector<std::byte> encoded;
+  CHECK_THROWS_AS(append_module_load_record(encoded, load), ModuleValidationError);
+
+  load = module_load();
+  append_module_load_record(encoded, load);
+  write_u32(encoded, 64U, 0x7FFFFFFFU);
+  RecordCursor cursor{encoded};
+  CHECK_THROWS_AS(decode_module_record(*cursor.next()), RecordCodecError);
 }
 
 TEST_CASE("stack definition validation distinguishes captured and unavailable stacks",
@@ -500,5 +567,7 @@ TEST_CASE("record encoders honor the configured record size limit", "[trace][rec
   CHECK(encoded.empty());
   CHECK_THROWS_AS(append_stack_definition_record(encoded, stack_definition(), 87U),
                   RecordCodecError);
+  CHECK(encoded.empty());
+  CHECK_THROWS_AS(append_module_load_record(encoded, module_load(), 87U), RecordCodecError);
   CHECK(encoded.empty());
 }

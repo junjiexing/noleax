@@ -4,9 +4,9 @@
 > 文档版本：0.1
 > 更新日期：2026-07-30
 > 确认日期：2026-07-29
-> 当前阶段：P5.2 `RtlReAllocateHeap` 实现及完整自动门禁完成（`feat/windows-agent-full-api`）
-> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8、P4.9、P5.1、P5.2
-> 下一工作项：P5.3 `RtlCreateHeap`/`RtlDestroyHeap`
+> 当前阶段：P5 Windows agent 完整 API 覆盖完成
+> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8、P4.9、P5.1、P5.2、P5.3、P5.4、P5.5、P5.6、P5.7
+> 下一工作项：P6.1 controller/agent IPC
 
 ## 1. 文档目的
 
@@ -486,7 +486,7 @@ max_size = "1MiB"
 | C++ | operator new、operator new[] 及 aligned/nothrow 变体 | 通常无独立 API | operator delete、operator delete[] 及 sized/aligned 变体 | 默认由底层捕获 |
 | COM/OLE | CoTaskMemAlloc、IMalloc::Alloc、SysAllocString 系列 | CoTaskMemRealloc、IMalloc::Realloc、SysReAllocString 系列 | CoTaskMemFree、IMalloc::Free、SysFreeString | 默认由底层捕获 |
 | Virtual Memory | VirtualAlloc、VirtualAllocEx、VirtualAlloc2 | 通常通过释放并重新分配实现 | VirtualFree、VirtualFreeEx | 默认由 NT API 捕获 |
-| NT Virtual Memory | NtAllocateVirtualMemory、NtMapViewOfSection | 无通用 realloc | NtFreeVirtualMemory、NtUnmapViewOfSection | 直接 hook |
+| NT Virtual Memory | NtAllocateVirtualMemory、NtMapViewOfSection | 无通用 realloc | NtFreeVirtualMemory、NtUnmapViewOfSection/Ex | 直接 hook；Ex 兼容新版 wrapper |
 | File Mapping | MapViewOfFile 系列 | 无通用 realloc | UnmapViewOfFile 系列 | 默认由 NT API 捕获 |
 
 V1 默认直接 hook 的规范化集合：
@@ -500,13 +500,14 @@ V1 默认直接 hook 的规范化集合：
 - NtFreeVirtualMemory
 - NtMapViewOfSection
 - NtUnmapViewOfSection
+- NtUnmapViewOfSectionEx（归一到 unmap，仅作为 wrapper 兼容物理入口）
 
 V1 提供以下命名 profile：
 
 | profile | 直接 hook 的 API 组 | 用途 |
 |---|---|---|
 | windows-nt-heap | RtlCreateHeap、RtlDestroyHeap、RtlAllocateHeap、RtlReAllocateHeap、RtlFreeHeap | 只跟踪 NT Heap；HeapAlloc、CRT malloc 等落到 NT Heap 的调用仍会被捕获 |
-| windows-virtual-memory | NtAllocateVirtualMemory、NtFreeVirtualMemory、NtMapViewOfSection、NtUnmapViewOfSection | 只跟踪直接虚拟内存和映射操作 |
+| windows-virtual-memory | NtAllocateVirtualMemory、NtFreeVirtualMemory、NtMapViewOfSection、NtUnmapViewOfSection/Ex | 只跟踪直接虚拟内存和映射操作 |
 | windows-native | windows-nt-heap 与 windows-virtual-memory 的并集 | Windows V1 默认 profile |
 
 例如，只启用 NT Heap：
@@ -1366,8 +1367,67 @@ unmatched。原地、移动、零大小、可控 OOM、跨线程、SEH、隔离 
 14 个 PE 的 CFG/CET 门禁及 Application Verifier/Full Page Heap 三轮均通过，10 个 IFEO key 已清理。详见
 [RTL_REALLOCATE_HEAP_HOOK.md](RTL_REALLOCATE_HEAP_HOOK.md)。
 
-P5.2 尚未启用产品 profile：heap create/destroy、VM 和 section-view 生命周期仍未覆盖，不能把当前
-组合当作完整 Windows 泄漏捕获范围。
+P5.3 状态：新增精确六参数 `RtlCreateHeap` 与单参数 `RtlDestroyHeap` NTAPI adapter，五个 NT Heap
+hook 共用 608-byte raw event 和唯一 queue sequence。writer 使用 `api_id=4/5`，为成功 create 分配
+单调 `HeapId`，让该 heap 上的 alloc/realloc/free 携带相同 ID；成功 destroy 结束该 ID 下全部 live
+allocation。原始 handle 被系统复用时必须得到新 `HeapId`。失败 destroy 不改变状态，未观察到 create
+的成功 destroy 按 CaptureScope 标记 preexisting/unmatched。
+
+合同覆盖 growable/fixed/failure/`HEAP_GENERATE_EXCEPTIONS`、LastError、raw 参数、guard、overflow、
+安装诊断、null/bad/double destroy 隔离差分、多 heap、destroy-with-live、handle reuse、EventStream 与
+GenerationTracker 回读。Debug/Release 各 189/189、hardened 206/206，四组 quiescence race 各
+100/100，17 个 PE 的 CFG/CET 门禁通过；Application Verifier/Full Page Heap 下 workload、race、
+trace 和 contract 各三轮通过，12 个 IFEO key 全部清理。详见
+[RTL_HEAP_LIFECYCLE_HOOK.md](RTL_HEAP_LIFECYCLE_HOOK.md)。
+
+P5.4 状态：新增精确 ABI 的 `NtAllocateVirtualMemory`/`NtFreeVirtualMemory` 协调 adapter。两者共享
+P5.4 当时使用 640-byte raw event queue；reserve 创建 MappingId，commit 复用已有 reservation，decommit 保持
+generation live，只有 release 结束 generation。当前进程的真实 handle 仍归类为 local；远程进程
+操作保存 hook 当下解析的 PID 和完整 raw event，但不创建本进程 MappingId。NT Heap 外层调用嵌套
+触发的 VM 操作由同一个固定 TEB guard 抑制，避免 backing mapping 与逻辑 heap allocation 重复记账。
+
+合同覆盖 reserve/commit/decommit/release、reserve+commit、指定 base、对齐、失败 NTSTATUS、
+`VirtualAlloc` 包装路径、preexisting、真实 remote child、LastError、栈、overflow 和 quiescence；trace
+由正式 EventStream/GenerationTracker 回读。Debug/Release 各 193/193、hardened 213/213，20 个 PE
+通过 CFG/CET；新增 NT VM race 100/100，长 ABI 差分 3/3。Application Verifier/Full Page Heap 三轮
+通过，54 份日志导出为 15 个零 LogEntry XML，15 个 IFEO key 全部清理。详见
+[NT_VIRTUAL_MEMORY_HOOK.md](NT_VIRTUAL_MEMORY_HOOK.md)。
+
+P5.5 状态：新增 `NtMapViewOfSection`、legacy `NtUnmapViewOfSection`，并兼容新版 Windows
+`UnmapViewOfFile` 实际使用的 `NtUnmapViewOfSectionEx`。三个物理入口归一为 map/unmap 两个 API ID，
+与 VM allocate/free 共用唯一 queue sequence。每个成功 local view 获得独立 MappingId；内部地址
+unmap 规范化为 view 基址，remote view 不进入本进程 outstanding 状态。
+
+合同、trace 与 race 覆盖 pagefile/file-backed、offset/size、多 view、read-only/read-write、失败
+NTSTATUS/LastError、wrapper、preexisting/unmatched、remote child、EventStream/GenerationTracker 和
+legacy/Ex quiescence。统一 raw event 为 664 bytes。详见
+[NT_SECTION_VIEW_HOOK.md](NT_SECTION_VIEW_HOOK.md)。产品 profile 仍等待 P5.6 module generation 与
+P5.7 registry/filter/statistics 收口。
+
+P5.6 状态：新增初始模块快照与 `LdrRegisterDllNotification` 固定 queue。loader callback 只复制
+base/size/path、PE identity 和可选 CodeView identity；writer 分配不复用的 ModuleId，编码
+ModuleLoad/Unload，并在事件时间对应的 live generation 上生成相对栈帧。normalized dictionary 的
+hash 与完整比较包含 ModuleId、offset 和绝对地址，因此 unload/reload 后复用同一 PC 不会错误复用
+StackId。正式 EventStream 校验 generation、live range 和相对地址一致性；真实 DLL fixture 已覆盖
+同基址 reload、不同 ModuleId/StackId 及卸载后的离线符号化。详见
+[MODULE_TRACKING.md](MODULE_TRACKING.md)。
+
+P5.7 状态：新增九个逻辑 API、十个物理 export 的唯一 registry，并用独立 test registry 做一一
+对应门禁。`windows-nt-heap`、`windows-virtual-memory` 和 `windows-native` 三个 profile 由
+`WindowsMemoryHooks` 按 registry 选择；native profile 的 heap 与 VM hook 共用一个 664-byte
+MPSC queue，因此九种事件具有同一 queue sequence。
+
+`capture.min_size` 在 replacement 热路径、栈捕获和入队前过滤 `RtlAllocateHeap`、
+`NtAllocateVirtualMemory` 和 `NtMapViewOfSection`；realloc、free/unmap 与 heap 生命周期事件始终保留。
+writer 将 filtered 纳入每 API 和 aggregate Statistics，守恒式为
+`written + filtered + dropped = observed`。产品停止流程拆为逻辑停录与物理 revert：先切换到 original
+并等待所有 record 路由退出，writer 完成 final drain 后停止目标 worker，最后才执行物理 uninstall，
+规避运行中多字节 patch revert 的不可证明窗口。完整语义见
+[WINDOWS_HOOK_PROFILES.md](WINDOWS_HOOK_PROFILES.md)。
+
+P5.7 最终门禁为 Debug/Release 各 205/205、hardened 230/230、25 个 PE 的 CFG/CET metadata；五组
+既有 race 与 native profile 各 100/100，MD/MT 8×20,000×2 长差分 3/3。Application Verifier/Full
+Page Heap 下三轮门禁通过，19 个目标 IFEO key 全部清理。
 
 每增加一个 API：
 
