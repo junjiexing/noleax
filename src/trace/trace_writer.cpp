@@ -120,6 +120,9 @@ TraceWriter::TraceWriter(std::ostream& output, const FileHeader& header, TraceWr
   if (options_.zstd_level != 0 && options_.zstd_level != 1) {
     throw TraceWriteError{"V1 trace writer supports Zstd level 0 or 1"};
   }
+  if (options_.reserved_tail_size > options_.max_file_size - kFileHeaderSize) {
+    throw TraceWriteError{"reserved trace tail does not fit after the file header"};
+  }
   const auto encoded_header = encode_file_header(header);
   write_bytes(output_, encoded_header);
   bytes_written_ = encoded_header.size();
@@ -145,15 +148,24 @@ ChunkWriteResult TraceWriter::write_chunk(const ChunkDescriptor& descriptor,
   header.crc32c = crc32c(uncompressed_payload);
   const auto encoded_header = encode_chunk_header(header);
 
-  if (exceeds_file_limit(bytes_written_, stored_size, options_.max_file_size)) {
+  const std::uint64_t effective_file_limit = options_.max_file_size - options_.reserved_tail_size;
+  if (exceeds_file_limit(bytes_written_, stored_size, effective_file_limit)) {
     return ChunkWriteResult::kFileLimit;
+  }
+  if (uncompressed_payload.size() >
+      std::numeric_limits<std::uint64_t>::max() - uncompressed_payload_bytes_written_) {
+    throw TraceWriteError{"cumulative uncompressed payload size overflow"};
   }
 
   write_bytes(output_, encoded_header);
   write_bytes(output_, stored_payload);
   bytes_written_ += static_cast<std::uint64_t>(encoded_header.size()) + stored_size;
+  uncompressed_payload_bytes_written_ += uncompressed_payload.size();
+  stored_payload_bytes_written_ += stored_size;
   return ChunkWriteResult::kWritten;
 }
+
+void TraceWriter::release_file_reserve() noexcept { options_.reserved_tail_size = 0U; }
 
 void TraceWriter::flush() {
   output_.flush();
@@ -164,8 +176,17 @@ void TraceWriter::flush() {
 
 std::uint64_t TraceWriter::bytes_written() const noexcept { return bytes_written_; }
 
+std::uint64_t TraceWriter::uncompressed_payload_bytes_written() const noexcept {
+  return uncompressed_payload_bytes_written_;
+}
+
+std::uint64_t TraceWriter::stored_payload_bytes_written() const noexcept {
+  return stored_payload_bytes_written_;
+}
+
 std::uint64_t TraceWriter::remaining_bytes() const noexcept {
-  return bytes_written_ >= options_.max_file_size ? 0U : options_.max_file_size - bytes_written_;
+  const std::uint64_t effective_file_limit = options_.max_file_size - options_.reserved_tail_size;
+  return bytes_written_ >= effective_file_limit ? 0U : effective_file_limit - bytes_written_;
 }
 
 }  // namespace noleax::trace

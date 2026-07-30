@@ -8,6 +8,7 @@
 
 #include "noleax/trace/completeness.hpp"
 #include "noleax/trace/event.hpp"
+#include "noleax/trace/stack.hpp"
 #include "noleax/trace/trace_reader.hpp"
 #include "noleax/trace/wire_format.hpp"
 
@@ -21,6 +22,7 @@ struct EventStreamOptions {
 struct EventStreamCallbacks {
   std::function<void(const noleax::trace::FileHeader&)> on_file_header;
   std::function<void(const noleax::trace::CaptureScope&)> on_capture_scope;
+  std::function<void(const noleax::trace::StackDefinition&)> on_stack_definition;
   std::function<void(const noleax::trace::Event&)> on_event;
   std::function<void(const noleax::trace::LossRecord&)> on_loss;
   std::function<void(const noleax::trace::CaptureStatistics&)> on_statistics;
@@ -36,6 +38,7 @@ struct EventStreamResult {
   noleax::trace::Sequence known_sequence_end;
   std::uint64_t known_monotonic_end{0};
   std::uint64_t event_count{0};
+  std::uint64_t stack_definition_count{0};
   std::uint64_t loss_record_count{0};
   std::uint64_t bytes_read{0};
   bool truncated{false};

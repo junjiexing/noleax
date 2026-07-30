@@ -300,7 +300,7 @@ NTSTATUS NTAPI NtUnmapViewOfSection(
 |---|---:|---:|---:|---:|---:|---:|---:|
 | RtlCreateHeap | pending | pending | pending | pending | pending | pending | no |
 | RtlDestroyHeap | pending | pending | pending | pending | pending | pending | no |
-| RtlAllocateHeap | probe only | pending | pending | probe only | probe only | pending | no |
+| RtlAllocateHeap | P4.9 hardened prototype | guard/queue/stack/SEH pass | ABI/LastError/exception/overflow/stack pass | 8x20k + TLS/unwind/quiescence pass | PE + runtime pass | AppVerifier Full 3/3 pass | no |
 | RtlReAllocateHeap | pending | pending | pending | pending | pending | pending | no |
 | RtlFreeHeap | pending | pending | pending | pending | pending | pending | no |
 | NtAllocateVirtualMemory | pending | pending | pending | pending | pending | pending | no |
@@ -308,4 +308,13 @@ NTSTATUS NTAPI NtUnmapViewOfSection(
 | NtMapViewOfSection | pending | pending | pending | pending | pending | pending | no |
 | NtUnmapViewOfSection | pending | pending | pending | pending | pending | pending | no |
 
-P0 probe 不等价于 P4 contract test，所以默认 profile 在产品实现中仍保持 disabled，直到对应测试门禁通过。
+P4.9 prototype 已通过真实 hook contract 差分、guard 探针、新线程 TLS 启动、强制 queue overflow、
+双策略 unwind、writer、SEH finally、CFG/CET quiescence 及 Application Verifier/Full Page Heap 三轮
+提权压力；24 份 verifier 日志为零记录，IFEO 设置全部回滚。默认 profile 仍保持 disabled，因为 P5
+尚未补齐 free/realloc 等配套生命周期 API，不能把单一 allocation prototype 当作产品 profile。
+workload 与 hardening 证据见
+[RTL_HEAP_BASELINE.md](RTL_HEAP_BASELINE.md) 和
+[RTL_ALLOCATE_HEAP_HOOK.md](RTL_ALLOCATE_HEAP_HOOK.md)，guard 设计与崩溃根因见
+[HOOK_GUARD.md](HOOK_GUARD.md)，队列合同见 [EVENT_QUEUE.md](EVENT_QUEUE.md)，栈合同见
+[STACK_CAPTURE.md](STACK_CAPTURE.md)，平台门禁见
+[WINDOWS_HOOK_HARDENING.md](WINDOWS_HOOK_HARDENING.md)。

@@ -7,6 +7,7 @@
 #include <span>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -14,6 +15,7 @@
 #include "noleax/trace/completeness.hpp"
 #include "noleax/trace/event.hpp"
 #include "noleax/trace/record_codec.hpp"
+#include "noleax/trace/stack.hpp"
 #include "noleax/trace/trace_reader.hpp"
 #include "noleax/trace/wire_format.hpp"
 
@@ -161,9 +163,12 @@ class EventStreamDecoder {
         process_metadata(chunk.payload);
         break;
       case noleax::trace::ChunkType::kModule:
-      case noleax::trace::ChunkType::kStack:
         require_empty_sequence_range(descriptor);
         process_unsupported_records(chunk.payload);
+        break;
+      case noleax::trace::ChunkType::kStack:
+        require_empty_sequence_range(descriptor);
+        process_stacks(chunk.payload);
         break;
       case noleax::trace::ChunkType::kEvent:
         process_events(descriptor, chunk.payload);
@@ -214,6 +219,36 @@ class EventStreamDecoder {
     while (cursor.next().has_value()) {
     }
     mark_unknown_record_skipped();
+  }
+
+  void process_stacks(std::span<const std::byte> payload) {
+    require_capture_scope("StackDefinition appears before CaptureScope");
+    noleax::trace::RecordCursor cursor{payload, maximum_record_size_};
+    std::vector<noleax::trace::StackDefinition> definitions;
+    std::unordered_set<std::uint64_t> chunk_ids;
+    bool skipped_unknown = false;
+    while (const auto record = cursor.next()) {
+      auto definition = noleax::trace::decode_stack_definition_record(*record);
+      if (!definition.has_value()) {
+        skipped_unknown = true;
+        continue;
+      }
+      const std::uint64_t stack_id = definition->stack_id.value();
+      if (stack_ids_.contains(stack_id) || !chunk_ids.insert(stack_id).second) {
+        throw TraceAnalysisError{"trace contains a duplicate StackDefinition ID"};
+      }
+      definitions.push_back(std::move(*definition));
+    }
+    if (skipped_unknown) {
+      mark_unknown_record_skipped();
+    }
+    for (const auto& definition : definitions) {
+      stack_ids_.insert(definition.stack_id.value());
+      checked_increment(result_.stack_definition_count, "stack definition");
+      if (callbacks_.on_stack_definition) {
+        callbacks_.on_stack_definition(definition);
+      }
+    }
   }
 
   void process_events(const noleax::trace::ChunkDescriptor& descriptor,
@@ -457,6 +492,7 @@ class EventStreamDecoder {
   std::optional<noleax::trace::CaptureScope> capture_scope_;
   std::optional<noleax::trace::CompletenessTracker> completeness_;
   std::unordered_map<noleax::trace::ApiId, std::uint64_t> events_per_api_;
+  std::unordered_set<std::uint64_t> stack_ids_;
   std::uint64_t previous_event_sequence_{0};
   std::uint64_t previous_event_ticks_{0};
   bool saw_event_{false};

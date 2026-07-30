@@ -147,6 +147,17 @@ namespace {
   return result;
 }
 
+[[nodiscard]] noleax::trace::StackDefinition stack_definition() {
+  noleax::trace::StackDefinition definition;
+  definition.stack_id = noleax::trace::StackId{0x0102030405060708ULL};
+  definition.status = noleax::trace::StackCaptureStatus::kTruncatedByDepth;
+  definition.frames = {
+      noleax::trace::StackFrame{noleax::trace::ModuleId{3U}, 0x123U, 0x00007FF612341123ULL, 0U},
+      noleax::trace::StackFrame{{}, 0U, 0x00007FF698765432ULL, 0U},
+  };
+  return definition;
+}
+
 [[nodiscard]] noleax::trace::EndOfTrace end_of_trace() {
   noleax::trace::EndOfTrace end;
   end.final_sequence = noleax::trace::Sequence{12U};
@@ -209,6 +220,53 @@ TEST_CASE("capture scope record has stable bytes and round trips", "[trace][reco
   REQUIRE(decoded.has_value());
   CHECK(*decoded == expected);
   CHECK(cursor.done());
+}
+
+TEST_CASE("stack definition record has stable layout and round trips", "[trace][record-codec]") {
+  using namespace noleax::trace;
+  const StackDefinition expected = stack_definition();
+  std::vector<std::byte> encoded;
+  append_stack_definition_record(encoded, expected);
+
+  REQUIRE(encoded.size() == 88U);
+  CHECK(std::to_integer<std::uint8_t>(encoded[0]) ==
+        static_cast<std::uint8_t>(StackRecordType::kDefinition));
+  CHECK(read_u32(encoded, 4U) == 88U);
+  CHECK(read_u64(encoded, 8U) == expected.stack_id.value());
+  CHECK(std::to_integer<std::uint8_t>(encoded[16]) ==
+        static_cast<std::uint8_t>(StackCaptureStatus::kTruncatedByDepth));
+  CHECK(read_u32(encoded, 20U) == 2U);
+  CHECK(read_u64(encoded, 24U) == expected.frames[0].module_id.value());
+  CHECK(read_u64(encoded, 32U) == expected.frames[0].module_offset);
+  CHECK(read_u64(encoded, 40U) == expected.frames[0].absolute_address);
+  CHECK(read_u64(encoded, 56U) == 0U);
+  CHECK(read_u64(encoded, 72U) == expected.frames[1].absolute_address);
+
+  RecordCursor cursor{encoded};
+  const auto decoded = decode_stack_definition_record(*cursor.next());
+  REQUIRE(decoded.has_value());
+  CHECK(*decoded == expected);
+  CHECK(cursor.done());
+}
+
+TEST_CASE("stack definition validation distinguishes captured and unavailable stacks",
+          "[trace][record-codec]") {
+  using namespace noleax::trace;
+  StackDefinition unavailable;
+  unavailable.stack_id = StackId{9U};
+  unavailable.status = StackCaptureStatus::kUnwindFailed;
+  std::vector<std::byte> encoded;
+  append_stack_definition_record(encoded, unavailable);
+  REQUIRE(encoded.size() == 24U);
+  RecordCursor cursor{encoded};
+  CHECK(decode_stack_definition_record(*cursor.next()) == unavailable);
+
+  StackDefinition invalid = unavailable;
+  invalid.status = StackCaptureStatus::kComplete;
+  CHECK_THROWS_AS(append_stack_definition_record(encoded, invalid), StackValidationError);
+  invalid = stack_definition();
+  invalid.status = StackCaptureStatus::kUnavailable;
+  CHECK_THROWS_AS(append_stack_definition_record(encoded, invalid), StackValidationError);
 }
 
 TEST_CASE("all normalized memory event records round trip", "[trace][record-codec]") {
@@ -320,10 +378,12 @@ TEST_CASE("record decoders skip unknown types and versions", "[trace][record-cod
   const RecordView unknown_version{1U, 2U, payload};
 
   CHECK_FALSE(decode_capture_scope_record(unknown_type).has_value());
+  CHECK_FALSE(decode_stack_definition_record(unknown_type).has_value());
   CHECK_FALSE(decode_event_chunk_record(unknown_type).has_value());
   CHECK_FALSE(decode_statistics_record(unknown_type).has_value());
   CHECK_FALSE(decode_end_of_trace_record(unknown_type).has_value());
   CHECK_FALSE(decode_capture_scope_record(unknown_version).has_value());
+  CHECK_FALSE(decode_stack_definition_record(unknown_version).has_value());
   CHECK_FALSE(decode_event_chunk_record(unknown_version).has_value());
   CHECK_FALSE(decode_statistics_record(unknown_version).has_value());
   CHECK_FALSE(decode_end_of_trace_record(unknown_version).has_value());
@@ -351,6 +411,43 @@ TEST_CASE("record decoders reject malformed known payloads", "[trace][record-cod
     encoded[8] = std::byte{1};
     RecordCursor cursor{encoded};
     CHECK_THROWS_AS(decode_capture_scope_record(*cursor.next()), RecordCodecError);
+  }
+
+  SECTION("invalid stack status") {
+    std::vector<std::byte> encoded;
+    append_stack_definition_record(encoded, stack_definition());
+    encoded[16] = std::byte{0xFF};
+    RecordCursor cursor{encoded};
+    CHECK_THROWS_AS(decode_stack_definition_record(*cursor.next()), RecordCodecError);
+  }
+
+  SECTION("stack frame count exceeds payload") {
+    std::vector<std::byte> encoded;
+    append_stack_definition_record(encoded, stack_definition());
+    write_u32(encoded, 20U, 3U);
+    RecordCursor cursor{encoded};
+    CHECK_THROWS_AS(decode_stack_definition_record(*cursor.next()), RecordCodecError);
+  }
+
+  SECTION("stack frame without module has an offset") {
+    std::vector<std::byte> encoded;
+    append_stack_definition_record(encoded, stack_definition());
+    write_u64(encoded, 64U, 1U);
+    RecordCursor cursor{encoded};
+    CHECK_THROWS_AS(decode_stack_definition_record(*cursor.next()), RecordCodecError);
+  }
+
+  SECTION("stack fixed and frame reserved fields must be zero") {
+    std::vector<std::byte> encoded;
+    append_stack_definition_record(encoded, stack_definition());
+    encoded[17] = std::byte{1U};
+    RecordCursor cursor{encoded};
+    CHECK_THROWS_AS(decode_stack_definition_record(*cursor.next()), RecordCodecError);
+
+    encoded[17] = std::byte{0U};
+    encoded[52] = std::byte{1U};
+    RecordCursor frame_cursor{encoded};
+    CHECK_THROWS_AS(decode_stack_definition_record(*frame_cursor.next()), RecordCodecError);
   }
 
   SECTION("invalid event status") {
@@ -400,5 +497,8 @@ TEST_CASE("record encoders honor the configured record size limit", "[trace][rec
   using namespace noleax::trace;
   std::vector<std::byte> encoded;
   CHECK_THROWS_AS(append_event_record(encoded, all_memory_events()[2], 111U), WireFormatError);
+  CHECK(encoded.empty());
+  CHECK_THROWS_AS(append_stack_definition_record(encoded, stack_definition(), 87U),
+                  RecordCodecError);
   CHECK(encoded.empty());
 }

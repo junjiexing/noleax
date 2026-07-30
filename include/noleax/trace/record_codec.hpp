@@ -8,6 +8,7 @@
 
 #include "noleax/trace/completeness.hpp"
 #include "noleax/trace/event.hpp"
+#include "noleax/trace/stack.hpp"
 #include "noleax/trace/trace_reader.hpp"
 
 namespace noleax::trace {
@@ -30,6 +31,10 @@ enum class EventRecordType : std::uint16_t {  // NOLINT(performance-enum-size)
   kLoss = 10,
 };
 
+enum class StackRecordType : std::uint16_t {  // NOLINT(performance-enum-size)
+  kDefinition = 1,
+};
+
 enum class StatisticsRecordType : std::uint16_t {  // NOLINT(performance-enum-size)
   kCaptureStatistics = 1,
 };
@@ -48,6 +53,12 @@ class RecordCodecError final : public std::runtime_error {
 void append_capture_scope_record(std::vector<std::byte>& chunk_payload, const CaptureScope& scope,
                                  std::uint32_t maximum_record_size = kDefaultMaximumRecordSize);
 [[nodiscard]] std::optional<CaptureScope> decode_capture_scope_record(const RecordView& record);
+
+void append_stack_definition_record(std::vector<std::byte>& chunk_payload,
+                                    const StackDefinition& definition,
+                                    std::uint32_t maximum_record_size = kDefaultMaximumRecordSize);
+[[nodiscard]] std::optional<StackDefinition> decode_stack_definition_record(
+    const RecordView& record);
 
 void append_event_record(std::vector<std::byte>& chunk_payload, const Event& event,
                          std::uint32_t maximum_record_size = kDefaultMaximumRecordSize);

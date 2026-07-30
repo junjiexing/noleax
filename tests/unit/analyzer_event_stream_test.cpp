@@ -129,6 +129,23 @@ struct ChunkInput {
   return payload;
 }
 
+[[nodiscard]] noleax::trace::StackDefinition stack_definition(std::uint64_t id = 101U) {
+  noleax::trace::StackDefinition definition;
+  definition.stack_id = noleax::trace::StackId{id};
+  definition.status = noleax::trace::StackCaptureStatus::kComplete;
+  definition.frames.push_back({{}, 0U, 0x00007FF612341234ULL, 0U});
+  return definition;
+}
+
+[[nodiscard]] std::vector<std::byte> stack_payload(
+    const std::vector<noleax::trace::StackDefinition>& definitions) {
+  std::vector<std::byte> payload;
+  for (const auto& definition : definitions) {
+    noleax::trace::append_stack_definition_record(payload, definition);
+  }
+  return payload;
+}
+
 [[nodiscard]] std::vector<std::byte> statistics_payload(
     const noleax::trace::CaptureStatistics& statistics) {
   std::vector<std::byte> payload;
@@ -168,6 +185,47 @@ enum class CallbackKind : std::uint8_t {
 };
 
 }  // namespace
+
+TEST_CASE("event stream decodes stack definitions before referenced events",
+          "[analyzer][events][stack]") {
+  using namespace noleax::trace;
+  const StackDefinition expected = stack_definition();
+  Event referenced_event = noleax::testing::make_all_memory_event_kinds().front();
+  referenced_event.header.sequence = Sequence{1U};
+  referenced_event.header.monotonic_ticks = 1U;
+  referenced_event.header.stack_id = expected.stack_id;
+  const auto encoded = write_trace({
+      {descriptor(ChunkType::kMetadata), metadata_payload()},
+      {descriptor(ChunkType::kStack), stack_payload({expected})},
+      {descriptor(ChunkType::kEvent, 1U, 1U), event_payload({referenced_event})},
+      {descriptor(ChunkType::kStatistics),
+       statistics_payload(statistics_for_events({referenced_event}))},
+      {descriptor(ChunkType::kEnd), end_payload(normal_end(1U, 1U))},
+  });
+
+  std::vector<StackDefinition> observed;
+  bool event_observed_after_definition = false;
+  noleax::analyzer::EventStreamCallbacks callbacks;
+  callbacks.on_stack_definition = [&observed](const StackDefinition& definition) {
+    observed.push_back(definition);
+  };
+  callbacks.on_event = [&observed, &event_observed_after_definition](const Event& event) {
+    event_observed_after_definition =
+        observed.size() == 1U && event.header.stack_id == observed.front().stack_id;
+  };
+  const auto result = analyze(encoded, callbacks);
+  CHECK(observed == std::vector<StackDefinition>{expected});
+  CHECK(event_observed_after_definition);
+  CHECK(result.event_count == 1U);
+  CHECK(result.stack_definition_count == 1U);
+  CHECK_FALSE(result.partially_understood);
+
+  const auto duplicate = write_trace({
+      {descriptor(ChunkType::kMetadata), metadata_payload()},
+      {descriptor(ChunkType::kStack), stack_payload({expected, expected})},
+  });
+  CHECK_THROWS_AS(analyze(duplicate), noleax::analyzer::TraceAnalysisError);
+}
 
 TEST_CASE("event stream decodes every normalized event in trace order", "[analyzer][events]") {
   using namespace noleax::trace;

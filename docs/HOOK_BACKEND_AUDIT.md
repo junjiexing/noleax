@@ -20,6 +20,8 @@ Hoox v0.1.1 可以作为 Noleax 的指定 hook backend 进入工程集成，但�
 - Noleax 自建的 Windows x64 Release 探针使用 replace_fast hook RtlAllocateHeap，通过并发和重复运行验证。
 - 带 Control Flow Guard 和 CET compatible 标记的探针同样通过。
 - 上游没有针对 RtlAllocateHeap 的测试，也没有发现独立的 replace_fast 合同测试。
+- v0.1.1 的 Windows FLS callback 未在 deinit 注销；P4.2 通过受审计的 overlay patch 修复，并以
+  agent DLL 卸载/进程退出测试覆盖。
 
 因此采用“有条件接受”：
 
@@ -60,7 +62,16 @@ Noleax 的发布包必须：
 - 携带 Hoox 的 NOTICE。
 - 保留需要的版权及许可证声明。
 - overlay port 固定源码和校验值。
-- 不修改 vendored Hoox 源码；若未来必须修改，先单独审查许可证和维护策略。
+- 不直接修改或提交 `_temp` 中的 Hoox 审计副本；必要调整必须作为可 review 的 overlay patch，
+  保留上游许可证并记录原因和验证证据。
+
+当前 overlay source patches：
+
+- `install-rules.patch`：只增加 vcpkg 所需的安装/export 规则。
+- `windows-fls-lifecycle.patch`：补齐私有线程键 deinit，避免 DLL 卸载后遗留 FLS callback；不改变
+  hook、relocation 或 trampoline 逻辑。
+- `windows-rwx-patch-quiescence.patch`：在 Windows RWX 多字节 patch 更新期间暂停 peer threads，并以
+  重复线程快照覆盖 thread churn；P4.8 并发 revert 门禁要求该补丁。
 
 这是一项工程合规记录，不替代正式法律意见。
 
@@ -98,6 +109,15 @@ Noleax 只通过内部 HookBackend wrapper 使用以下 Hoox API：
 - hoox_interceptor_flush
 
 默认不让业务代码直接依赖 Hoox 类型。
+
+P4.2 已将上述 API 收口到 `noleax::agent::HookBackend`。公开 adapter 头文件不包含 Hoox 类型；安装
+状态、original trampoline、revert、deferred teardown、flush 和 shutdown 均有独立测试。实现和
+replacement in-flight 边界后续已在 P4.8 解决，见 [HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)。
+
+P4.3 进一步要求 allocator hook 使用嵌套 transaction：在代码 patch 激活前完成 backend
+bookkeeping，并通过原子 slot 发布 original。真实 `RtlAllocateHeap` passthrough 的 MD/MT、
+Debug/Release ABI 与 `LastError` 差分已通过；证据见
+[RTL_ALLOCATE_HEAP_HOOK.md](RTL_ALLOCATE_HEAP_HOOK.md)。
 
 ### 5.1 为什么选择 replace_fast
 
@@ -205,7 +225,25 @@ dumpbin 确认输出包含：
 
 相同 RtlAllocateHeap 并发探针通过。
 
-该结果只覆盖当前机器和该探针，不替代 P4 的完整矩阵。
+P4.9 已用独立 hardened preset 扩展为五个正式产物的 PE 标记门禁，并在真实 quiescence hook 进程中
+查询 CFG/CET runtime policy；当前机器报告二者均启用。完整证据见
+[WINDOWS_HOOK_HARDENING.md](WINDOWS_HOOK_HARDENING.md)。该结果仍只覆盖当前 OS/CPU，不能替代后续
+Windows 版本矩阵。
+
+### 6.5 P4.2 FLS 生命周期回归
+
+原始 v0.1.1 在 agent DLL 执行 `hoox_init`/`hoox_deinit` 并由 `FreeLibrary` 卸载后，会在进程退出的
+`ntdll!RtlpFlsDataCleanup` 中访问已卸载的 Hoox FLS callback，退出码为 `0xC0000005`。
+
+应用 `windows-fls-lifecycle.patch` 后：
+
+- vcpkg Debug/Release Hoox 包均重建成功；
+- 5 个 HookBackend 合同测试在 Debug/Release 全部通过；
+- agent load/link/unload/exit smoke 在 Debug/Release 各连续运行 20 次，全部正常退出；
+- 同一进程 25 次 HookBackend init/install/call/revert/deinit 循环通过。
+
+该结论只证明当前无 replacement in-flight 的 P4.2 fixture 可安全卸载；真实 allocator replacement
+已在 P4.8 增加 Noleax 自有 quiescence、trampoline lease 和 module pin 门禁。
 
 ## 7. 已知风险和缺口
 
@@ -218,7 +256,9 @@ dumpbin 确认输出包含：
 | 未发现独立 replace_fast 合同测试 | Noleax 自建 test target |
 | system allocator 可能与被 hook API递归 | 使用 replace_fast 和无分配 replacement |
 | 真实 Windows build 间 ntdll prologue 可能变化 | 支持矩阵按 OS build 验收 |
-| CFG/CET 只完成单机初测 | P4/CI 扩展矩阵 |
+| CFG/CET 仅覆盖当前 OS/CPU | P4.9 hardened 门禁已通过，CI/支持矩阵继续扩展 |
+| Page Heap/Application Verifier 需要管理员设置 | P4.9 提权门禁 3/3 通过，回滚后 IFEO 无残留 |
+| v0.1.1 deinit 遗留 Windows FLS callback | overlay 生命周期补丁及 agent unload/exit 回归 |
 | 安全卸载需要 flush 及自有 in-flight 计数 | HookBackend wrapper 统一实现 |
 
 ## 8. P4 强制验证项

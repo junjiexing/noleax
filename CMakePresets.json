@@ -37,6 +37,15 @@
       }
     },
     {
+      "name": "windows-x64-hardened",
+      "displayName": "Windows x64 Release with CFG/CET",
+      "inherits": "windows-x64-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "NOLEAX_WINDOWS_HARDENED_TESTING": true
+      }
+    },
+    {
       "name": "windows-x64-ci",
       "displayName": "Windows x64 CI",
       "inherits": "windows-x64-release"
@@ -50,6 +59,10 @@
     {
       "name": "windows-x64-release",
       "configurePreset": "windows-x64-release"
+    },
+    {
+      "name": "windows-x64-hardened",
+      "configurePreset": "windows-x64-hardened"
     },
     {
       "name": "windows-x64-ci",
@@ -67,6 +80,13 @@
     {
       "name": "windows-x64-release",
       "configurePreset": "windows-x64-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-x64-hardened",
+      "configurePreset": "windows-x64-hardened",
       "output": {
         "outputOnFailure": true
       }

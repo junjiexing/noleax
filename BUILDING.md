@@ -48,6 +48,17 @@ cmake --build --preset windows-x64-release
 ctest --preset windows-x64-release
 ~~~
 
+Windows CFG/CET hardened gate：
+
+~~~powershell
+cmake --preset windows-x64-hardened
+cmake --build --preset windows-x64-hardened
+ctest --preset windows-x64-hardened
+~~~
+
+完整 hook hardening 压力和管理员 Application Verifier/Page Heap 验收见
+[docs/WINDOWS_HOOK_HARDENING.md](docs/WINDOWS_HOOK_HARDENING.md)。
+
 The first configure installs manifest dependencies into build/<preset>/vcpkg_installed. The Hoox overlay port pins v0.1.1 and verifies its source archive hash.
 
 ## Formatting and static analysis
@@ -65,11 +76,22 @@ cmake --preset windows-x64-debug -DNOLEAX_ENABLE_CLANG_TIDY=ON
 cmake --build --preset windows-x64-debug
 ~~~
 
+The Windows Rtl Heap unhooked baselines can be run independently with:
+
+~~~powershell
+ctest --preset windows-x64-debug -L baseline --output-on-failure
+~~~
+
+These tests compare deterministic `/MD` and `/MT` workload summaries. See
+[docs/RTL_HEAP_BASELINE.md](docs/RTL_HEAP_BASELINE.md) for the workload and longer stress commands.
+
 ## Output
 
 - build/<preset>/bin/noleax.exe
 - build/<preset>/bin/noleax-agent.dll
 - build/<preset>/bin/noleax-unit-tests.exe
+- build/<preset>/bin/noleax-rtl-heap-baseline-md.exe
+- build/<preset>/bin/noleax-rtl-heap-baseline-mt.exe
 
 ## Clean builds
 

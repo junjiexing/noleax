@@ -2,11 +2,11 @@
 
 > 状态：已确认
 > 文档版本：0.1
-> 更新日期：2026-07-29
+> 更新日期：2026-07-30
 > 确认日期：2026-07-29
-> 当前阶段：P3 离线分析器（库组件完成）
-> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8
-> 下一工作项：P4.1 Windows Rtl hook 基线目标（需先创建 `feat/windows-hook-agent` 分支并人工确认）
+> 当前阶段：P4 Windows Rtl hook 安全原型已完成（`feat/windows-hook-agent`，待阶段 review/合并）
+> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8、P4.9
+> 下一工作项：P4 阶段 review/合并门禁；P5 开始前需人工确认
 
 ## 1. 文档目的
 
@@ -1246,6 +1246,77 @@ Module/Stack record codec、EventStream 元数据装配和 `noleax analyze` 的�
 | P4.7 | 后台 writer | agent trace path | 文件上限测试 |
 | P4.8 | 退出和卸载 quiescence | lifecycle | race 测试 |
 | P4.9 | Page Heap/Verifier/CFG/CET 压力 | test report | 零 hook 引入 crash |
+
+状态：P4.1 已通过。未 hook 基线由同一源文件生成 MSVC 动态 CRT 和静态 CRT 两个目标，覆盖直接
+Rtl、Win32 Heap、CRT、process/显式 heap、零填充、确定失败、多线程 live block 内容验证和逆序
+释放。同参数的进程内多轮摘要必须一致，两种 CRT 的跨进程摘要必须逐字节一致。摘要保留原始
+`LastError` change count 和实际值 hash，供 P4.3 hooked 差分使用。详见
+[RTL_HEAP_BASELINE.md](RTL_HEAP_BASELINE.md)。
+
+P4.2 已通过。`HookBackend` 隔离全部 Hoox 类型，固定使用 checked online `replace_fast`，并将
+安装错误、original 缺失、重复 target、revert、deferred teardown、flush 和 stopped 状态显式化。
+独立 Release fixture 验证 original trampoline、跨实例冲突、批量 shutdown、析构回滚和重复生命周期。
+Hoox v0.1.1 遗留 FLS callback 的 DLL 卸载缺陷由 overlay 生命周期补丁修复，并通过 Debug/Release
+各 20 次 unload/exit 回归。Hoox flush 不覆盖 replacement 自身的全部 in-flight 窗口，该缺口已在
+P4.8 由 lifetime lease 和自有 quiescence 完成。详见 [HOOK_BACKEND.md](HOOK_BACKEND.md)。
+
+P4.3 已通过。`RtlAllocateHeap` adapter 使用精确 NTAPI 签名；HookBackend 在 Hoox transaction 提交
+前完成 bookkeeping 并原子发布 original，replacement 只执行无锁计数和一次 original 调用。同一
+MD/MT workload 的 hooked/unhooked 摘要在 Debug/Release 完全一致，Release 8×20,000×2 长压力及
+双配置各 20 次重复通过。profile 仍保持 disabled。详见
+[RTL_ALLOCATE_HEAP_HOOK.md](RTL_ALLOCATE_HEAP_HOOK.md)。
+
+P4.4 已通过。开发中的 static `thread_local` 版本在新线程建立 TLS vector 时递归进入
+`RtlAllocateHeap`，CDB 确认 replacement 访问尚未发布的 TLS vector 而崩溃。最终实现安装前申请
+前 64 个固定 TEB TLS 槽之一，在热路径直接读写打包的 hook/internal depth，不调用 TLS API、heap、
+锁、I/O 或 loader；固定槽不足时拒绝安装。单元测试覆盖引用计数、嵌套、分类优先级和线程隔离，
+真实 hook harness 覆盖 outermost/recursive/internal 探针及 hook 后创建 worker 的原崩溃路径。
+Debug/Release 定向测试、双配置各 20 次 passthrough 和 Release 8×20,000×2 差分均通过。事件队列、
+SEH 门禁当时尚未完成，profile 继续保持 disabled；replacement quiescence 后续已在 P4.8 完成。详见
+[HOOK_GUARD.md](HOOK_GUARD.md)。
+
+P4.5 已通过。`BoundedMpscQueue` 在安装前按 2 的幂预分配 slot，使用 per-slot generation sequence、
+原子 producer reservation cursor 和单 consumer cursor；热路径无 allocator、mutex、condition
+variable 和 I/O。队列满时立即拒绝 event，并用饱和 64-bit counter 精确累计 dropped，供 P4.7
+生成 `queue_full/agent_queue` Loss。`RtlAllocateHeap` outermost 调用现会在 original 返回后保存
+`LastError`、采集 ticks/thread/参数/结果并入队；recursive/internal 调用不入队。并发单元测试覆盖
+8 producer、并发 consumer、复用和 overflow；真实 hook harness 以 256 槽强制 overflow，并在卸载后
+验证 `recordable = dequeued + dropped`。双配置 passthrough 差分保持一致。详见
+[EVENT_QUEUE.md](EVENT_QUEUE.md)。
+
+P4.6 已通过。outermost event 取得 queue slot 后使用 `RtlCaptureStackBackTrace` 捕获最多 64 个原始
+地址，并以额外一帧区分 complete/truncated；adapter 与 replacement 自身帧被过滤。捕获失败显式
+编码为零帧 `kFailed`，不会伪装成空成功栈，P4.7 据此生成 stack-only Loss。x64
+`RtlCaptureContext + RtlLookupFunctionEntry + RtlVirtualUnwind` 仅作为对照策略参与 8×2,000 并发
+压力和 caller-chain 交叉检查，不进入 hook 热路径。真实 hook 事件、LastError 和 hooked/unhooked
+差分均通过。详见 [STACK_CAPTURE.md](STACK_CAPTURE.md)。
+
+P4.7 已通过。安装 hook 前启动的 internal writer 线程持续 drain MPSC queue，把原始
+`RtlAllocateHeap` 事件规范化为 Allocation event，并以碰撞安全、固定容量、分段重置的 dictionary
+复用 stack_id。writer 显式生成 stack-capture、queue-full 和 trace-full Loss，校验 hook/queue/file
+计数守恒，并在 1 KiB 文件尾保留区中以 none codec 写 Statistics 与 EndOfTrace。正常、2-slot
+queue overflow 和 8 KiB 文件上限三种真实 hook trace 均由正式 EventStream 重新解码验证；文件大小
+不会超过硬上限。P4.8 已把 producer stop 与 hook 卸载收敛到生命周期 barrier。详见
+[TRACE_WRITER.md](TRACE_WRITER.md)。
+
+P4.8 已通过。replacement 入口先计数再取得 `record/original/target` 路由快照；停止时先关闭记录，
+只 revert，不允许 Hoox 在 replacement 静默前 flush trampoline。backend lifetime lease 覆盖
+replacement 尚未进入 original 的窗口。Hoox Windows RWX overlay 在 18 字节 target patch 更新期间
+暂停 peer threads，并以重复快照覆盖 thread churn；未修补版本的并发测试在第 17 次崩溃，修补后
+Debug 含 thread churn 和 Release race 均连续 100 次、双配置全量均 175/175 通过。不可观测的旧跳转
+通过进程级 module pin 和恢复后的 target 路由 fail-safe，因此当前 adapter 明确限制为每进程安装
+一次，DLL 驻留到进程退出。Release 热路径反汇编和 MD/MT 8×20,000×2 ABI 长差分也已复核通过。
+详见 [HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)。
+
+P4.9 已通过。独立 hardened preset 对 Noleax 目标启用
+`/guard:cf` 和 `/CETCOMPAT`；五个真实 PE 的标记检查、运行时 CFG/CET、hardened 183/183、并发
+quiescence 100 次和 MD/MT 8×20,000×2 三轮差分均通过。`HEAP_GENERATE_EXCEPTIONS` 现由 SEH
+filter 记录 NTSTATUS 失败事件，并由 `__finally` 保证 guard/in-flight 清理；基线与 hooked 的
+`0xc0000017`、exception parameters 和 `LastError=8` 完全一致。64-bit 管理员门禁在 Application
+Verifier 10.0.26100 的 `Heaps.Full=true` 下完成三轮 baseline/hooked 差分、quiescence 和 writer；
+修正后的两次正向验收累计 24 份日志，合计零 verifier record，四个 IFEO key 均已清理。脚本拒绝覆盖
+既有设置并在 finally 中回滚。
+详见 [WINDOWS_HOOK_HARDENING.md](WINDOWS_HOOK_HARDENING.md)。
 
 阶段门禁：
 
