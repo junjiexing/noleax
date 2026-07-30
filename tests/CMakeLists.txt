@@ -26,6 +26,7 @@ add_executable(noleax-unit-tests
   unit/record_codec_test.cpp
   unit/synthetic_trace_test.cpp
   unit/trace_reader_test.cpp
+  unit/trace_metadata_test.cpp
   unit/trace_writer_test.cpp
   unit/value_parser_test.cpp
   unit/version_test.cpp
@@ -92,6 +93,36 @@ if(WIN32)
     targets/controller_target.cpp
   )
   noleax_set_project_warnings(noleax-controller-target)
+
+  add_executable(noleax-cli-e2e-target
+    targets/cli_e2e_target.cpp
+  )
+  noleax_set_project_warnings(noleax-cli-e2e-target)
+
+  add_executable(noleax-cli-end-to-end-test
+    integration/cli_end_to_end_test.cpp
+    support/csv_table.cpp
+    support/json_dom.cpp
+  )
+  target_include_directories(noleax-cli-end-to-end-test PRIVATE "${PROJECT_SOURCE_DIR}/tests")
+  target_link_libraries(noleax-cli-end-to-end-test PRIVATE noleax::controller)
+  noleax_set_project_warnings(noleax-cli-end-to-end-test)
+
+  add_dependencies(noleax-cli-end-to-end-test noleax noleax-agent noleax-cli-e2e-target)
+  add_test(NAME cli.end-to-end-trace-analyze
+    COMMAND noleax-cli-end-to-end-test
+      "$<TARGET_FILE:noleax>"
+      "$<TARGET_FILE:noleax-agent>"
+      "$<TARGET_FILE:noleax-cli-e2e-target>"
+      "$<TARGET_FILE_DIR:noleax-cli-end-to-end-test>/cli-e2e"
+  )
+  set_tests_properties(cli.end-to-end-trace-analyze PROPERTIES
+    LABELS "cli;controller;agent;run;attach;trace;analyzer;outstanding;windows"
+    PASS_REGULAR_EXPRESSION
+      "^status=ok run=1 attach=1 outstanding=1 console=1 json=1 csv=1 stacks=1 errors=1"
+    RUN_SERIAL TRUE
+    TIMEOUT 90
+  )
 
   add_dependencies(noleax-unit-tests noleax-agent noleax-controller-target)
   target_compile_definitions(noleax-unit-tests PRIVATE
@@ -788,6 +819,16 @@ if(WIN32)
   if(NOLEAX_WINDOWS_HARDENED_TESTING)
     find_program(NOLEAX_DUMPBIN_EXECUTABLE NAMES dumpbin REQUIRED)
     foreach(mitigation_target IN ITEMS
+        noleax
+        noleax-agent
+        noleax-controller-target
+        noleax-controller-lifecycle-target
+        noleax-cli-e2e-target
+        noleax-cli-end-to-end-test
+        noleax-controller-launch-test
+        noleax-controller-attach-test
+        noleax-controller-lifecycle-test
+        noleax-injector-rollback-test
         noleax-rtl-heap-baseline-md
         noleax-rtl-heap-baseline-mt
         noleax-rtl-allocate-heap-hook-harness

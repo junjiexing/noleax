@@ -1,6 +1,6 @@
 # Noleax 配置规范
 
-> 状态：P0 基线
+> 状态：P6.7 Windows x64 生效配置
 > 格式：TOML
 > schema_version：1
 
@@ -93,6 +93,10 @@ color = "auto"
 ~~~
 
 示例展示 schema，不表示所有键在所有 operation 中都有效。与当前 operation 无关但非默认的配置键应报错，避免用户误以为设置已生效。
+
+P6 Windows x64 对尚未实现但已为后续阶段预留的组合返回 5：`injection.method` 仅支持
+`remote-thread`，`trace.on_full` 仅支持 `stop`、`trace.max_files` 仅支持 1，attach 的
+`injection.unload_on_stop` 仅支持 false，analysis 每次仅支持一个 input。配置值不会被静默忽略。
 
 `capture.min_size` 与 `--capture-min-size` 语义相同。Windows V1 只在入队前过滤严格小于阈值的
 `RtlAllocateHeap`、`NtAllocateVirtualMemory` 和 `NtMapViewOfSection`；realloc、free/unmap 与 heap

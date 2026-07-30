@@ -8,6 +8,7 @@ add_library(noleax-analyzer STATIC
   outstanding.cpp
   symbolizer.cpp
   time.cpp
+  trace_metadata.cpp
   utf8.cpp
 )
 

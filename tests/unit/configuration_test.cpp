@@ -316,6 +316,9 @@ TEST_CASE("operation validation checks capture, injection, and relevance rules",
   run.capture.max_stack_depth.value = 0U;
   CHECK_THROWS_AS(noleax::config::validate_configuration(run), noleax::config::ConfigError);
   run.capture.max_stack_depth.value = 64U;
+  run.capture.duration.value = std::chrono::nanoseconds::zero();
+  CHECK_THROWS_AS(noleax::config::validate_configuration(run), noleax::config::ConfigError);
+  run.capture.duration.value = std::nullopt;
   run.analysis.mode.value = noleax::config::AnalysisMode::kOutstanding;
   CHECK_THROWS_AS(noleax::config::validate_configuration(run), noleax::config::ConfigError);
   run.analysis.mode.value = noleax::config::AnalysisMode::kEvents;

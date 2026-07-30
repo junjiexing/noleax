@@ -199,6 +199,10 @@ void validate_common_capture(const Configuration& configuration) {
   if (configuration.injection.timeout.value <= std::chrono::nanoseconds::zero()) {
     fail("injection.timeout", "must be greater than zero");
   }
+  if (configuration.capture.duration.value.has_value() &&
+      *configuration.capture.duration.value <= std::chrono::nanoseconds::zero()) {
+    fail("capture.duration", "must be greater than zero when provided");
+  }
   validate_optional_existing_path(configuration.injection.agent_path.value, "injection.agent_path");
 
   if (configuration.trace.buffer_size.value < kMinimumTraceBufferSize) {

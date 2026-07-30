@@ -8,6 +8,7 @@
 #include <span>
 #include <sstream>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -123,6 +124,35 @@ SyntheticTraceBuilder& SyntheticTraceBuilder::add_event(const noleax::trace::Eve
   return *this;
 }
 
+SyntheticTraceBuilder& SyntheticTraceBuilder::add_module(
+    const noleax::trace::ModuleRecord& module) {
+  if (end_.has_value()) {
+    throw SyntheticTraceError{"cannot add a module record after EndOfTrace"};
+  }
+  std::visit(
+      [](const auto& record) {
+        using Record = std::decay_t<decltype(record)>;
+        if constexpr (std::is_same_v<Record, noleax::trace::ModuleLoad>) {
+          noleax::trace::validate_module_load(record);
+        } else {
+          noleax::trace::validate_module_unload(record);
+        }
+      },
+      module);
+  module_records_.push_back(module);
+  return *this;
+}
+
+SyntheticTraceBuilder& SyntheticTraceBuilder::add_stack(
+    const noleax::trace::StackDefinition& stack) {
+  if (end_.has_value()) {
+    throw SyntheticTraceError{"cannot add a stack definition after EndOfTrace"};
+  }
+  noleax::trace::validate_stack_definition(stack);
+  stack_definitions_.push_back(stack);
+  return *this;
+}
+
 SyntheticTraceBuilder& SyntheticTraceBuilder::add_loss(const noleax::trace::LossRecord& loss) {
   if (end_.has_value()) {
     throw SyntheticTraceError{"cannot add Loss after EndOfTrace"};
@@ -205,6 +235,36 @@ std::string SyntheticTraceBuilder::build() const {
   metadata_descriptor.type = noleax::trace::ChunkType::kMetadata;
   metadata_descriptor.codec = options_.codec;
   require_written(writer, metadata_descriptor, metadata_payload);
+
+  if (!module_records_.empty()) {
+    std::vector<std::byte> module_payload;
+    for (const auto& module : module_records_) {
+      if (const auto* load = std::get_if<noleax::trace::ModuleLoad>(&module)) {
+        noleax::trace::append_module_load_record(module_payload, *load,
+                                                 options_.maximum_record_size);
+      } else {
+        noleax::trace::append_module_unload_record(module_payload,
+                                                   std::get<noleax::trace::ModuleUnload>(module),
+                                                   options_.maximum_record_size);
+      }
+    }
+    noleax::trace::ChunkDescriptor module_descriptor;
+    module_descriptor.type = noleax::trace::ChunkType::kModule;
+    module_descriptor.codec = options_.codec;
+    require_written(writer, module_descriptor, module_payload);
+  }
+
+  if (!stack_definitions_.empty()) {
+    std::vector<std::byte> stack_payload;
+    for (const auto& stack : stack_definitions_) {
+      noleax::trace::append_stack_definition_record(stack_payload, stack,
+                                                    options_.maximum_record_size);
+    }
+    noleax::trace::ChunkDescriptor stack_descriptor;
+    stack_descriptor.type = noleax::trace::ChunkType::kStack;
+    stack_descriptor.codec = options_.codec;
+    require_written(writer, stack_descriptor, stack_payload);
+  }
 
   if (!event_records_.empty()) {
     std::vector<std::byte> event_payload;

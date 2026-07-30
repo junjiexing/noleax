@@ -11,6 +11,7 @@
 #include <fstream>
 #include <ios>
 #include <string>
+#include <string_view>
 
 #include "noleax/analyzer/event_stream.hpp"
 #include "noleax/controller/windows/process.hpp"
@@ -20,12 +21,13 @@ namespace {
 
 using namespace std::chrono_literals;
 
-[[nodiscard]] bool wait_for_file(const std::filesystem::path& path,
-                                 std::chrono::milliseconds timeout) {
+[[nodiscard]] bool wait_for_marker(const std::filesystem::path& path, std::string_view content,
+                                   std::chrono::milliseconds timeout) {
   const ULONGLONG deadline = GetTickCount64() + static_cast<ULONGLONG>(timeout.count());
   do {
-    std::error_code error;
-    if (std::filesystem::is_regular_file(path, error) && !error) {
+    std::ifstream input{path};
+    std::string marker;
+    if (input && std::getline(input, marker) && marker.find(content) != std::string::npos) {
       return true;
     }
     Sleep(5U);
@@ -52,14 +54,10 @@ int run(int argc, char* argv[]) {
       target, {noleax::controller::windows::wide_to_utf8(marker.native()), "2500", "0"},
       target.parent_path());
   process.resume_main_thread();
-  if (!wait_for_file(marker, 2s)) {
+  if (!wait_for_marker(marker, "ready=0", 2s)) {
     process.terminate(10U);
     return 3;
   }
-  std::ifstream marker_input{marker};
-  std::string marker_text;
-  std::getline(marker_input, marker_text);
-  const bool not_ready_before_attach = marker_text.find("ready=0") != std::string::npos;
 
   noleax::controller::windows::CaptureOptions capture;
   capture.agent_path = agent;
@@ -75,8 +73,7 @@ int run(int argc, char* argv[]) {
   Sleep(100U);
   const auto live = session.query_status();
   const auto final = session.stop();
-  if (session.launched_target() || !not_ready_before_attach ||
-      live.state != noleax::ipc::AgentState::kCapturing ||
+  if (session.launched_target() || live.state != noleax::ipc::AgentState::kCapturing ||
       final.state != noleax::ipc::AgentState::kFinalized || final.observed_calls == 0U ||
       final.written_events == 0U || final.dropped_events != 0U) {
     process.terminate(11U);
