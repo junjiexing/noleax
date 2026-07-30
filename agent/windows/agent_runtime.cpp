@@ -353,6 +353,9 @@ DWORD WINAPI agent_worker(void* parameter) noexcept {
   std::unique_ptr<CaptureRuntime> runtime;
   try {
     auto channel = noleax::ipc::windows::PipeChannel::connect(bootstrap->pipe_name.data(), timeout);
+    if (channel.server_process_id() != bootstrap->controller_process_id) {
+      throw std::runtime_error{"named pipe server PID does not match the controller process"};
+    }
     noleax::ipc::AgentHello hello;
     hello.agent_abi_version = noleax::kAgentAbiVersion;
     hello.process_id = GetCurrentProcessId();
@@ -440,7 +443,7 @@ extern "C" __declspec(dllexport) DWORD WINAPI noleax_agent_bootstrap(void* param
       bytes_read != sizeof(copied) || copied.structure_size != sizeof(copied) ||
       copied.version != noleax::agent::windows::kBootstrapVersion ||
       copied.pipe_name.front() == L'\0' || copied.pipe_name.back() != L'\0' ||
-      copied.connect_timeout_ms == 0U || copied.reserved != 0U) {
+      copied.connect_timeout_ms == 0U || copied.controller_process_id == 0U) {
     return static_cast<DWORD>(noleax::agent::windows::BootstrapResult::kInvalidParameters);
   }
   bool expected = false;

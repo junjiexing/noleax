@@ -46,9 +46,12 @@ TEST_CASE("named pipe IPC exchanges framed messages and reports peer PID", "[ipc
   const std::wstring name = unique_pipe_name();
   noleax::ipc::windows::NamedPipeServer server{name};
   std::exception_ptr client_error;
+  std::atomic<bool> server_pid_matches{false};
   std::thread client{[&] {
     try {
       auto channel = noleax::ipc::windows::PipeChannel::connect(name, 2s);
+      server_pid_matches.store(channel.server_process_id() == GetCurrentProcessId(),
+                               std::memory_order_relaxed);
       channel.send({noleax::ipc::MessageType::kAgentHello, 1U, {std::byte{0x5a}}}, 2s);
       const auto response = channel.receive(2s);
       if (response.type != noleax::ipc::MessageType::kCaptureStatus || response.request_id != 1U) {
@@ -60,7 +63,7 @@ TEST_CASE("named pipe IPC exchanges framed messages and reports peer PID", "[ipc
   }};
 
   auto channel = server.accept(2s);
-  CHECK(channel.peer_process_id() == GetCurrentProcessId());
+  CHECK(channel.client_process_id() == GetCurrentProcessId());
   const auto request = channel.receive(2s);
   CHECK(request.type == noleax::ipc::MessageType::kAgentHello);
   CHECK(request.request_id == 1U);
@@ -70,6 +73,7 @@ TEST_CASE("named pipe IPC exchanges framed messages and reports peer PID", "[ipc
   if (client_error != nullptr) {
     std::rethrow_exception(client_error);
   }
+  CHECK(server_pid_matches.load(std::memory_order_relaxed));
 }
 
 TEST_CASE("named pipe IPC times out on a partial malicious frame", "[ipc][windows][timeout]") {

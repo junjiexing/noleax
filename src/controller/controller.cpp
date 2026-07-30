@@ -93,6 +93,7 @@ class OwnedHandle final {
   bootstrap.pipe_name[pipe_name.size()] = L'\0';
   bootstrap.session_token = token;
   bootstrap.connect_timeout_ms = static_cast<std::uint32_t>(timeout.count());
+  bootstrap.controller_process_id = GetCurrentProcessId();
   return bootstrap;
 }
 
@@ -248,7 +249,7 @@ struct ConnectedAgent {
                                            const std::array<std::byte, 16U>& token,
                                            const CaptureOptions& capture) {
   auto channel = server.accept(capture.timeout);
-  if (channel.peer_process_id() != process_id) {
+  if (channel.client_process_id() != process_id) {
     throw ControllerError{"named pipe client PID does not match the target process"};
   }
   const noleax::ipc::Message hello_message = channel.receive(capture.timeout);

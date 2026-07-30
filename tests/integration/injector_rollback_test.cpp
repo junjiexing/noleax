@@ -121,6 +121,7 @@ int main(int argc, char* argv[]) {
   noleax::agent::windows::BootstrapParameters bootstrap;
   std::ranges::copy(pipe_name, bootstrap.pipe_name.begin());
   bootstrap.session_token = token;
+  bootstrap.controller_process_id = GetCurrentProcessId();
 
   DWORD handles_before = 0U;
   DWORD handles_after = 0U;

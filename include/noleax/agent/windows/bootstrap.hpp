@@ -7,7 +7,7 @@
 
 namespace noleax::agent::windows {
 
-inline constexpr std::uint32_t kBootstrapVersion = 1U;
+inline constexpr std::uint32_t kBootstrapVersion = 2U;
 inline constexpr std::size_t kBootstrapPipeNameCapacity = 128U;
 
 struct BootstrapParameters {
@@ -16,7 +16,7 @@ struct BootstrapParameters {
   std::array<wchar_t, kBootstrapPipeNameCapacity> pipe_name{};
   std::array<std::byte, 16U> session_token{};
   std::uint32_t connect_timeout_ms{10'000U};
-  std::uint32_t reserved{0U};
+  std::uint32_t controller_process_id{0U};
 };
 
 static_assert(std::is_standard_layout_v<BootstrapParameters>);

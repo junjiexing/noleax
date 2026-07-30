@@ -36,7 +36,8 @@ class PipeChannel final {
 
   void send(const Message& message, std::chrono::milliseconds timeout);
   [[nodiscard]] Message receive(std::chrono::milliseconds timeout);
-  [[nodiscard]] std::uint32_t peer_process_id() const;
+  [[nodiscard]] std::uint32_t client_process_id() const;
+  [[nodiscard]] std::uint32_t server_process_id() const;
   [[nodiscard]] bool valid() const noexcept;
 
  private:

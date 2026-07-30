@@ -156,6 +156,26 @@ if(WIN32)
     TIMEOUT 60
   )
 
+  find_program(NOLEAX_PWSH_EXECUTABLE NAMES pwsh REQUIRED)
+  add_test(NAME cli.trace-untrusted-corpus
+    COMMAND "${NOLEAX_PWSH_EXECUTABLE}" -NoProfile
+      -File "${PROJECT_SOURCE_DIR}/scripts/Test-UntrustedTraces.ps1"
+      -Preset "windows-x64-release"
+      -MutationCount 8
+      -TimeoutMilliseconds 5000
+      -NoleaxPath "$<TARGET_FILE:noleax>"
+      -RecoveryToolPath "$<TARGET_FILE:noleax-cli-recovery-test>"
+      -ReportPath "$<TARGET_FILE_DIR:noleax-cli-recovery-test>/untrusted-corpus-report.json"
+      -SkipBuild
+  )
+  set_tests_properties(cli.trace-untrusted-corpus PROPERTIES
+    LABELS "cli;trace;analyzer;security;mutation;untrusted;windows"
+    PASS_REGULAR_EXPRESSION
+      "status=passed cases=86 timeouts=0 unexpected=0"
+    RUN_SERIAL TRUE
+    TIMEOUT 180
+  )
+
   add_dependencies(noleax-unit-tests noleax-agent noleax-controller-target)
   target_compile_definitions(noleax-unit-tests PRIVATE
     NOLEAX_TEST_AGENT_PATH="$<TARGET_FILE:noleax-agent>"

@@ -269,6 +269,7 @@ int main(int argc, char* argv[]) {
     const auto log = output_directory / "recovery.log";
 
     const std::string valid = valid_trace(false);
+    write_file(output_directory / "seed.nlx", valid);
 
     const auto truncated_trace = output_directory / "truncated.nlx";
     const auto truncated_json = output_directory / "truncated.json";

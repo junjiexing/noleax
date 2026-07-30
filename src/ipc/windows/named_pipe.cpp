@@ -230,16 +230,24 @@ Message PipeChannel::receive(std::chrono::milliseconds timeout_value) {
   return message;
 }
 
-std::uint32_t PipeChannel::peer_process_id() const {
+std::uint32_t PipeChannel::client_process_id() const {
   if (!valid()) {
     throw PipeError{"cannot inspect a closed pipe", ERROR_INVALID_HANDLE};
   }
   ULONG process_id = 0U;
   if (GetNamedPipeClientProcessId(as_handle(handle_), &process_id) == FALSE) {
-    const DWORD client_error = GetLastError();
-    if (GetNamedPipeServerProcessId(as_handle(handle_), &process_id) == FALSE) {
-      fail("GetNamedPipeClientProcessId/GetNamedPipeServerProcessId", client_error);
-    }
+    fail("GetNamedPipeClientProcessId", GetLastError());
+  }
+  return static_cast<std::uint32_t>(process_id);
+}
+
+std::uint32_t PipeChannel::server_process_id() const {
+  if (!valid()) {
+    throw PipeError{"cannot inspect a closed pipe", ERROR_INVALID_HANDLE};
+  }
+  ULONG process_id = 0U;
+  if (GetNamedPipeServerProcessId(as_handle(handle_), &process_id) == FALSE) {
+    fail("GetNamedPipeServerProcessId", GetLastError());
   }
   return static_cast<std::uint32_t>(process_id);
 }
