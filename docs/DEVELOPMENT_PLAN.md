@@ -4,9 +4,9 @@
 > 文档版本：0.1
 > 更新日期：2026-07-30
 > 确认日期：2026-07-29
-> 当前阶段：P8 V1 硬化与发布候选（`feat/v1-release-candidate`）
+> 当前阶段：P8.7 Release Candidate 人工最终验收（`feat/v1-release-candidate`）
 > 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8、P4.9、P5.1、P5.2、P5.3、P5.4、P5.5、P5.6、P5.7、P6.1、P6.2、P6.3、P6.4、P6.5、P6.6、P6.7、P7A、P7B、P7C、P8.1、P8.2、P8.3、P8.4、P8.5、P8.6
-> 下一工作项：P8.7 Release Candidate
+> P8.7 状态：AI 技术门禁完成，等待人工最终验收；P9 尚未开始
 
 ## 1. 文档目的
 
@@ -1591,7 +1591,7 @@ CFG 位图未命中导致 0xC0000409，已改为当前设计并列为回归门�
 | P8.4 | 安全和输入边界 review | audit report | 无高风险未处理项 |
 | P8.5 | 用户文档和示例 | docs | 可独立按文档操作 |
 | P8.6 | 第三方声明和打包 | release archive | clean machine 可运行 |
-| P8.7 | Release Candidate | tag candidate | 人工最终验收 |
+| P8.7 | Release Candidate | candidate report/checklist | AI 技术门禁 + 人工最终验收 |
 
 P8.1 于 2026-07-30 完成。release preset 上的可重复门禁连续 10 轮执行 run、attach、capture
 lifecycle 守恒、九 API native profile 和完整 CLI analyze 流程，共 50/50 检查通过，用时
@@ -1621,6 +1621,17 @@ companion 的 Windows x64 ZIP；包包含 controller、agent、用户文档、�
 `package.windows-x64-smoke` 对 staging 与解压 ZIP 分别验证布局、x64 PE、递归 DLL 依赖闭包、版权
 文本哈希，以及 version/doctor/真实 capture/events/outstanding 工作流；所有动态依赖必须是 Windows
 系统 DLL。Release 定向门禁 1/1 通过。测试归档只在 `_temp` 中短暂存在并已删除；未发布二进制。
+
+P8.7 的 AI 技术门禁于 2026-07-30 完成，验证源码基线为干净提交 `e819ece`。Debug 230/230、
+Release 231/231、hardened 268/268；37 个 PE 通过 CFG/CET，五组 quiescence race 共 500/500，native
+profile 100/100，长 ABI 差分 3/3。管理员 Application Verifier/Full Page Heap 的 workload、race 与
+13 项组合集合各三轮通过，19 个 IFEO key 全部清理，19 个日志 XML 为零 `LogEntry`。最终 soak 为
+50/50，不可信 trace corpus 为 206/206，静态 runtime 性能复测的默认 LZ4/64 帧为 1.490x 且 15/15
+trace 完整、零丢失。范围、哈希和证据见 `docs/RELEASE_CANDIDATE.md`。
+
+P8.7 尚未完成人工最终验收。人工需按 `docs/RELEASE_CHECKLIST.md` 在没有 Visual Studio/vcpkg 的干净
+Windows x64 VM 验证临时 ZIP，并决定许可证、安全联系方式、签名/发布策略以及是否接受性能与残余
+风险。在明确授权前，不合并为正式发布、不创建 tag、不发布或保留发布归档，并停在 P9 之前。
 
 未经人工明确批准，不创建正式 release tag、不发布二进制。
 

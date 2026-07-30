@@ -101,6 +101,10 @@ random mutations: 206/206 completed without crash or hang, with 0 timeouts, 0 un
 75 ms maximum process time. Exit distribution was 44 complete, 6 incomplete and 156 invalid-input;
 no exit outside 0/2/4 occurred.
 
+The P8.7 final clean-worktree repetition at commit `e819ece` used the same 206 cases and exit
+distribution. It again completed with 0 timeouts and 0 unexpected exits; maximum process time was
+42 ms. This repetition also ran after the RC switched to the static runtime/package configuration.
+
 Raw mutation reports and generated corpus files live under ignored `_temp` paths. The P8 RC report
 records the clean-commit aggregate so machine-specific paths and potentially sensitive bytes are not
 committed.
@@ -112,3 +116,7 @@ committed.
 3. Decide whether official binaries require Authenticode signing and how hashes are published.
 4. Run the package on a clean Windows x64 machine or VM without the build tree.
 5. Obtain explicit human acceptance of the performance baseline and RC checklist.
+
+The AI technical security gate is complete. These residual items remain human release blockers and
+are tracked in [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md); this audit does not authorize a tag or
+public distribution.

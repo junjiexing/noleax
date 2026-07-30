@@ -54,3 +54,24 @@ change by themselves. LZ4 remains the V1 default: `none` produced roughly four t
 and selecting Zstd from one short host run would need broader CPU and workload validation. Stack
 depth 64 remains the default because the smaller depths did not materially reduce trace size and
 discard diagnostic detail.
+
+## P8.7 static-runtime candidate result
+
+The final technical gate repeated the benchmark at clean commit `e819ece` after the RC changed to
+`/MT` and `x64-windows-static`. It used the same Windows 10.0.19045 x64 host, workload, warm-up and
+three measured repetitions. All 15 captured traces were complete with zero dropped events.
+
+| Case | Median target time | Baseline ratio | Median trace size |
+|---|---:|---:|---:|
+| uninstrumented | 3.100 ms | 1.000x | n/a |
+| default | 4.619 ms | 1.490x | 413,467 B |
+| stack-16 | 4.617 ms | 1.489x | 413,369 B |
+| stack-32 | 4.677 ms | 1.509x | 414,075 B |
+| compression-none | 4.999 ms | 1.613x | 1,664,877 B |
+| compression-zstd1 | 4.681 ms | 1.510x | 186,439 B |
+
+The short intervals vary enough that results from separate runs must not be treated as a precise
+before/after comparison. The candidate still keeps LZ4 and 64 frames: uncompressed output was about
+four times larger, Zstd needs broader workload/CPU validation before becoming the default, and
+smaller stacks discard diagnostic detail without a consistent timing benefit. Human acceptance of
+the candidate overhead remains a release checklist item.

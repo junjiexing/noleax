@@ -25,3 +25,11 @@ directory is intentionally ignored by Git. Use `-ReportPath` to select a differe
 Acceptance requires all checks to pass, no timeout/crash, and no analyzer or conservation failure.
 The checked-in P8 RC report records the exact command and aggregate result; raw reports remain local
 because they include machine-specific paths and environment details.
+
+## P8.7 final result
+
+The final clean-worktree run at commit `e819ece` completed 10 repetitions and 50/50 checks in
+110.932 seconds on Windows 10.0.19045 x64. All run, attach, conservation, native-profile and analyzer
+checks passed with no timeout, crash, hang or integrity failure. The machine report was written as
+`_temp/reports/noleax-soak-20260730-153939.json`; `_temp` is ignored and the report is not part of the
+source tree or release package.

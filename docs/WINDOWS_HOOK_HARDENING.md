@@ -1,13 +1,13 @@
 # Windows Hook Hardening Gate
 
-> 状态：P6.7 Windows x64 公开 CLI、controller 与九个逻辑 API 完整门禁通过
+> 状态：P8.7 Windows x64 RC 的 AI 技术门禁完成，等待人工最终验收
 > 范围：Windows native profile 的 CFG、CET、SEH、fail-fast、Page Heap 和长压力
 
 ## 1. Hardened 构建
 
 `windows-x64-hardened` 是独立 Release preset，不改变普通 Debug/Release 产物。它对 Noleax 的 C/C++
 目标启用 compiler/linker `/guard:cf`，并为 EXE/DLL 启用 `/CETCOMPAT`。hardened CTest 使用
-`dumpbin /headers` 检查 35 个真实 PE 同时包含 `Control Flow Guard` 和 `CET compatible`，覆盖：
+`dumpbin /headers` 检查 37 个真实 PE 同时包含 `Control Flow Guard` 和 `CET compatible`，覆盖：
 
 - MD/MT heap workload；
 - 五 hook 组合 hook harness DLL；
@@ -17,7 +17,8 @@
 - allocate/reallocate exception executable；
 - NT VM quiescence、contract 与 trace-writer executable；
 - native profile 组合 executable，以及 module generation/tracker fixture 和 executable；
-- 公开 CLI、agent、controller 目标，以及 launch/attach/lifecycle/rollback/CLI 端到端测试映像。
+- 公开 CLI、agent、controller 目标、性能 workload，以及 launch/attach/lifecycle/rollback/CLI 端到端
+  测试映像。
 
 五个 quiescence 目标还调用 `GetProcessMitigationPolicy`。CFG 是硬门禁；CET 的 PE 标记始终是硬门禁，
 硬件 shadow stack 是否实际启用则由运行机器决定。当前验收机器的五个目标均报告：
@@ -83,10 +84,10 @@ profile 与 module 门禁三轮全部通过，并在结束时验证本轮 19 个
 
 | 门禁 | 结果 |
 |---|---|
-| Debug full suite | 227/227 |
-| Release full suite | 227/227 |
-| Hardened full suite | 262/262 |
-| CFG/CET PE metadata | 35/35 images |
+| Debug full suite | 230/230 |
+| Release full suite | 231/231 |
+| Hardened full suite | 268/268 |
+| CFG/CET PE metadata | 37/37 images |
 | Five quiescence targets runtime mitigation | CFG=1, CET=1 |
 | Allocate/reallocate/free/heap-lifecycle/NT-VM quiescence race | 各 100/100 |
 | Windows native profile stress | 100/100 |
@@ -168,3 +169,10 @@ contract、module 与 native profile 均通过；结束后 19 个 IFEO target ke
 hardened 映像门禁。Debug/Release 各 227/227、hardened 262/262，35 个 PE 的 CFG/CET metadata
 通过；runtime attach 连续 20/20，完整 run/attach/analyze 工作流连续 5/5。hardened 路径还覆盖了
 系统栈捕获显式失败时的完整性退出码与 CSV 输出，并消除了 attach marker 的文件创建/内容写入竞态。
+
+同日 P8.7 在干净提交 `e819ece` 完成最终复测：Debug 230/230、Release 231/231、hardened 268/268，
+37 个 PE 通过 CFG/CET metadata，五个 hook 目标均报告 `cfg=1 cet=1`。五组 quiescence race 各
+100/100，native profile 100/100，长 ABI 差分 3/3。管理员 Application Verifier/Full Page Heap 下
+workload 三轮、race 集合三轮和 13 项组合集合三轮全部通过；本轮 19 个 IFEO key 全部清理，逐目标
+导出的 19 个 XML 共含 0 个 `LogEntry`。这些是 AI 技术门禁结果，最终人工验收仍见
+[RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)。
