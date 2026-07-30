@@ -14,6 +14,7 @@ add_executable(noleax-unit-tests
   unit/filter_test.cpp
   unit/generation_tracker_test.cpp
   unit/json_test.cpp
+  unit/ipc_protocol_test.cpp
   unit/outstanding_test.cpp
   unit/replacement_lifecycle_test.cpp
   unit/symbolizer_test.cpp
@@ -25,6 +26,7 @@ add_executable(noleax-unit-tests
   unit/record_codec_test.cpp
   unit/synthetic_trace_test.cpp
   unit/trace_reader_test.cpp
+  unit/trace_metadata_test.cpp
   unit/trace_writer_test.cpp
   unit/value_parser_test.cpp
   unit/version_test.cpp
@@ -37,6 +39,7 @@ target_link_libraries(noleax-unit-tests
     noleax::cli
     noleax::config
     noleax::core
+    noleax::ipc
     noleax::trace
     lz4::lz4
     zstd::libzstd
@@ -73,6 +76,9 @@ set_tests_properties(config.print-effective PROPERTIES
 
 if(WIN32)
   target_sources(noleax-unit-tests PRIVATE
+    unit/controller_diagnostics_test.cpp
+    unit/controller_process_test.cpp
+    unit/ipc_named_pipe_test.cpp
     unit/hook_guard_test.cpp
     unit/hook_backend_test.cpp
     unit/stack_capture_test.cpp
@@ -80,6 +86,165 @@ if(WIN32)
     unit/windows_hook_registry_test.cpp
   )
   target_link_libraries(noleax-unit-tests PRIVATE noleax::hook-backend)
+  target_link_libraries(noleax-unit-tests PRIVATE noleax::controller)
+  target_link_libraries(noleax-unit-tests PRIVATE Shell32)
+
+  add_executable(noleax-controller-target
+    targets/controller_target.cpp
+  )
+  noleax_set_project_warnings(noleax-controller-target)
+
+  add_executable(noleax-cli-e2e-target
+    targets/cli_e2e_target.cpp
+  )
+  noleax_set_project_warnings(noleax-cli-e2e-target)
+
+  add_executable(noleax-cli-end-to-end-test
+    integration/cli_end_to_end_test.cpp
+    support/csv_table.cpp
+    support/json_dom.cpp
+  )
+  target_include_directories(noleax-cli-end-to-end-test PRIVATE "${PROJECT_SOURCE_DIR}/tests")
+  target_link_libraries(noleax-cli-end-to-end-test PRIVATE noleax::controller)
+  noleax_set_project_warnings(noleax-cli-end-to-end-test)
+
+  add_dependencies(noleax-cli-end-to-end-test noleax noleax-agent noleax-cli-e2e-target)
+  add_test(NAME cli.end-to-end-trace-analyze
+    COMMAND noleax-cli-end-to-end-test
+      "$<TARGET_FILE:noleax>"
+      "$<TARGET_FILE:noleax-agent>"
+      "$<TARGET_FILE:noleax-cli-e2e-target>"
+      "$<TARGET_FILE_DIR:noleax-cli-end-to-end-test>/cli-e2e"
+  )
+  set_tests_properties(cli.end-to-end-trace-analyze PROPERTIES
+    LABELS "cli;controller;agent;run;attach;trace;analyzer;outstanding;windows"
+    PASS_REGULAR_EXPRESSION
+      "^status=ok run=1 attach=1 outstanding=1 console=1 json=1 csv=1 stacks=1 errors=1"
+    RUN_SERIAL TRUE
+    TIMEOUT 90
+  )
+
+  add_dependencies(noleax-unit-tests noleax-agent noleax-controller-target)
+  target_compile_definitions(noleax-unit-tests PRIVATE
+    NOLEAX_TEST_AGENT_PATH="$<TARGET_FILE:noleax-agent>"
+    NOLEAX_TEST_CONTROLLER_TARGET_PATH="$<TARGET_FILE:noleax-controller-target>"
+  )
+
+  add_test(NAME cli.doctor
+    COMMAND noleax doctor
+      --agent "$<TARGET_FILE:noleax-agent>"
+      --target "$<TARGET_FILE:noleax-controller-target>"
+  )
+  set_tests_properties(cli.doctor PROPERTIES
+    LABELS "cli;controller;doctor;windows"
+    PASS_REGULAR_EXPRESSION
+      "agent-image: x64 PE32"
+  )
+
+  add_executable(noleax-controller-lifecycle-target
+    targets/controller_lifecycle_target.cpp
+  )
+  noleax_set_project_warnings(noleax-controller-lifecycle-target)
+
+  add_library(noleax-injector-no-bootstrap SHARED
+    integration/injector_no_bootstrap.cpp
+  )
+  noleax_set_project_warnings(noleax-injector-no-bootstrap)
+
+  add_executable(noleax-controller-launch-test
+    integration/controller_launch_test.cpp
+  )
+  target_link_libraries(noleax-controller-launch-test PRIVATE
+    noleax::analyzer
+    noleax::controller
+  )
+  noleax_set_project_warnings(noleax-controller-launch-test)
+
+  add_test(NAME controller.suspended-launch-ready
+    COMMAND noleax-controller-launch-test
+      "$<TARGET_FILE:noleax-agent>"
+      "$<TARGET_FILE:noleax-controller-target>"
+      "$<TARGET_FILE_DIR:noleax-controller-launch-test>/controller-launch.nlx"
+      "$<TARGET_FILE_DIR:noleax-controller-launch-test>/controller-launch.ready"
+  )
+  set_tests_properties(controller.suspended-launch-ready PROPERTIES
+    LABELS "controller;agent;ipc;injection;remote-thread;launch;trace;windows"
+    PASS_REGULAR_EXPRESSION
+      "^status=ok kind=launch ready-before-main=1 state=finalized events=[1-9][0-9]*"
+    RUN_SERIAL TRUE
+    TIMEOUT 60
+  )
+
+  add_executable(noleax-controller-attach-test
+    integration/controller_attach_test.cpp
+  )
+  target_link_libraries(noleax-controller-attach-test PRIVATE
+    noleax::analyzer
+    noleax::controller
+  )
+  noleax_set_project_warnings(noleax-controller-attach-test)
+
+  add_test(NAME controller.runtime-attach
+    COMMAND noleax-controller-attach-test
+      "$<TARGET_FILE:noleax-agent>"
+      "$<TARGET_FILE:noleax-controller-target>"
+      "$<TARGET_FILE_DIR:noleax-controller-attach-test>/controller-attach.nlx"
+      "$<TARGET_FILE_DIR:noleax-controller-attach-test>/controller-attach.ready"
+  )
+  set_tests_properties(controller.runtime-attach PROPERTIES
+    LABELS "controller;agent;ipc;injection;remote-thread;attach;trace;windows"
+    PASS_REGULAR_EXPRESSION
+      "^status=ok kind=attach preexisting-unknown=1 state=finalized events=[1-9][0-9]*"
+    RUN_SERIAL TRUE
+    TIMEOUT 60
+  )
+
+  add_executable(noleax-controller-lifecycle-test
+    integration/controller_lifecycle_test.cpp
+  )
+  target_link_libraries(noleax-controller-lifecycle-test PRIVATE
+    noleax::analyzer
+    noleax::controller
+  )
+  noleax_set_project_warnings(noleax-controller-lifecycle-test)
+
+  add_test(NAME controller.capture-lifecycle
+    COMMAND noleax-controller-lifecycle-test
+      "$<TARGET_FILE:noleax-agent>"
+      "$<TARGET_FILE:noleax-controller-lifecycle-target>"
+      "$<TARGET_FILE_DIR:noleax-controller-lifecycle-test>/controller-lifecycle.nlx"
+      "$<TARGET_FILE_DIR:noleax-controller-lifecycle-test>/controller-lifecycle.ready"
+  )
+  set_tests_properties(controller.capture-lifecycle PROPERTIES
+    LABELS "controller;agent;ipc;lifecycle;in-flight;stress;trace;windows"
+    PASS_REGULAR_EXPRESSION
+      "^status=ok lifecycle=finalized queries=[2-9][0-9]* active-stop=1 idempotent=1 conserved=1 events=[1-9][0-9]*"
+    RUN_SERIAL TRUE
+    TIMEOUT 60
+  )
+
+  add_executable(noleax-injector-rollback-test
+    integration/injector_rollback_test.cpp
+  )
+  target_link_libraries(noleax-injector-rollback-test PRIVATE
+    noleax::controller
+    Psapi
+  )
+  noleax_set_project_warnings(noleax-injector-rollback-test)
+
+  add_test(NAME controller.remote-thread-rollback
+    COMMAND noleax-injector-rollback-test
+      "$<TARGET_FILE:noleax-injector-no-bootstrap>"
+      "$<TARGET_FILE:noleax-controller-target>"
+      "$<TARGET_FILE_DIR:noleax-injector-rollback-test>/injector-rollback.ready"
+  )
+  set_tests_properties(controller.remote-thread-rollback PROPERTIES
+    LABELS "controller;injection;remote-thread;rollback;windows"
+    PASS_REGULAR_EXPRESSION
+      "^status=ok rollback=1 module-unloaded=1 main-suspended=1 attempts=8 handles-stable=1"
+    RUN_SERIAL TRUE
+    TIMEOUT 30
+  )
 
   add_library(noleax-hook-backend-fixture SHARED
     integration/hook_backend_fixture.cpp
@@ -654,6 +819,16 @@ if(WIN32)
   if(NOLEAX_WINDOWS_HARDENED_TESTING)
     find_program(NOLEAX_DUMPBIN_EXECUTABLE NAMES dumpbin REQUIRED)
     foreach(mitigation_target IN ITEMS
+        noleax
+        noleax-agent
+        noleax-controller-target
+        noleax-controller-lifecycle-target
+        noleax-cli-e2e-target
+        noleax-cli-end-to-end-test
+        noleax-controller-launch-test
+        noleax-controller-attach-test
+        noleax-controller-lifecycle-test
+        noleax-injector-rollback-test
         noleax-rtl-heap-baseline-md
         noleax-rtl-heap-baseline-mt
         noleax-rtl-allocate-heap-hook-harness

@@ -1,6 +1,6 @@
 # Noleax 离线符号解析
 
-> 状态：P3.8 Windows x64 组件完成
+> 状态：P6.7 Windows x64 CLI 集成完成
 
 ## 1. 范围
 
@@ -8,8 +8,9 @@
 symbol+offset。Windows 实现使用 DbgHelp；DbgHelp 只在 analyzer 进程中调用，不进入目标进程或
 hook replacement。
 
-P3.8 提供独立的符号服务和组件测试。Module/Stack record codec、EventStream 元数据装配以及
-`noleax analyze` 的公开 CLI 调度尚未接入，因此当前不能仅凭 trace 文件从 CLI 获得完整符号栈。
+P3.8 提供独立符号服务；P6.7 的 `TraceMetadata` 已将 trace 中的 ModuleLoad/Unload、StackDefinition
+和 API registry 装配为 `noleax analyze` 共用的 filter/presentation resolver。CLI 因而可以直接从
+trace 输出真实 module+offset，并在匹配映像/PDB 可用时输出 symbol+offset。
 
 非 Windows 平台保留相同接口，注册模块时返回 `unsupported_platform`。Linux/macOS 的实现留给
 对应平台阶段。

@@ -16,6 +16,7 @@
 #include "noleax/cli/command_line.hpp"
 #include "noleax/config/config_io.hpp"
 #include "noleax/config/configuration.hpp"
+#include "operations.hpp"
 
 namespace {
 
@@ -50,11 +51,7 @@ int run_application(int argc, const char* const* argv) {
       std::cout << noleax::config::serialize_effective_config(configuration);
       return 0;
     }
-
-    std::cerr << "error: operation '"
-              << noleax::config::enum_value_name(*configuration.operation.value)
-              << "' is not implemented yet\n";
-    return 5;
+    return noleax::app::execute_operation(configuration);
   } catch (const noleax::cli::CommandLineExit& exit) {
     std::cout << exit.standard_output();
     std::cerr << exit.standard_error();
@@ -62,6 +59,9 @@ int run_application(int argc, const char* const* argv) {
   } catch (const noleax::config::ConfigError& error) {
     std::cerr << "error: " << error.what() << '\n';
     return 1;
+  } catch (const noleax::app::ApplicationError& error) {
+    std::cerr << "error: " << error.what() << '\n';
+    return error.exit_code();
   } catch (const std::exception& error) {
     std::cerr << "error: " << error.what() << '\n';
     return 1;

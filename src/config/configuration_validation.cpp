@@ -199,6 +199,10 @@ void validate_common_capture(const Configuration& configuration) {
   if (configuration.injection.timeout.value <= std::chrono::nanoseconds::zero()) {
     fail("injection.timeout", "must be greater than zero");
   }
+  if (configuration.capture.duration.value.has_value() &&
+      *configuration.capture.duration.value <= std::chrono::nanoseconds::zero()) {
+    fail("capture.duration", "must be greater than zero when provided");
+  }
   validate_optional_existing_path(configuration.injection.agent_path.value, "injection.agent_path");
 
   if (configuration.trace.buffer_size.value < kMinimumTraceBufferSize) {
@@ -339,8 +343,19 @@ void validate_analyze(const Configuration& configuration, const Configuration& d
 }
 
 void validate_doctor(const Configuration& configuration, const Configuration& defaults) {
-  require_default_target(configuration, defaults, Operation::kDoctor);
-  require_default_injection(configuration, defaults, Operation::kDoctor);
+  validate_optional_existing_path(configuration.target.path.value, "target.path");
+  require_default(configuration.target.args, defaults.target.args, "target.args",
+                  Operation::kDoctor);
+  require_default(configuration.target.working_directory, defaults.target.working_directory,
+                  "target.working_directory", Operation::kDoctor);
+  if (configuration.target.pid.value.has_value() && *configuration.target.pid.value == 0U) {
+    fail("target.pid", "must be greater than zero when provided");
+  }
+  validate_optional_existing_path(configuration.injection.agent_path.value, "injection.agent_path");
+  require_default(configuration.injection.timeout, defaults.injection.timeout, "injection.timeout",
+                  Operation::kDoctor);
+  require_default(configuration.injection.unload_on_stop, defaults.injection.unload_on_stop,
+                  "injection.unload_on_stop", Operation::kDoctor);
   require_default_capture(configuration, defaults, Operation::kDoctor);
   require_default_trace(configuration, defaults, Operation::kDoctor);
   require_default_analysis(configuration, defaults, Operation::kDoctor);

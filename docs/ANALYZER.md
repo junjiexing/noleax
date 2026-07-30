@@ -1,6 +1,6 @@
 # Noleax Analyzer
 
-> 状态：P3.1 events 至 P3.8 Windows 离线 symbolizer 完成
+> 状态：P6.7 公开 CLI 与真实 Module/Stack 元数据装配完成
 
 ## 1. P3.1 范围
 
@@ -161,7 +161,13 @@ CsvWriter 为 events 和 outstanding 提供两套 schema version 1 固定列。e
 module+offset 和绝对地址。所有 DbgHelp 调用跨实例全局串行，module map 支持并发只读查询。完整
 状态、回退和线程模型见 [SYMBOLIZATION.md](SYMBOLIZATION.md)。
 
-## 11. 后续阶段
+## 11. CLI 集成
 
-P3.1-P3.8 的库组件已完成。Module/Stack record codec、EventStream 元数据装配和三种格式共用的公开
-CLI 调度尚未接入；这些缺口完成前，`noleax analyze` 仍不能端到端输出 trace 中的真实符号栈。
+P6.7 的 `TraceMetadata` 对输入执行一次受限预扫描，保留历史 ModuleId、StackId 和符号模块；正式
+events/outstanding 分析再从文件头重新读取。两次读取均使用相同的 TraceReader/EventStream 校验，
+第二次仍保持 formatter 的流式特性。API 名来自固定 Windows hook registry，module generation 和
+stack frame 来自 trace，符号失败时稳定回退到 module+offset 和绝对地址。
+
+`noleax analyze` 已映射全部 V1 filter 和 console/JSON/CSV。完整性 issue 返回 2，损坏到无法继续的
+trace 返回 4。P6.7 每次调用只接受一个 trace；多文件/rotation 合并在实现明确的跨文件 sequence、
+module generation 和输出 schema 前返回 5。

@@ -119,6 +119,19 @@ TEST_CASE("attach and patch expose positive and negative boolean overrides", "[c
   CHECK_FALSE(patch.overrides.patch.verify.value);
 }
 
+TEST_CASE("doctor CLI maps optional read-only probes", "[cli][config][doctor]") {
+  const auto current_directory = std::filesystem::current_path();
+  const auto parsed = parse({"doctor", "--target", "app.exe", "--pid", "42", "--inject-method",
+                             "remote-thread", "--agent", "agent.dll"},
+                            current_directory);
+
+  CHECK(parsed.overrides.operation.value == noleax::config::Operation::kDoctor);
+  CHECK(parsed.overrides.target.path.value == current_directory / "app.exe");
+  CHECK(parsed.overrides.target.pid.value == 42U);
+  CHECK(parsed.overrides.injection.method.value == noleax::config::InjectionMethod::kRemoteThread);
+  CHECK(parsed.overrides.injection.agent_path.value == current_directory / "agent.dll");
+}
+
 TEST_CASE("analyze CLI replaces arrays and maps all filters", "[cli][config]") {
   using namespace std::chrono_literals;
   const auto current_directory = std::filesystem::current_path();

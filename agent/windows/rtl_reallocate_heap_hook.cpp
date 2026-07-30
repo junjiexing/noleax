@@ -178,6 +178,8 @@ PVOID NTAPI replacement_rtl_reallocate_heap(PVOID heap, ULONG flags, PVOID addre
         }
         original = reinterpret_cast<RtlReAllocateHeapFunction>(original_address);
         if (route == ReplacementRoute::kOriginal) {
+          entry_kind = enter_hook_invocation_unscoped();
+          guard_entered = true;
           result = original(heap, flags, address, size);
           original_completed = true;
         } else {

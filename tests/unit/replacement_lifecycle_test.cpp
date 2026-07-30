@@ -1,6 +1,8 @@
 #include "noleax/agent/replacement_lifecycle.hpp"
 
+#include <atomic>
 #include <catch2/catch_test_macros.hpp>
+#include <thread>
 
 TEST_CASE("replacement lifecycle snapshots routes and exposes deterministic quiescence",
           "[agent][replacement-lifecycle]") {
@@ -54,4 +56,40 @@ TEST_CASE("replacement lifecycle snapshots routes and exposes deterministic quie
   lifecycle.leave_unscoped(route);
   CHECK(lifecycle.wait_for_quiescence(0U));
   CHECK(lifecycle.wait_for_recording_quiescence(0U));
+}
+
+TEST_CASE("replacement finalize gate parks new outer entries until reopened",
+          "[agent][replacement-lifecycle][quiescence]") {
+  using noleax::agent::ReplacementLifecycle;
+  using noleax::agent::ReplacementQuiescenceGate;
+
+  struct GateReset final {
+    ~GateReset() { ReplacementQuiescenceGate::open(); }
+  } reset;
+
+  ReplacementQuiescenceGate::open();
+  ReplacementLifecycle lifecycle;
+  lifecycle.start_recording();
+  {
+    const auto active = lifecycle.enter();
+    CHECK_FALSE(ReplacementQuiescenceGate::close_and_wait(0U));
+    CHECK(ReplacementQuiescenceGate::active_call_count() == 1U);
+    ReplacementQuiescenceGate::open();
+  }
+
+  REQUIRE(ReplacementQuiescenceGate::close_and_wait(0U));
+  std::atomic<bool> entered{false};
+  std::thread blocked{[&] {
+    const auto entry = lifecycle.enter();
+    entered.store(true, std::memory_order_release);
+  }};
+  while (ReplacementQuiescenceGate::waiter_count() == 0U) {
+    std::this_thread::yield();
+  }
+  CHECK_FALSE(entered.load(std::memory_order_acquire));
+  CHECK(ReplacementQuiescenceGate::active_call_count() == 0U);
+  ReplacementQuiescenceGate::open();
+  blocked.join();
+  CHECK(entered.load(std::memory_order_acquire));
+  CHECK(ReplacementQuiescenceGate::waiter_count() == 0U);
 }

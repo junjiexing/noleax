@@ -1,6 +1,6 @@
 # Noleax CLI 规范
 
-> 状态：P0 基线
+> 状态：P6.7 Windows x64 公开工作流完成
 > schema version：1
 
 ## 1. 命令结构
@@ -12,7 +12,7 @@ noleax [global-options] patch [patch-options]
 noleax [global-options] analyze [analyze-options] trace...
 noleax [global-options] config validate
 noleax [global-options] config print-effective
-noleax [global-options] doctor
+noleax [global-options] doctor [doctor-options]
 ~~~
 
 命令名、选项名和枚举值使用英文，诊断信息第一版使用英文。路径按平台原生格式输入，内部统一使用 UTF-8。
@@ -58,13 +58,15 @@ noleax run [capture-options] [injection-options] -- target [args...]
 | --trace PATH | trace.path | 基于目标名和时间生成 |
 | --capture-duration DURATION | capture.duration | 直到目标退出或用户停止 |
 
-run 可用注入方法：
+规划的 run 注入方法：
 
 - remote-thread
 - thread-hijack
 - entrypoint-code
 
-控制器创建 suspended 目标，只有 agent ready 后才恢复目标主线程。
+P6 Windows x64 只实现 `remote-thread`；其余方法返回 5，分别在 P7A/P7B 实现。控制器创建
+suspended 目标，只有 agent ready 后才恢复目标主线程。达到 `--capture-duration` 或收到 Ctrl+C 时
+完成 writer drain 和物理 hook revert；若此时目标仍运行，不终止目标。
 
 ## 5. attach
 
@@ -82,12 +84,13 @@ noleax attach --pid PID [capture-options] [injection-options]
 | --capture-duration DURATION | capture.duration | 直到目标退出或用户停止 |
 | --unload-on-stop / --no-unload-on-stop | injection.unload_on_stop | false |
 
-attach 可用注入方法：
+规划的 attach 注入方法：
 
 - remote-thread
 - thread-hijack
 
-attach 成功不表示 trace 完整；分析输出必须标记注入前分配未知。
+P6 Windows x64 只实现 `remote-thread`，且 `--unload-on-stop` 当前只接受 false。attach 成功不表示
+trace 完整；分析输出必须标记注入前分配未知。
 
 ## 6. Capture options
 
@@ -122,6 +125,9 @@ on-trace-full：
 
 - stop
 - rotate
+
+P6 已实现单文件 `stop`，保证输出不超过 `max_file_size`；`rotate` 和 `max_files > 1` 在跨文件分析
+协议完成前返回 5，不会静默降级。
 
 compression：
 
@@ -162,6 +168,9 @@ noleax analyze [options] trace...
 ~~~
 
 trace operand 存在时整体覆盖 analysis.inputs。
+
+P6.7 每次执行接受一个 trace。传入多个文件会返回 5；rotation 文件的跨文件 sequence、module
+generation 和机器输出 schema 在实现前不做猜测式拼接。
 
 | CLI | 配置键 | 默认值 |
 |---|---|---|
@@ -242,6 +251,15 @@ doctor 是只读诊断命令，检查：
 - 符号解析组件。
 
 doctor 不执行注入。
+
+~~~
+noleax doctor [--agent PATH] [--target PATH] [--pid PID] [--inject-method METHOD]
+~~~
+
+未提供可选探针时对应检查显示为 `skipped`。当前 P6 只有 `remote-thread` 会通过方法检查；
+`thread-hijack` 和 `entrypoint-code` 会明确报告为尚未实现。agent/target/PID 可同时提供，以一次完成
+文件架构、运行进程架构和注入权限检查。所有四项均可通过 TOML 的
+`injection.agent_path`、`target.path`、`target.pid` 和 `injection.method` 设置，CLI 优先。
 
 ## 11. 退出码
 

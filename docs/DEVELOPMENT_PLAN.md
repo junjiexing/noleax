@@ -4,9 +4,9 @@
 > 文档版本：0.1
 > 更新日期：2026-07-30
 > 确认日期：2026-07-29
-> 当前阶段：P5 Windows agent 完整 API 覆盖完成
-> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8、P4.9、P5.1、P5.2、P5.3、P5.4、P5.5、P5.6、P5.7
-> 下一工作项：P6.1 controller/agent IPC
+> 当前阶段：P6 Windows x64 首个端到端工作流完成（`main`）
+> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8、P4.9、P5.1、P5.2、P5.3、P5.4、P5.5、P5.6、P5.7、P6.1、P6.2、P6.3、P6.4、P6.5、P6.6、P6.7
+> 下一工作项：P7A thread hijack（开始前单独分支和 review）
 
 ## 1. 文档目的
 
@@ -1221,8 +1221,9 @@ symbolizer 使用独立 DbgHelp session、跨实例全局串行化和合成模�
 PDB 缺失时允许 export 回退，identity 不匹配时只保留 module+offset 和绝对地址，且默认不隐式访问
 symbol server。详见 [SYMBOLIZATION.md](SYMBOLIZATION.md)。
 
-Module/Stack record codec、EventStream 元数据装配和 `noleax analyze` 的公开 CLI 调度尚未接入；这是
-端到端分析集成缺口，不计入 P3.8 独立 symbol service 的完成范围。
+P6.7 已补齐 Module/Stack 元数据装配和公开 CLI 调度。CLI 先以正式 EventStream 扫描不可信输入，
+建立历史 module generation、StackId 和离线 symbolizer 目录，再以相同 reader 上限执行流式输出；
+因此 API/module/stack filter 与三种 formatter 共用同一份真实元数据，不复制状态机。
 
 人工验证：
 
@@ -1457,6 +1458,53 @@ Page Heap 下三轮门禁通过，19 个目标 IFEO key 全部清理。
 | P6.5 | start/stop/status 生命周期 | controller | in-flight callback 测试 |
 | P6.6 | 架构和权限诊断 | doctor | 明确错误信息 |
 | P6.7 | 端到端 trace/analyze | integration suite | 预期 outstanding 结果 |
+
+P6.1 状态：新增 controller/agent 共用的版本化 frame 和 payload codec，以及 Windows overlapped
+named-pipe channel。frame 在读取 payload 前拒绝未知版本、类型、flags、reserved 和超过 64 KiB 的
+声明；字符串和 payload 均要求完全消费。connect、accept、读写共享调用级 deadline，timeout 使用
+`CancelIoEx` 完成清理。协议预留两阶段 stop/finalize，以保持 P5.7 的逻辑停录、writer drain、目标
+线程暂停、物理 revert 顺序。详见 [IPC_PROTOCOL.md](IPC_PROTOCOL.md)。
+
+P6.2 状态：新增 Windows x64 controller、显式 agent bootstrap 和 suspended launch。controller 以
+`CREATE_SUSPENDED` 创建目标，在初始 loader 阶段通过 `ntdll!LdrLoadDll` 的固定 ABI stub 加载 agent，
+完成 pipe 身份校验、hook 安装和 `CaptureReady` 后才恢复主线程。集成测试同时验证目标 `main` 观察到
+ready、trace 可由正式 analyzer 回读，以及 stop 后进入 finalized 状态。
+
+P6.3 状态：remote-thread bootstrap 使用完整 64-bit module handle 计算 export RVA；任意 bootstrap
+拒绝都会调用 `LdrUnloadDll` 回滚，不恢复 suspended 目标。失败注入测试连续执行八轮，验证 fixture
+每轮均已卸载、目标入口未运行，并检查 controller 进程 handle 数不增长。
+
+P6.4 状态：新增运行中进程 attach 集成路径。测试目标在注入前保留一笔既有分配，controller attach
+后捕获持续 workload 并完成 drain/finalize；正式 analyzer 回读的 CaptureScope 必须为
+`started_at_process_start=false`、`preexisting_allocations_unknown=true`，避免把 attach 盲区误报为完整结论。
+
+P6.5 状态：controller 暴露 capturing 状态查询、两阶段 stop 和幂等 finalized 结果。八线程目标在
+持续 alloc/realloc/free 压力下触发 stop，验证状态计数单调、停止时目标仍活跃、统计守恒、重复 stop
+结果一致、finalized 后拒绝 status，并由 trace 尾记录证明 writer drain 已完成。统一 finalize gate
+会停放新的最外层 replacement，同时允许已进入 hook 的嵌套调用退出；writer drain 后再次关门，目标
+线程才由 controller 暂停并执行物理 revert，避免把线程冻结在 trampoline 或 replacement 内。
+
+P6.6 状态：`noleax doctor` 提供只读的 Windows x64 环境诊断。它报告 controller/OS 架构与版本、
+Hoox 固定版本、token elevation、CFG/CET 状态；可选解析 agent/目标 PE 的架构和类型，校验 agent
+bootstrap export，并查询运行中 PID 的架构及 remote-thread 所需 `OpenProcess` 权限。doctor 不加载
+agent 到目标、不修改目标内存、不创建远程线程；未实现的方法、架构不匹配和权限拒绝具有稳定分类与
+退出码。
+
+P6.7 状态：公开 CLI 已接通 `run`、`attach`、`analyze` 和 `doctor`。run/attach 将全部已支持 capture
+配置映射到版本化 IPC，支持 duration、目标退出和 Ctrl+C 停止，并输出守恒统计；analyze 执行
+Module/Stack 元数据预扫描后，以共用 resolver 接通 events/outstanding、全部过滤器、console/JSON/
+CSV 和 DbgHelp 符号回退。端到端测试分别覆盖 launch 与 attach，精确验证一笔 123457-byte allocation
+在 `[a,b)` 创建且 trace end 仍存活，检查 attach blind-spot、三种格式、真实 API 名和目标栈帧，以及
+损坏 trace/未实现注入方式的稳定退出码。
+
+P6 Windows x64 的确定边界：注入方式仅 `remote-thread`；trace-full 仅 `stop` 且单文件；analyze 每次
+接收一个 trace；`unload-on-stop=true` 尚不支持。这些组合会返回退出码 5，不会静默忽略。P7 各注入
+方式仍按独立分支、独立人工确认执行。
+
+P6.7 最终门禁为 Debug/Release 各 227/227、hardened 262/262、35 个 PE 的 CFG/CET metadata；
+runtime attach 连续 20/20，完整 run/attach/analyze 工作流连续 5/5。hardened 复测同时验证系统栈捕获
+显式失败时 `analyze` 返回完整性码 2 但仍能生成 JSON/console/CSV，并消除 attach marker 创建与写入
+之间的测试竞态。
 
 人工验证：
 

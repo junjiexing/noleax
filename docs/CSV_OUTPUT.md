@@ -1,6 +1,6 @@
 # Noleax CSV 输出
 
-> 状态：P3.7 writer 与 analyzer pipeline 完成
+> 状态：P6.7 writer、真实元数据与公开 CLI 完成
 > schema version：1
 > 日期：2026-07-29
 

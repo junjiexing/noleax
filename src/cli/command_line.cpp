@@ -103,6 +103,13 @@ struct AnalyzeBindings {
   std::vector<std::string> inputs;
 };
 
+struct DoctorBindings {
+  TextOption target;
+  TextOption pid;
+  TextOption injection_method;
+  TextOption agent_path;
+};
+
 [[nodiscard]] bool was_set(const TextOption& binding) {
   return binding.option != nullptr && binding.option->count() != 0U;
 }
@@ -457,6 +464,28 @@ void apply_analyze_bindings(const AnalyzeBindings& bindings,
   }
 }
 
+void apply_doctor_bindings(const DoctorBindings& bindings,
+                           config::ConfigurationOverrides& overrides,
+                           const std::filesystem::path& current_directory) {
+  overrides.operation.set(config::Operation::kDoctor);
+  if (was_set(bindings.target)) {
+    overrides.target.path.set(parse_cli_path(bindings.target.value, "--target", current_directory));
+  }
+  if (was_set(bindings.pid)) {
+    const auto pid =
+        parse_cli_unsigned(bindings.pid.value, std::numeric_limits<std::uint32_t>::max(), "--pid");
+    overrides.target.pid.set(static_cast<std::uint32_t>(pid));
+  }
+  if (was_set(bindings.injection_method)) {
+    overrides.injection.method.set(parse_cli_enum<config::InjectionMethod>(
+        bindings.injection_method.value, "--inject-method"));
+  }
+  if (was_set(bindings.agent_path)) {
+    overrides.injection.agent_path.set(
+        parse_cli_path(bindings.agent_path.value, "--agent", current_directory));
+  }
+}
+
 }  // namespace
 
 CommandLineExit::CommandLineExit(int exit_code, std::string standard_output,
@@ -579,7 +608,13 @@ ParsedCommandLine parse_command_line(int argc, const char* const* argv,
   CLI::App* const print_effective = config_command->add_subcommand(
       "print-effective", "Print effective TOML with value source annotations");
 
+  DoctorBindings doctor_bindings;
   CLI::App* const doctor = app.add_subcommand("doctor", "Run read-only environment diagnostics");
+  add_text_option(*doctor, doctor_bindings.target, "--target", "Target executable to inspect");
+  add_text_option(*doctor, doctor_bindings.pid, "--pid", "Running target process to inspect");
+  add_text_option(*doctor, doctor_bindings.injection_method, "--inject-method",
+                  "Injection method to diagnose");
+  add_text_option(*doctor, doctor_bindings.agent_path, "--agent", "Agent DLL to inspect");
 
   try {
     app.parse(static_cast<int>(parser_argv.size()), parser_argv.data());
@@ -623,7 +658,7 @@ ParsedCommandLine parse_command_line(int argc, const char* const* argv,
   } else if (*print_effective) {
     result.meta_command = MetaCommand::kPrintEffectiveConfig;
   } else if (*doctor) {
-    result.overrides.operation.set(config::Operation::kDoctor);
+    apply_doctor_bindings(doctor_bindings, result.overrides, current_directory);
   }
   return result;
 }

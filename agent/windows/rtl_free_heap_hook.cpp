@@ -176,6 +176,8 @@ BOOLEAN NTAPI replacement_rtl_free_heap(PVOID heap, ULONG flags, PVOID address) 
         }
         original = reinterpret_cast<RtlFreeHeapFunction>(original_address);
         if (route == ReplacementRoute::kOriginal) {
+          entry_kind = enter_hook_invocation_unscoped();
+          guard_entered = true;
           result = original(heap, flags, address);
           original_completed = true;
         } else {

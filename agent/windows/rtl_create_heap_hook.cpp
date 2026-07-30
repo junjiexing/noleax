@@ -187,6 +187,8 @@ PVOID NTAPI replacement_rtl_create_heap(ULONG flags, PVOID heap_base, SIZE_T res
         }
         original = reinterpret_cast<RtlCreateHeapFunction>(original_address);
         if (route == ReplacementRoute::kOriginal) {
+          entry_kind = enter_hook_invocation_unscoped();
+          guard_entered = true;
           result = original(flags, heap_base, reserve_size, commit_size, lock, parameters);
           original_completed = true;
         } else {
