@@ -50,6 +50,7 @@ find_package(CLI11 CONFIG REQUIRED)
 find_package(hoox CONFIG REQUIRED)
 
 add_subdirectory(src/core)
+add_subdirectory(src/ipc)
 add_subdirectory(src/config)
 add_subdirectory(src/cli)
 add_subdirectory(src/trace)

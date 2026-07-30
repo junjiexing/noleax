@@ -14,6 +14,7 @@ add_executable(noleax-unit-tests
   unit/filter_test.cpp
   unit/generation_tracker_test.cpp
   unit/json_test.cpp
+  unit/ipc_protocol_test.cpp
   unit/outstanding_test.cpp
   unit/replacement_lifecycle_test.cpp
   unit/symbolizer_test.cpp
@@ -37,6 +38,7 @@ target_link_libraries(noleax-unit-tests
     noleax::cli
     noleax::config
     noleax::core
+    noleax::ipc
     noleax::trace
     lz4::lz4
     zstd::libzstd
@@ -73,6 +75,7 @@ set_tests_properties(config.print-effective PROPERTIES
 
 if(WIN32)
   target_sources(noleax-unit-tests PRIVATE
+    unit/ipc_named_pipe_test.cpp
     unit/hook_guard_test.cpp
     unit/hook_backend_test.cpp
     unit/stack_capture_test.cpp

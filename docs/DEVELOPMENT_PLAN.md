@@ -4,9 +4,9 @@
 > 文档版本：0.1
 > 更新日期：2026-07-30
 > 确认日期：2026-07-29
-> 当前阶段：P5 Windows agent 完整 API 覆盖完成
-> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8、P4.9、P5.1、P5.2、P5.3、P5.4、P5.5、P5.6、P5.7
-> 下一工作项：P6.1 controller/agent IPC
+> 当前阶段：P6.1 controller/agent IPC 完成（`feat/windows-controller-injection`）
+> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8、P4.9、P5.1、P5.2、P5.3、P5.4、P5.5、P5.6、P5.7、P6.1
+> 下一工作项：P6.2 suspended launch
 
 ## 1. 文档目的
 
@@ -1457,6 +1457,12 @@ Page Heap 下三轮门禁通过，19 个目标 IFEO key 全部清理。
 | P6.5 | start/stop/status 生命周期 | controller | in-flight callback 测试 |
 | P6.6 | 架构和权限诊断 | doctor | 明确错误信息 |
 | P6.7 | 端到端 trace/analyze | integration suite | 预期 outstanding 结果 |
+
+P6.1 状态：新增 controller/agent 共用的版本化 frame 和 payload codec，以及 Windows overlapped
+named-pipe channel。frame 在读取 payload 前拒绝未知版本、类型、flags、reserved 和超过 64 KiB 的
+声明；字符串和 payload 均要求完全消费。connect、accept、读写共享调用级 deadline，timeout 使用
+`CancelIoEx` 完成清理。协议预留两阶段 stop/finalize，以保持 P5.7 的逻辑停录、writer drain、目标
+线程暂停、物理 revert 顺序。详见 [IPC_PROTOCOL.md](IPC_PROTOCOL.md)。
 
 人工验证：
 
