@@ -101,6 +101,11 @@ if(WIN32)
   )
   noleax_set_project_warnings(noleax-cli-e2e-target)
 
+  add_executable(noleax-capture-benchmark-target
+    targets/capture_benchmark_target.cpp
+  )
+  noleax_set_project_warnings(noleax-capture-benchmark-target)
+
   add_executable(noleax-cli-end-to-end-test
     integration/cli_end_to_end_test.cpp
     support/csv_table.cpp
@@ -957,6 +962,7 @@ if(WIN32)
         noleax-controller-target
         noleax-controller-lifecycle-target
         noleax-cli-e2e-target
+        noleax-capture-benchmark-target
         noleax-cli-end-to-end-test
         noleax-controller-launch-test
         noleax-controller-attach-test
