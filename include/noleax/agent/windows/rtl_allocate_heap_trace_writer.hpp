@@ -7,6 +7,7 @@
 #include <memory>
 
 #include "noleax/agent/windows/rtl_allocate_heap_hook.hpp"
+#include "noleax/agent/windows/rtl_free_heap_hook.hpp"
 #include "noleax/trace/completeness.hpp"
 #include "noleax/trace/trace_reader.hpp"
 #include "noleax/trace/trace_writer.hpp"
@@ -14,6 +15,7 @@
 namespace noleax::agent::windows {
 
 inline constexpr noleax::trace::ApiId kRtlAllocateHeapApiId = 1U;
+inline constexpr noleax::trace::ApiId kRtlFreeHeapApiId = 2U;
 
 struct RtlAllocateHeapTraceWriterOptions {
   noleax::trace::TraceWriterOptions trace;
@@ -48,6 +50,9 @@ class RtlAllocateHeapTraceWriter final {
  public:
   RtlAllocateHeapTraceWriter(RtlAllocateHeapHook& hook, std::ostream& output,
                              const noleax::trace::FileHeader& file_header,
+                             RtlAllocateHeapTraceWriterOptions options = {});
+  RtlAllocateHeapTraceWriter(RtlAllocateHeapHook& allocate_hook, RtlFreeHeapHook& free_hook,
+                             std::ostream& output, const noleax::trace::FileHeader& file_header,
                              RtlAllocateHeapTraceWriterOptions options = {});
   ~RtlAllocateHeapTraceWriter();
 

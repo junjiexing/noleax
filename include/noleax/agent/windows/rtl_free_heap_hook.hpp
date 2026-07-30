@@ -5,28 +5,28 @@
 #include <memory>
 
 #include "noleax/agent/hook_backend.hpp"
-#include "noleax/agent/windows/rtl_allocate_heap_event.hpp"
+#include "noleax/agent/windows/rtl_free_heap_event.hpp"
 
 namespace noleax::agent::windows {
 
-struct RtlAllocateHeapHookState;
+struct RtlFreeHeapHookState;
 
-class RtlAllocateHeapHook {
+class RtlFreeHeapHook {
  public:
   static constexpr std::size_t kDefaultEventQueueCapacity = 16'384U;
   static constexpr std::uint16_t kDefaultMaximumStackDepth = kMaximumCapturedStackDepth;
 
-  explicit RtlAllocateHeapHook(HookBackend& backend,
-                               std::size_t event_queue_capacity = kDefaultEventQueueCapacity,
-                               std::uint16_t maximum_stack_depth = kDefaultMaximumStackDepth);
-  RtlAllocateHeapHook(HookBackend& backend, RtlHeapEventQueue& event_queue,
-                      std::uint16_t maximum_stack_depth = kDefaultMaximumStackDepth);
-  ~RtlAllocateHeapHook();
+  explicit RtlFreeHeapHook(HookBackend& backend,
+                           std::size_t event_queue_capacity = kDefaultEventQueueCapacity,
+                           std::uint16_t maximum_stack_depth = kDefaultMaximumStackDepth);
+  RtlFreeHeapHook(HookBackend& backend, RtlHeapEventQueue& event_queue,
+                  std::uint16_t maximum_stack_depth = kDefaultMaximumStackDepth);
+  ~RtlFreeHeapHook();
 
-  RtlAllocateHeapHook(const RtlAllocateHeapHook&) = delete;
-  RtlAllocateHeapHook& operator=(const RtlAllocateHeapHook&) = delete;
-  RtlAllocateHeapHook(RtlAllocateHeapHook&&) = delete;
-  RtlAllocateHeapHook& operator=(RtlAllocateHeapHook&&) = delete;
+  RtlFreeHeapHook(const RtlFreeHeapHook&) = delete;
+  RtlFreeHeapHook& operator=(const RtlFreeHeapHook&) = delete;
+  RtlFreeHeapHook(RtlFreeHeapHook&&) = delete;
+  RtlFreeHeapHook& operator=(RtlFreeHeapHook&&) = delete;
 
   [[nodiscard]] FastHookResult install();
   [[nodiscard]] HookUninstallStatus uninstall(
@@ -49,7 +49,7 @@ class RtlAllocateHeapHook {
   [[nodiscard]] std::uint64_t take_dropped_event_count() noexcept;
   [[nodiscard]] std::size_t event_queue_capacity() const noexcept;
   [[nodiscard]] std::uint16_t maximum_stack_depth() const noexcept;
-  [[nodiscard]] bool try_dequeue_event(RtlAllocateHeapEvent& event) noexcept;
+  [[nodiscard]] bool try_dequeue_event(RtlFreeHeapEvent& event) noexcept;
   [[nodiscard]] RtlHeapEventQueue& event_queue() noexcept;
   [[nodiscard]] const RtlHeapEventQueue& event_queue() const noexcept;
   [[nodiscard]] void* target_address() const noexcept;
@@ -67,7 +67,7 @@ class RtlAllocateHeapHook {
   void finish_teardown() noexcept;
   void abandon_pending_teardown() noexcept;
 
-  std::unique_ptr<RtlAllocateHeapHookState> hook_state_;
+  std::unique_ptr<RtlFreeHeapHookState> hook_state_;
   HookBackend* backend_{nullptr};
   void* target_{nullptr};
   std::uint16_t maximum_stack_depth_{kDefaultMaximumStackDepth};

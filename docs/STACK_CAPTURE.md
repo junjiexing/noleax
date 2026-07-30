@@ -1,7 +1,7 @@
 # Windows Raw Stack Capture
 
-> 状态：P4.6 Windows x64 完成
-> 范围：`RtlAllocateHeap` 原始地址捕获；不解析符号、不去重、不写 trace
+> 状态：P4.6 Windows x64 完成；P5.1 复用于 `RtlFreeHeap`
+> 范围：`RtlAllocateHeap`/`RtlFreeHeap` 原始地址捕获；不解析符号、不去重、不写 trace
 
 ## 1. 合同
 
@@ -25,14 +25,14 @@ hook 热路径只捕获原始指令地址。它不得调用 DbgHelp、访问符�
 | `kFailed` | 0 | 本次 unwind 未得到任何帧 |
 
 失败不能伪装成 disabled 或一个“成功的空栈”。P4.7 writer 为每个 `kFailed` 结果生成
-`stack_capture_failed/agent_queue` Loss，同时仍保留 allocation 事件；该 Loss 只降低 stack
-completeness，不声称 allocation 生命周期已经丢失。
+`stack_capture_failed/agent_queue` Loss，同时仍保留 allocation/free 事件；该 Loss 只降低 stack
+completeness，不声称生命周期事件已经丢失。
 
 ## 2. 生产策略
 
 Windows x64 生产路径使用 `RtlCaptureStackBackTrace`：
 
-1. `RtlAllocateHeap` original 返回后立即保存原始 `LastError`；
+1. `RtlAllocateHeap` 或 `RtlFreeHeap` original 返回后立即保存原始 `LastError`；
 2. 仅在 MPSC queue 成功取得 slot 后执行捕获，queue-full 事件不再承担 unwind 成本；
 3. 请求 `maximum_depth + 1` 帧，用额外一帧区分 complete 与 truncated；
 4. 跳过捕获实现、adapter 和 replacement 帧，使第一帧从目标调用方开始；
@@ -62,8 +62,9 @@ leaf 规则。
 
 ## 4. 事件与失败边界
 
-加入栈后，`RtlAllocateHeapEvent` 从 56 bytes 增至 576 bytes。默认 queue 从 65,536 调整为 16,384
-个 slot，使预分配内存仍约为 9 MiB；测试 harness 使用 256 个 slot 稳定制造 overflow。
+P4.6 的 allocate event 加入栈后为 576 bytes；P5.1 统一为同时容纳 alloc/free 字段的 600-byte
+`RtlHeapEvent`。默认 queue 为 16,384 个 slot，预分配约 9.5 MiB；测试 harness 使用 256 个 slot
+稳定制造 overflow。
 
 系统 `RtlCaptureStackBackTrace` 在高并发下可能偶发返回 0。压力测试因此验证以下合同，而不是假设
 每次系统 unwind 都必定成功：

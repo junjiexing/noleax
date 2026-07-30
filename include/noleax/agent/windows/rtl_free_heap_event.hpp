@@ -4,7 +4,7 @@
 
 namespace noleax::agent::windows {
 
-using RtlAllocateHeapEventStatus = RtlHeapEventStatus;
-using RtlAllocateHeapEvent = RtlHeapEvent;
+using RtlFreeHeapEventStatus = RtlHeapEventStatus;
+using RtlFreeHeapEvent = RtlHeapEvent;
 
 }  // namespace noleax::agent::windows
