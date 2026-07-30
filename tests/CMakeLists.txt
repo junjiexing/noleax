@@ -131,6 +131,31 @@ if(WIN32)
     TIMEOUT 90
   )
 
+  add_executable(noleax-cli-recovery-test
+    integration/cli_recovery_test.cpp
+    support/json_dom.cpp
+  )
+  target_include_directories(noleax-cli-recovery-test PRIVATE "${PROJECT_SOURCE_DIR}/tests")
+  target_link_libraries(noleax-cli-recovery-test PRIVATE
+    noleax::controller
+    noleax::trace
+  )
+  noleax_set_project_warnings(noleax-cli-recovery-test)
+  add_dependencies(noleax-cli-recovery-test noleax)
+
+  add_test(NAME cli.trace-recovery-compatibility
+    COMMAND noleax-cli-recovery-test
+      "$<TARGET_FILE:noleax>"
+      "$<TARGET_FILE_DIR:noleax-cli-recovery-test>/cli-recovery"
+  )
+  set_tests_properties(cli.trace-recovery-compatibility PROPERTIES
+    LABELS "cli;trace;analyzer;recovery;compatibility;windows"
+    PASS_REGULAR_EXPRESSION
+      "^status=ok truncated=1 corrupt=1 future-minor=1 future-major=1 unknown-record=1 retained-events=3 exit-codes=2,4"
+    RUN_SERIAL TRUE
+    TIMEOUT 60
+  )
+
   add_dependencies(noleax-unit-tests noleax-agent noleax-controller-target)
   target_compile_definitions(noleax-unit-tests PRIVATE
     NOLEAX_TEST_AGENT_PATH="$<TARGET_FILE:noleax-agent>"
@@ -964,6 +989,7 @@ if(WIN32)
         noleax-cli-e2e-target
         noleax-capture-benchmark-target
         noleax-cli-end-to-end-test
+        noleax-cli-recovery-test
         noleax-controller-launch-test
         noleax-controller-attach-test
         noleax-controller-lifecycle-test
