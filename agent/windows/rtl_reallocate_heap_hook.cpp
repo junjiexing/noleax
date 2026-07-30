@@ -126,6 +126,7 @@ void increment_saturating(std::atomic<std::uint64_t>& value) noexcept {
           event.result_address = 0U;
           event.address = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(address));
           event.raw_result = 0U;
+          event.auxiliary_address = 0U;
           event.flags = flags;
           event.exception_status = exception_status;
           event.operation = RtlHeapEventOperation::kReallocate;
@@ -218,6 +219,7 @@ PVOID NTAPI replacement_rtl_reallocate_heap(PVOID heap, ULONG flags, PVOID addre
                   event.address =
                       static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(address));
                   event.raw_result = 0U;
+                  event.auxiliary_address = 0U;
                   event.flags = flags;
                   event.exception_status = 0U;
                   event.operation = RtlHeapEventOperation::kReallocate;

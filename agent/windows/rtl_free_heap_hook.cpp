@@ -125,6 +125,7 @@ void increment_saturating(std::atomic<std::uint64_t>& value) noexcept {
           event.result_address = 0U;
           event.address = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(address));
           event.raw_result = 0U;
+          event.auxiliary_address = 0U;
           event.flags = flags;
           event.operation = RtlHeapEventOperation::kFree;
           event.status = RtlFreeHeapEventStatus::kException;
@@ -215,6 +216,7 @@ BOOLEAN NTAPI replacement_rtl_free_heap(PVOID heap, ULONG flags, PVOID address) 
                   event.address =
                       static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(address));
                   event.raw_result = static_cast<std::uint64_t>(result);
+                  event.auxiliary_address = 0U;
                   event.flags = flags;
                   event.operation = RtlHeapEventOperation::kFree;
                   event.status = result == FALSE ? RtlFreeHeapEventStatus::kFailure

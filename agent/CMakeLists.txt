@@ -7,6 +7,8 @@ if(WIN32)
   target_sources(noleax-hook-backend PRIVATE
     windows/rtl_allocate_heap_hook.cpp
     windows/rtl_allocate_heap_trace_writer.cpp
+    windows/rtl_create_heap_hook.cpp
+    windows/rtl_destroy_heap_hook.cpp
     windows/rtl_free_heap_hook.cpp
     windows/rtl_reallocate_heap_hook.cpp
     windows/rtl_heap_hooks.cpp

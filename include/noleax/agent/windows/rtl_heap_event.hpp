@@ -9,9 +9,11 @@
 namespace noleax::agent::windows {
 
 enum class RtlHeapEventOperation : std::uint8_t {
+  kCreate,
   kAllocate,
   kReallocate,
   kFree,
+  kDestroy,
 };
 
 enum class RtlHeapEventStatus : std::uint8_t {
@@ -29,6 +31,7 @@ struct RtlHeapEvent {
   std::uint64_t result_address{0U};
   std::uint64_t address{0U};
   std::uint64_t raw_result{0U};
+  std::uint64_t auxiliary_address{0U};
   std::uint32_t flags{0U};
   std::uint32_t exception_status{0U};
   RtlHeapEventOperation operation{RtlHeapEventOperation::kAllocate};
@@ -43,6 +46,6 @@ using RtlHeapEventQueue = BoundedMpscQueue<RtlHeapEvent>;
 
 static_assert(std::is_trivially_copyable_v<RtlHeapEvent>);
 static_assert(std::is_trivially_destructible_v<RtlHeapEvent>);
-static_assert(sizeof(RtlHeapEvent) == 600U);
+static_assert(sizeof(RtlHeapEvent) == 608U);
 
 }  // namespace noleax::agent::windows

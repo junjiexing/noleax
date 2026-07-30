@@ -1,54 +1,62 @@
 # Windows NT Heap Background Trace Writer
 
-> 状态：P5.2 Windows x64 Debug/Release 自动门禁完成
-> 范围：NT Heap allocate/reallocate/free 的进程内 trace path、generation 配对和安全停止
+> 状态：P5.3 Windows x64 全部门禁完成
+> 范围：NT Heap create/allocate/reallocate/free/destroy 的进程内 trace、generation 配对和安全停止
 
 ## 1. 目标与边界
 
-三个 replacement 只调用 original、保存固定宽度字段、捕获原始 PC 并尝试入队。压缩、容器
+五个 replacement 只调用 original、保存固定宽度字段、捕获原始 PC 并尝试入队。压缩、容器
 分配、文件 I/O、栈去重、allocation_id 配对和 record codec 全部位于后台线程。
 
-当前生成三种规范化事件：
+当前生成五种规范化事件：
 
 | 原始 API | api_id | 规范化 payload |
 |---|---:|---|
 | `RtlAllocateHeap` | 1 | `AllocationEvent` |
 | `RtlFreeHeap` | 2 | `FreeEvent` |
 | `RtlReAllocateHeap` | 3 | `ReallocationEvent` |
+| `RtlCreateHeap` | 4 | `HeapCreateEvent` |
+| `RtlDestroyHeap` | 5 | `HeapDestroyEvent` |
 
 `RtlHeapTraceWriter` 是组合模式的公开别名；原有 `RtlAllocateHeapTraceWriter` 单 hook 构造方式仍兼容，
-只写 `api_id=1`；alloc/free 构造方式也继续兼容。P5.3 才加入 heap generation，P5.6 前
+只写 `api_id=1`；alloc/free 和 alloc/realloc/free 构造方式也继续兼容。P5.6 前
 StackDefinition 仍只保存绝对地址，`module_id` 和 `module_offset` 为零。
 
 ## 2. 共享队列与跨 API 顺序
 
-allocate/reallocate/free 使用同一个预分配 `RtlHeapEventQueue`。统一的 600-byte `RtlHeapEvent` 通过
-operation 区分三种 API，并包含所需参数、raw result、异常状态和定长栈。成功 reservation 时由队列
+五个 NT Heap hook 使用同一个预分配 `RtlHeapEventQueue`。统一的 608-byte `RtlHeapEvent` 通过
+operation 区分五种 API，并包含所需参数、raw result、异常状态和定长栈。成功 reservation 时由队列
 分配唯一 sequence，因此不同线程、不同 API 的生命周期顺序不依赖可能倒退或相同的 QPC tick。
 
-三个 hook 分别保存 dropped counter，后台 writer 才能把共享 queue overflow 归因到正确 api_id；底层
+五个 hook 分别保存 dropped counter，后台 writer 才能把共享 queue overflow 归因到正确 api_id；底层
 queue 的总 dropped counter 只用于队列级诊断。被 queue 拒绝的事件没有 sequence，Loss 因而只保存
 数量，不伪造范围。
 
 组合模式的安全调用顺序是：
 
-1. 构造 `HookBackend` 和 `RtlHeapHooks`；后者拥有共享 queue，并让三个 hook 取得各自的固定 TEB
+1. 构造 `HookBackend` 和 `RtlHeapHooks`；后者拥有共享 queue，并让五个 hook 取得各自的固定 TEB
    guard 引用。
-2. 在 hook 安装前构造 `RtlHeapTraceWriter`；它校验三个 hook 引用同一个 queue、写 CaptureScope
+2. 在 hook 安装前构造 `RtlHeapTraceWriter`；它校验五个 hook 引用同一个 queue、写 CaptureScope
    metadata，并启动带 `InternalThreadScope` 的 worker。
-3. 由 `RtlHeapHooks::install()` 安装 allocate/reallocate/free，再调用 `begin_capture()`。
+3. 由 `RtlHeapHooks::install()` 安装 create/allocate/reallocate/free/destroy，再调用 `begin_capture()`。
 4. 目标线程产生事件，worker 按共享 sequence 并发 drain。
-5. 调用 `RtlHeapHooks::uninstall()`；三个 hook 都完成 revert、replacement quiescence 和 Hoox flush。
+5. 调用 `RtlHeapHooks::uninstall()`；五个 hook 都完成 revert、replacement quiescence 和 Hoox flush。
 6. 调用 writer `finish()`，完成 final drain、Statistics、EndOfTrace 和 worker join。
 7. 最后 shutdown `HookBackend` 并关闭输出流。
 
 组合 writer 会拒绝独立 queue、已安装的任一 hook 或未初始化 guard runtime。`begin_capture()` 要求
-三个 hook 均已安装；`finish()` 要求三个 hook 均不再 installed/teardown-pending，避免过早写出正常
+五个 hook 均已安装；`finish()` 要求五个 hook 均不再 installed/teardown-pending，避免过早写出正常
 结束。完整 teardown 原理见 [HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)。
 
 ## 3. 生命周期配对
 
-worker 维护 `(heap_handle, address) -> allocation_id` 的 live map：
+worker 维护 `heap_handle -> heap_id` 与 `(heap_handle, address) -> allocation_id` 两张 live map：
+
+- 成功 create 分配单调递增且不复用的 heap_id；同一 handle 在 destroy 后复用时取得新 ID。
+- 已知 heap 上的 allocate/reallocate/free 均携带当前 heap_id；捕获前已存在的 heap 保留无效 ID。
+- 成功 destroy 命中当前 heap_id 时移除 heap map 及 writer 的相关 live allocation；规范化 destroy 让
+  GenerationTracker 以 `heap_destroyed` 结束该 heap 下全部 generation。
+- 成功 destroy 未命中时按 CaptureScope 标记 preexisting/unmatched；失败或异常 destroy 不改变 map。
 
 - 成功 allocate 分配单调递增且不复用的 allocation_id，并写入/替换对应 key。
 - 失败或异常 allocate 不创建 generation。
@@ -73,7 +81,7 @@ worker 要求原始事件 sequence 连续、thread 非零、operation/status/res
 `timestamp_adjustments`。
 
 成功或截断的原始栈使用 FNV-1a 定位，再对状态、帧数和每一帧完整比较，hash 碰撞不会误合并。
-三个 API 共用一个 stack dictionary，相同栈可以跨 API 复用同一 stack_id。dictionary 容量固定，
+五个 API 共用一个 stack dictionary，相同栈可以跨 API 复用同一 stack_id。dictionary 容量固定，
 满后重置当前索引 segment，但 stack_id 继续单调递增；definition 总在引用它的 Event chunk 之前落盘。
 
 SEH 第一遍 filter 只写固定事件并返回 `EXCEPTION_CONTINUE_SEARCH`。异常派发期间不执行栈展开；请求
@@ -88,10 +96,10 @@ writer 生成三类 Loss：
 | 原因 | 位置 | count | sequence/tick range |
 |---|---|---:|---|
 | stack_capture_failed | agent_queue | 1 | 对应事件的精确范围 |
-| queue_full | agent_queue | 三个 hook dropped 的和 | 无；被拒绝事件没有 sequence |
+| queue_full | agent_queue | 五个 hook dropped 的和 | 无；被拒绝事件没有 sequence |
 | trace_full | writer | 未落盘事件数 | 首末丢失事件的精确范围 |
 
-Statistics 同时保存 aggregate 与组合模式下的 `api_id=1/2/3`。每个 API 及 aggregate 都必须
+Statistics 同时保存 aggregate 与组合模式下的 `api_id=1/2/3/4/5`。每个 API 及 aggregate 都必须
 满足：
 
 ~~~text
@@ -109,15 +117,15 @@ TraceWriter 强制保留至少 1 KiB 文件尾。普通 metadata/stack/event chu
 `max_file_size - reserve`；任何完整 chunk 放不下时不写半块，并把当前及后续已观察事件计为
 trace-full。
 
-最终 drain 后释放 reserve。组合模式最坏尾部包含两个 56-byte Loss record、一个含三个 API 的
-232-byte Statistics record、一个 48-byte EndOfTrace record 及三个 56-byte chunk header，共 560
+最终 drain 后释放 reserve。组合模式最坏尾部包含两个 56-byte Loss record、一个含五个 API 的
+328-byte Statistics record、一个 48-byte EndOfTrace record 及三个 56-byte chunk header，共 656
 bytes。终止 chunk 固定使用 none codec，因此 1 KiB reserve 不依赖 LZ4/Zstd compression bound，且
 实际文件不会超过配置上限。
 
 ## 7. 自动验证
 
 原 allocate-only 集成测试继续覆盖 empty、normal、queue-limit、file-limit 和 exception 五种模式。
-P5.2 组合测试另覆盖：
+P5.3 组合测试另覆盖：
 
 - writer 拒绝两个独立 queue；
 - matched allocate/free 共享 allocation_id；
@@ -126,12 +134,14 @@ P5.2 组合测试另覆盖：
 - null free 标为 unmatched；
 - capture 结束仍 live 的 allocation 被 GenerationTracker 保留；
 - 原地、跨线程、零大小、失败和 preexisting realloc 的 generation 转换；
-- 三组 ApiStatistics、aggregate Statistics、EventStream 数量和 completeness 一致；
+- create/destroy 的 HeapId、多 heap、destroy-with-live 和 raw handle reuse；
+- 五组 ApiStatistics、aggregate Statistics、EventStream 数量和 completeness 一致；
 - queue/trace dropped 均为零的正常组合路径。
 
 `RtlFreeHeap` 与 `RtlReAllocateHeap` 合同、fail-fast、quiescence、CFG/CET 和 Full Page Heap 证据见
 [RTL_FREE_HEAP_HOOK.md](RTL_FREE_HEAP_HOOK.md) 与
 [RTL_REALLOCATE_HEAP_HOOK.md](RTL_REALLOCATE_HEAP_HOOK.md) 及
+[RTL_HEAP_LIFECYCLE_HOOK.md](RTL_HEAP_LIFECYCLE_HOOK.md) 及
 [WINDOWS_HOOK_HARDENING.md](WINDOWS_HOOK_HARDENING.md)。
 
 ~~~powershell

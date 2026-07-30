@@ -1,7 +1,7 @@
 # Windows replacement quiescence
 
-> 状态：P4.8 Windows x64 完成；P5.2 已对 allocate/reallocate/free 分别复用
-> 范围：NT Heap 三个 adapter 的停止记录、并发 revert、trampoline 回收和代码生命周期
+> 状态：P4.8 Windows x64 完成；P5.3 已对五个 NT Heap adapter 分别复用
+> 范围：NT Heap 五个 adapter 的停止记录、并发 revert、trampoline 回收和代码生命周期
 
 ## 1. 要解决的窗口
 
@@ -57,7 +57,7 @@ replacement 未在有界等待内退出，lease 不释放，Hoox 不 flush。若
 original trampoline、event queue、guard runtime 引用和 backend lease 都转为进程级保留，不能为了
 避免泄漏而释放仍可能被线程使用的状态。
 
-P5.2 组合对象的 event queue 由独立所有权持有。若三个 hook 任一无法 quiesce，协调器会
+P5.3 组合对象的 event queue 由独立所有权持有。若五个 hook 任一无法 quiesce，协调器会
 连同 hook state 一起保留共享 queue，避免只保留单 hook state、却随后析构其外部 queue 的
 use-after-free。
 
@@ -73,7 +73,7 @@ replacement 的模块固定到进程退出。即使线程已取到旧跳转但�
 因此当前 adapter 有两个刻意限制：
 
 - `FreeLibrary` 可以释放调用方引用，但包含 replacement 的 DLL 仍驻留到进程退出；
-- 三个 adapter 各自每进程只允许一次成功安装，避免旧跳转被误归入下一捕获 generation。
+- 五个 adapter 各自每进程只允许一次成功安装，避免旧跳转被误归入下一捕获 generation。
 
 真正可重复安装并可解除模块 pin 的方案需要可证明覆盖所有线程 PC 的 patch rendezvous，留给后续
 注入生命周期设计。当前接口不会把“停止记录”误报为“DLL 已可解除映射”。
@@ -97,15 +97,17 @@ Windows 代码更新临界区：
 
 - held entry、路由快照和有界 quiescence 的确定性单测；
 - lifetime lease 阻止 uninstall flush 和 shutdown deinit；
-- 三个 adapter 各自用 8 个持续 worker 与线程创建/销毁 churn 同时执行 `uninstall(0)` 和后续 flush；
+- allocate/reallocate/free 各自用 8 个持续 worker；五 hook 组合另用 create/alloc/realloc/free/destroy
+  循环和线程 churn 同时执行 `uninstall(0)` 与后续 flush；
 - 停止完成后继续执行至少 20,000 次分配，确认记录计数不再变化；
 - queue 的 `recordable = dequeued + dropped` 守恒；
 - 成功 stop 和 `FreeLibrary` 后模块仍被 pin，导出代码仍可执行；
 - 原有 writer final drain、MD/MT ABI 差分和全量回归。
 
-P5.1 Debug/Release 全量均为 182/182，hardened 为 192/192。加入 Windows RWX 暂停 overlay 后，
-allocate/free 并发 race（含 thread churn）各连续 100 次通过；overlay 前原 allocate Debug 测试在第
-17 次出现崩溃。Release module-retention、passthrough、writer 与组合生命周期测试也全部通过。
+P5.3 Debug/Release 全量均为 189/189，hardened 为 206/206。加入 Windows RWX 暂停 overlay 后，
+allocate/reallocate/free 和五 hook lifecycle 并发 race（含 thread churn）各连续 100 次通过；overlay
+前原 allocate Debug 测试在第 17 次出现崩溃。Release module-retention、passthrough、writer 与组合
+生命周期测试也全部通过。
 
 Release x64 object 的 replacement 反汇编复核确认，正常路径只调用 original/恢复后的 target、
 固定 TEB 槽 guard、`GetLastError`/`SetLastError`、`QueryPerformanceCounter`、
@@ -131,6 +133,6 @@ checksum=0x7caf2ccfa0606232
 . .\scripts\Enter-NoleaxDevShell.ps1
 cmake --build --preset windows-x64-debug
 ctest --preset windows-x64-debug -R "replacement lifecycle|lifetime lease|quiescence|module-retention" --output-on-failure
-ctest --preset windows-x64-debug -R "hook.rtl-(allocate|free)-heap-quiescence-race" --repeat until-fail:100 --output-on-failure
-ctest --preset windows-x64-release -R "hook.rtl-(allocate|free)-heap-quiescence-race" --repeat until-fail:100 --output-on-failure
+ctest --preset windows-x64-debug -R "hook.rtl-.*heap.*-quiescence-race" --repeat until-fail:100 --output-on-failure
+ctest --preset windows-x64-release -R "hook.rtl-.*heap.*-quiescence-race" --repeat until-fail:100 --output-on-failure
 ~~~

@@ -1,7 +1,7 @@
 # Windows Raw Stack Capture
 
-> 状态：P4.6 Windows x64 完成；P5.2 复用于三个 NT Heap adapter
-> 范围：NT Heap 三个 adapter 的原始地址捕获；不解析符号、不去重、不写 trace
+> 状态：P4.6 Windows x64 完成；P5.3 复用于五个 NT Heap adapter
+> 范围：NT Heap 五个 adapter 的原始地址捕获；不解析符号、不去重、不写 trace
 
 ## 1. 合同
 
@@ -62,8 +62,8 @@ leaf 规则。
 
 ## 4. 事件与失败边界
 
-P4.6 的 allocate event 加入栈后为 576 bytes；P5.2 统一为同时容纳三种 heap 字段的 600-byte
-`RtlHeapEvent`。默认 queue 为 16,384 个 slot，预分配约 9.5 MiB；测试 harness 使用 256 个 slot
+P4.6 的 allocate event 加入栈后为 576 bytes；P5.3 统一为同时容纳五种 heap 字段的 608-byte
+`RtlHeapEvent`。默认 queue 为 16,384 个 slot，预分配约 9.7 MiB；测试 harness 使用 256 个 slot
 稳定制造 overflow。
 
 系统 `RtlCaptureStackBackTrace` 在高并发下可能偶发返回 0。压力测试因此验证以下合同，而不是假设

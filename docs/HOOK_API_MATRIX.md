@@ -300,11 +300,11 @@ NTSTATUS NTAPI NtUnmapViewOfSection(
 
 | API | Adapter | Unit | Contract | Concurrency | CFG/CET | Page Heap | Enabled |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| RtlCreateHeap | pending | pending | pending | pending | pending | pending | no |
-| RtlDestroyHeap | pending | pending | pending | pending | pending | pending | no |
-| RtlAllocateHeap | P5.2 combined candidate | guard/shared-queue/stack/SEH pass | ABI/LastError/exception/overflow/stack/trace pass | 8x20k + three-hook quiescence pass | PE + runtime pass | combined Full Page Heap 3/3 pass | no |
-| RtlReAllocateHeap | P5.2 combined candidate | guard/shared-queue/stack/SEH pass | in-place/move/zero/OOM/LastError/exception/fail-fast/trace pass | cross-thread + 8x20k + quiescence pass | PE + runtime pass | combined Full Page Heap 3/3 pass | no |
-| RtlFreeHeap | P5.2 combined candidate | guard/shared-queue/stack/SEH pass | return/LastError/exception/fail-fast/trace pass | cross-thread + 8x20k + quiescence pass | PE + runtime pass | AppVerifier Full 3/3 pass | no |
+| RtlCreateHeap | P5.3 combined candidate | guard/shared-queue/stack/SEH pass | ABI/LastError/failure/exception-mode/overflow/raw-event pass | five-hook quiescence + handle reuse pass | PE + runtime pass | combined Full Page Heap 3/3 pass | no |
+| RtlDestroyHeap | P5.3 combined candidate | guard/shared-queue/stack/SEH pass | ABI/LastError/null/bad/double/raw-event pass | five-hook quiescence + destroy-live pass | PE + runtime pass | combined Full Page Heap 3/3 pass | no |
+| RtlAllocateHeap | P5.3 combined candidate | guard/shared-queue/stack/SEH pass | ABI/LastError/exception/overflow/stack/trace pass | 8x20k + five-hook quiescence pass | PE + runtime pass | combined Full Page Heap 3/3 pass | no |
+| RtlReAllocateHeap | P5.3 combined candidate | guard/shared-queue/stack/SEH pass | in-place/move/zero/OOM/LastError/exception/fail-fast/trace pass | cross-thread + 8x20k + quiescence pass | PE + runtime pass | combined Full Page Heap 3/3 pass | no |
+| RtlFreeHeap | P5.3 combined candidate | guard/shared-queue/stack/SEH pass | return/LastError/exception/fail-fast/trace pass | cross-thread + 8x20k + quiescence pass | PE + runtime pass | AppVerifier Full 3/3 pass | no |
 | NtAllocateVirtualMemory | pending | pending | pending | pending | pending | pending | no |
 | NtFreeVirtualMemory | pending | pending | pending | pending | pending | pending | no |
 | NtMapViewOfSection | pending | pending | pending | pending | pending | pending | no |
@@ -333,3 +333,10 @@ preexisting/unmatched。合同覆盖原地、真实移动、零大小、OOM、SE
 address 隔离和 quiescence。Debug/Release 全量各 186/186、hardened 200/200、三个 quiescence race
 各 100/100、14 个 PE 的 CFG/CET 及 Full Page Heap 三轮均通过。设计与证据见
 [RTL_REALLOCATE_HEAP_HOOK.md](RTL_REALLOCATE_HEAP_HOOK.md)。
+
+P5.3 增加 `RtlCreateHeap`/`RtlDestroyHeap`，五种事件共享唯一 sequence。writer 为每次成功 create
+分配不复用的 `HeapId`；handle reuse 产生新 ID，destroy 成功结束该 heap 的全部 live allocation。
+合同覆盖失败/异常模式、LastError、guard、overflow、null/bad/double destroy 隔离、多 heap、
+destroy-with-live、handle reuse 和 analyzer 回读。Debug/Release 各 189/189、hardened 206/206、四组
+quiescence race 各 100/100、17 个 PE 的 CFG/CET 及 Full Page Heap 三轮均通过。设计与证据见
+[RTL_HEAP_LIFECYCLE_HOOK.md](RTL_HEAP_LIFECYCLE_HOOK.md)。

@@ -4,9 +4,9 @@
 > 文档版本：0.1
 > 更新日期：2026-07-30
 > 确认日期：2026-07-29
-> 当前阶段：P5.2 `RtlReAllocateHeap` 实现及完整自动门禁完成（`feat/windows-agent-full-api`）
-> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8、P4.9、P5.1、P5.2
-> 下一工作项：P5.3 `RtlCreateHeap`/`RtlDestroyHeap`
+> 当前阶段：P5.3 NT Heap generation 实现及完整自动门禁完成（`feat/windows-agent-full-api`）
+> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8、P4.9、P5.1、P5.2、P5.3
+> 下一工作项：P5.4 `NtAllocateVirtualMemory`/`NtFreeVirtualMemory`
 
 ## 1. 文档目的
 
@@ -1366,8 +1366,21 @@ unmatched。原地、移动、零大小、可控 OOM、跨线程、SEH、隔离 
 14 个 PE 的 CFG/CET 门禁及 Application Verifier/Full Page Heap 三轮均通过，10 个 IFEO key 已清理。详见
 [RTL_REALLOCATE_HEAP_HOOK.md](RTL_REALLOCATE_HEAP_HOOK.md)。
 
-P5.2 尚未启用产品 profile：heap create/destroy、VM 和 section-view 生命周期仍未覆盖，不能把当前
-组合当作完整 Windows 泄漏捕获范围。
+P5.3 状态：新增精确六参数 `RtlCreateHeap` 与单参数 `RtlDestroyHeap` NTAPI adapter，五个 NT Heap
+hook 共用 608-byte raw event 和唯一 queue sequence。writer 使用 `api_id=4/5`，为成功 create 分配
+单调 `HeapId`，让该 heap 上的 alloc/realloc/free 携带相同 ID；成功 destroy 结束该 ID 下全部 live
+allocation。原始 handle 被系统复用时必须得到新 `HeapId`。失败 destroy 不改变状态，未观察到 create
+的成功 destroy 按 CaptureScope 标记 preexisting/unmatched。
+
+合同覆盖 growable/fixed/failure/`HEAP_GENERATE_EXCEPTIONS`、LastError、raw 参数、guard、overflow、
+安装诊断、null/bad/double destroy 隔离差分、多 heap、destroy-with-live、handle reuse、EventStream 与
+GenerationTracker 回读。Debug/Release 各 189/189、hardened 206/206，四组 quiescence race 各
+100/100，17 个 PE 的 CFG/CET 门禁通过；Application Verifier/Full Page Heap 下 workload、race、
+trace 和 contract 各三轮通过，12 个 IFEO key 全部清理。详见
+[RTL_HEAP_LIFECYCLE_HOOK.md](RTL_HEAP_LIFECYCLE_HOOK.md)。
+
+P5.3 尚未启用产品 profile：VM 和 section-view 生命周期仍未覆盖，不能把当前组合当作完整 Windows
+泄漏捕获范围。
 
 每增加一个 API：
 

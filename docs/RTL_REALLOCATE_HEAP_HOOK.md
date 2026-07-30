@@ -1,7 +1,7 @@
 # Windows `RtlReAllocateHeap` Hook
 
-> 状态：P5.2 Windows x64 自动门禁完成
-> 范围：精确 ABI、guard/SEH、共享队列、reallocation generation 与安全卸载
+> 状态：P5.2 Windows x64 adapter 完成；P5.3 已接入五 hook 组合并通过完整门禁
+> 范围：精确 ABI、guard/SEH、共享队列、reallocation/heap generation 与安全卸载
 
 ## 1. Adapter 合同
 
@@ -44,11 +44,12 @@ writer 继续维护 `(heap_handle,address) -> allocation_id` live map，并使�
 
 ## 3. 组合生命周期
 
-`RtlHeapHooks` 按 allocate → reallocate → free 安装三个 adapter，并共享同一个预分配 MPSC queue。
+`RtlHeapHooks` 按 create → allocate → reallocate → free → destroy 安装五个 adapter，并共享同一个
+预分配 MPSC queue。
 安装中任一后续 hook 失败都会协调卸载已安装部分。析构时只要任一 replacement 无法证明 quiescent，
 共享 queue 所有权就转移到进程生命周期，避免尚在执行的 replacement 写入已析构存储。
 
-三 hook writer 构造方式要求三个 adapter 都引用同一 queue；`begin_capture()` 要求全部已安装，
+五 hook writer 构造方式要求五个 adapter 都引用同一 queue；`begin_capture()` 要求全部已安装，
 `finish()` 要求全部完成卸载。allocate-only 和 alloc/free 构造方式继续兼容。
 
 ## 4. 自动验证
@@ -64,8 +65,11 @@ P5.2 新增的测试覆盖：
 - 三个 API 的独立 queue/trace drop 归因、Statistics 与 aggregate 守恒；
 - Debug/Release 各 186/186，hardened 200/200；
 - 三个 quiescence race 各连续 100 次，14 个 PE 的 CFG/CET metadata 与 runtime 检查；
-- Application Verifier/Full Page Heap 下三轮组合 workload、三轮 quiescence 和三轮合同/trace。
+- Application Verifier/Full Page Heap 下三轮组合 workload、三轮 quiescence 和三轮合同/trace；
+- P5.3 五 hook 回归为 Debug/Release 189/189、hardened 206/206，17 个 PE 通过 CFG/CET，四组
+  quiescence race 各 100/100，12 个 IFEO key 全部清理。
 
 管理员门禁结束后 10 个 IFEO key 均不存在。平台强化门禁由
 [WINDOWS_HOOK_HARDENING.md](WINDOWS_HOOK_HARDENING.md) 和
-`scripts/Test-WindowsHookHardening.ps1` 统一执行；profile 在 P5.7 前仍不启用。
+`scripts/Test-WindowsHookHardening.ps1` 统一执行；heap generation 设计见
+[RTL_HEAP_LIFECYCLE_HOOK.md](RTL_HEAP_LIFECYCLE_HOOK.md)。profile 在 P5.7 前仍不启用。

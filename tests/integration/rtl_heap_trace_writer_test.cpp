@@ -4,6 +4,7 @@
 
 #include <windows.h>
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -15,6 +16,8 @@
 #include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "noleax/agent/hook_backend.hpp"
@@ -29,9 +32,12 @@
 namespace {
 
 using RtlAllocateHeapFunction = PVOID(NTAPI*)(PVOID heap, ULONG flags, SIZE_T size);
+using RtlCreateHeapFunction = PVOID(NTAPI*)(ULONG flags, PVOID heap_base, SIZE_T reserve_size,
+                                            SIZE_T commit_size, PVOID lock, PVOID parameters);
 using RtlReAllocateHeapFunction = PVOID(NTAPI*)(PVOID heap, ULONG flags, PVOID address,
                                                 SIZE_T size);
 using RtlFreeHeapFunction = BOOLEAN(NTAPI*)(PVOID heap, ULONG flags, PVOID address);
+using RtlDestroyHeapFunction = PVOID(NTAPI*)(PVOID heap);
 
 constexpr SIZE_T kMatchedSize = 12'345U;
 constexpr SIZE_T kOutstandingSize = 23'457U;
@@ -43,6 +49,9 @@ constexpr SIZE_T kCrossReallocateOriginalSize = 67'891U;
 constexpr SIZE_T kCrossReallocateNewSize = 79'013U;
 constexpr SIZE_T kZeroOriginalSize = 81'127U;
 constexpr SIZE_T kPreexistingNewSize = 91'229U;
+constexpr SIZE_T kDestroyedWithHeapSize = 102'451U;
+constexpr SIZE_T kFreedBeforeHeapDestroySize = 113'671U;
+constexpr std::uint32_t kHeapReuseAttempts = 64U;
 constexpr SIZE_T kImpossibleSize =
     (std::numeric_limits<SIZE_T>::max)() - static_cast<SIZE_T>(65'535U);
 
@@ -114,6 +123,10 @@ int main(int argc, char* argv[]) {
       ntdll == nullptr
           ? nullptr
           : reinterpret_cast<RtlAllocateHeapFunction>(GetProcAddress(ntdll, "RtlAllocateHeap"));
+  const auto create =
+      ntdll == nullptr
+          ? nullptr
+          : reinterpret_cast<RtlCreateHeapFunction>(GetProcAddress(ntdll, "RtlCreateHeap"));
   const auto free_heap =
       ntdll == nullptr
           ? nullptr
@@ -122,13 +135,18 @@ int main(int argc, char* argv[]) {
       ntdll == nullptr
           ? nullptr
           : reinterpret_cast<RtlReAllocateHeapFunction>(GetProcAddress(ntdll, "RtlReAllocateHeap"));
-  if (process_heap == nullptr || allocate == nullptr || reallocate == nullptr ||
-      free_heap == nullptr) {
+  const auto destroy =
+      ntdll == nullptr
+          ? nullptr
+          : reinterpret_cast<RtlDestroyHeapFunction>(GetProcAddress(ntdll, "RtlDestroyHeap"));
+  if (process_heap == nullptr || create == nullptr || allocate == nullptr ||
+      reallocate == nullptr || free_heap == nullptr || destroy == nullptr) {
     std::fprintf(stderr,
                  "Rtl heap entry resolution failed: ntdll=%p heap=%p alloc=%p realloc=%p "
-                 "free=%p\n",
+                 "free=%p create=%p destroy=%p\n",
                  static_cast<void*>(ntdll), process_heap, reinterpret_cast<void*>(allocate),
-                 reinterpret_cast<void*>(reallocate), reinterpret_cast<void*>(free_heap));
+                 reinterpret_cast<void*>(reallocate), reinterpret_cast<void*>(free_heap),
+                 reinterpret_cast<void*>(create), reinterpret_cast<void*>(destroy));
     return 3;
   }
   PVOID preexisting = allocate(process_heap, 0U, 4'093U);
@@ -142,19 +160,24 @@ int main(int argc, char* argv[]) {
   }
   noleax::agent::HookBackend backend;
   noleax::agent::windows::RtlHeapHooks hooks{backend, 32'768U, 16U};
+  auto& create_hook = hooks.create_hook();
   auto& allocate_hook = hooks.allocate_hook();
   auto& reallocate_hook = hooks.reallocate_hook();
   auto& free_hook = hooks.free_hook();
+  auto& destroy_hook = hooks.destroy_hook();
 
   {
+    noleax::agent::windows::RtlCreateHeapHook separate_create{backend, 16U, 0U};
     noleax::agent::windows::RtlAllocateHeapHook separate_allocate{backend, 16U, 0U};
     noleax::agent::windows::RtlReAllocateHeapHook separate_reallocate{backend, 16U, 0U};
     noleax::agent::windows::RtlFreeHeapHook separate_free{backend, 16U, 0U};
+    noleax::agent::windows::RtlDestroyHeapHook separate_destroy{backend, 16U, 0U};
     std::ostringstream discarded;
     bool rejected = false;
     try {
       noleax::agent::windows::RtlHeapTraceWriter invalid_writer{
-          separate_allocate, separate_reallocate, separate_free, discarded, make_file_header()};
+          separate_create,  separate_allocate, separate_reallocate, separate_free,
+          separate_destroy, discarded,         make_file_header()};
     } catch (const std::invalid_argument&) {
       rejected = true;
     }
@@ -168,14 +191,58 @@ int main(int argc, char* argv[]) {
   options.chunk_target_size = 4U * 1024U;
   options.stack_dictionary_capacity = 256U;
   options.trace.max_file_size = 16U * 1024U * 1024U;
-  noleax::agent::windows::RtlHeapTraceWriter writer{allocate_hook, reallocate_hook,    free_hook,
-                                                    output,        make_file_header(), options};
+  noleax::agent::windows::RtlHeapTraceWriter writer{
+      create_hook,  allocate_hook, reallocate_hook,    free_hook,
+      destroy_hook, output,        make_file_header(), options};
 
   const auto installed = hooks.install();
   if (!installed.installed()) {
     return 8;
   }
   writer.begin_capture();
+
+  PVOID first_heap = create(HEAP_GROWABLE, nullptr, 0U, 0U, nullptr, nullptr);
+  PVOID second_heap = create(HEAP_GROWABLE, nullptr, 0U, 0U, nullptr, nullptr);
+  if (first_heap == nullptr || second_heap == nullptr || first_heap == second_heap) {
+    return 91;
+  }
+  PVOID destroyed_with_heap = allocate(first_heap, 0U, kDestroyedWithHeapSize);
+  PVOID freed_before_heap_destroy = allocate(second_heap, 0U, kFreedBeforeHeapDestroySize);
+  const PVOID first_destroy_result = destroy(first_heap);
+  const BOOLEAN second_free_result = free_heap(second_heap, 0U, freed_before_heap_destroy);
+  const PVOID second_destroy_result = destroy(second_heap);
+  if (destroyed_with_heap == nullptr || freed_before_heap_destroy == nullptr ||
+      first_destroy_result != nullptr || second_free_result == FALSE ||
+      second_destroy_result != nullptr) {
+    std::fprintf(stderr, "heap lifecycle setup failed: allocations=%p/%p destroy=%p/%p free=%u\n",
+                 destroyed_with_heap, freed_before_heap_destroy, first_destroy_result,
+                 second_destroy_result, static_cast<unsigned int>(second_free_result));
+    return 92;
+  }
+
+  std::array<std::uintptr_t, static_cast<std::size_t>(kHeapReuseAttempts) + 2U>
+      runtime_heap_handles{};
+  std::size_t runtime_heap_handle_count = 0U;
+  runtime_heap_handles[runtime_heap_handle_count++] = reinterpret_cast<std::uintptr_t>(first_heap);
+  runtime_heap_handles[runtime_heap_handle_count++] = reinterpret_cast<std::uintptr_t>(second_heap);
+  bool runtime_handle_reused = false;
+  for (std::uint32_t attempt = 0U; attempt < kHeapReuseAttempts; ++attempt) {
+    PVOID heap = create(HEAP_GROWABLE, nullptr, 0U, 0U, nullptr, nullptr);
+    if (heap == nullptr) {
+      return 93;
+    }
+    const std::uintptr_t raw_heap = reinterpret_cast<std::uintptr_t>(heap);
+    for (std::size_t index = 0U; index < runtime_heap_handle_count; ++index) {
+      runtime_handle_reused |= runtime_heap_handles[index] == raw_heap;
+    }
+    runtime_heap_handles[runtime_heap_handle_count++] = raw_heap;
+    if (destroy(heap) != nullptr) {
+      return 94;
+    }
+  }
+  if (!runtime_handle_reused) {
+    return 95;
+  }
 
   PVOID matched = allocate(process_heap, 0U, kMatchedSize);
   PVOID outstanding = allocate(process_heap, 0U, kOutstandingSize);
@@ -254,7 +321,18 @@ int main(int argc, char* argv[]) {
     return 15;
   }
   std::vector<noleax::trace::Event> events;
-  noleax::analyzer::GenerationTracker tracker;
+  std::uint64_t heap_destroyed_generation_count = 0U;
+  noleax::analyzer::GenerationCallbacks generation_callbacks;
+  generation_callbacks.on_ended = [&heap_destroyed_generation_count](
+                                      const noleax::analyzer::MemoryGeneration& generation,
+                                      noleax::analyzer::GenerationEndReason reason,
+                                      const noleax::trace::Event&) {
+    if (reason == noleax::analyzer::GenerationEndReason::kHeapDestroyed &&
+        generation.size == kDestroyedWithHeapSize) {
+      ++heap_destroyed_generation_count;
+    }
+  };
+  noleax::analyzer::GenerationTracker tracker{generation_callbacks};
   noleax::analyzer::EventStreamCallbacks callbacks;
   callbacks.on_event = [&events, &tracker](const noleax::trace::Event& event) {
     tracker.observe(event);
@@ -283,7 +361,36 @@ int main(int argc, char* argv[]) {
   bool cross_thread_reallocation = false;
   bool zero_reallocation = false;
   bool preexisting_reallocation = false;
+  bool destroyed_heap_allocation_associated = false;
+  bool second_heap_allocation_associated = false;
+  bool heap_destroy_ids_match = true;
+  bool heap_ids_unique = true;
+  std::uint64_t heap_create_events = 0U;
+  std::uint64_t heap_destroy_events = 0U;
+  std::unordered_map<std::uint64_t, std::vector<noleax::trace::HeapId>> heap_ids_by_handle;
+  std::unordered_map<std::uint64_t, noleax::trace::HeapId> active_heap_ids;
+  std::unordered_set<std::uint64_t> all_heap_ids;
   for (const auto& event : events) {
+    if (const auto* create_event = std::get_if<noleax::trace::HeapCreateEvent>(&event.payload)) {
+      ++heap_create_events;
+      heap_ids_unique &= create_event->heap_id.is_valid() &&
+                         all_heap_ids.insert(create_event->heap_id.value()).second;
+      heap_ids_by_handle[create_event->heap_handle].push_back(create_event->heap_id);
+      active_heap_ids.insert_or_assign(create_event->heap_handle, create_event->heap_id);
+      continue;
+    }
+    if (const auto* destroy_event = std::get_if<noleax::trace::HeapDestroyEvent>(&event.payload)) {
+      ++heap_destroy_events;
+      const auto active = active_heap_ids.find(destroy_event->heap_handle);
+      heap_destroy_ids_match &= event.header.status == noleax::trace::EventStatus::kSuccess &&
+                                destroy_event->raw_result == 0U &&
+                                active != active_heap_ids.end() &&
+                                active->second == destroy_event->heap_id;
+      if (active != active_heap_ids.end()) {
+        active_heap_ids.erase(active);
+      }
+      continue;
+    }
     if (const auto* allocation = std::get_if<noleax::trace::AllocationEvent>(&event.payload)) {
       if (allocation->requested_size == kMatchedSize) {
         matched_id = allocation->allocation_id;
@@ -299,6 +406,18 @@ int main(int argc, char* argv[]) {
         cross_reallocate_old_id = allocation->allocation_id;
       } else if (allocation->requested_size == kZeroOriginalSize) {
         zero_old_id = allocation->allocation_id;
+      } else if (allocation->requested_size == kDestroyedWithHeapSize) {
+        const auto active = active_heap_ids.find(allocation->heap_handle);
+        destroyed_heap_allocation_associated =
+            allocation->heap_handle ==
+                static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(first_heap)) &&
+            active != active_heap_ids.end() && allocation->heap_id == active->second;
+      } else if (allocation->requested_size == kFreedBeforeHeapDestroySize) {
+        const auto active = active_heap_ids.find(allocation->heap_handle);
+        second_heap_allocation_associated =
+            allocation->heap_handle ==
+                static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(second_heap)) &&
+            active != active_heap_ids.end() && allocation->heap_id == active->second;
       }
       continue;
     }
@@ -371,6 +490,21 @@ int main(int argc, char* argv[]) {
       find_api_statistics(writer_result.statistics, noleax::agent::windows::kRtlFreeHeapApiId);
   const auto* reallocate_statistics = find_api_statistics(
       writer_result.statistics, noleax::agent::windows::kRtlReAllocateHeapApiId);
+  const auto* create_statistics =
+      find_api_statistics(writer_result.statistics, noleax::agent::windows::kRtlCreateHeapApiId);
+  const auto* destroy_statistics =
+      find_api_statistics(writer_result.statistics, noleax::agent::windows::kRtlDestroyHeapApiId);
+  bool trace_handle_reused = false;
+  for (const auto& [handle, heap_ids] : heap_ids_by_handle) {
+    static_cast<void>(handle);
+    trace_handle_reused |= heap_ids.size() > 1U;
+  }
+  const bool heap_generations_valid =
+      runtime_handle_reused && trace_handle_reused && heap_ids_unique && heap_destroy_ids_match &&
+      active_heap_ids.empty() && destroyed_heap_allocation_associated &&
+      second_heap_allocation_associated && heap_destroyed_generation_count == 1U &&
+      heap_create_events == static_cast<std::uint64_t>(kHeapReuseAttempts) + 2U &&
+      heap_destroy_events == heap_create_events;
   const bool generations_valid =
       matched_id.has_value() && matched_id->is_valid() && outstanding_id.has_value() &&
       outstanding_id->is_valid() && cross_thread_id.has_value() && cross_thread_id->is_valid() &&
@@ -388,24 +522,30 @@ int main(int argc, char* argv[]) {
       tracker.find_allocation(*in_place_new_id) == nullptr &&
       tracker.find_allocation(*cross_reallocate_new_id) == nullptr &&
       tracker.find_allocation(*zero_new_id) == nullptr &&
-      tracker.find_allocation(*preexisting_new_id) == nullptr;
+      tracker.find_allocation(*preexisting_new_id) == nullptr && tracker.live_count() == 1U;
   const bool statistics_valid =
       allocate_statistics != nullptr && reallocate_statistics != nullptr &&
-      free_statistics != nullptr && allocate_statistics->observed_calls >= 3U &&
-      free_statistics->observed_calls >= 4U && reallocate_statistics->observed_calls >= 5U &&
+      free_statistics != nullptr && create_statistics != nullptr && destroy_statistics != nullptr &&
+      allocate_statistics->observed_calls >= 3U && free_statistics->observed_calls >= 4U &&
+      reallocate_statistics->observed_calls >= 5U &&
+      create_statistics->observed_calls == heap_create_events &&
+      destroy_statistics->observed_calls == heap_destroy_events &&
       allocate_statistics->dropped_events == 0U && reallocate_statistics->dropped_events == 0U &&
-      free_statistics->dropped_events == 0U &&
+      free_statistics->dropped_events == 0U && create_statistics->dropped_events == 0U &&
+      destroy_statistics->dropped_events == 0U &&
       writer_result.statistics.observed_calls == events.size() &&
       parsed.event_count == writer_result.statistics.observed_calls &&
       parsed.statistics == writer_result.statistics && parsed.end_of_trace.has_value() &&
       !parsed.completeness.has(noleax::trace::CompletenessIssue::kEventLoss);
   if (!matched_free || !cross_thread_free || !preexisting_free || !null_free ||
       !in_place_reallocation || !failed_reallocation || !cross_thread_reallocation ||
-      !zero_reallocation || !preexisting_reallocation || !generations_valid || !statistics_valid) {
+      !zero_reallocation || !preexisting_reallocation || !heap_generations_valid ||
+      !generations_valid || !statistics_valid) {
     std::fprintf(stderr,
                  "combined trace failed: events=%llu alloc=%llu realloc=%llu free=%llu "
                  "matched=%u cross=%u preexisting=%u null=%u inplace=%u failed=%u "
-                 "cross-realloc=%u zero=%u preexisting-realloc=%u generations=%u stats=%u\n",
+                 "cross-realloc=%u zero=%u preexisting-realloc=%u heaps=%u generations=%u "
+                 "stats=%u create=%llu destroy=%llu heap-ended=%llu\n",
                  static_cast<unsigned long long>(events.size()),
                  static_cast<unsigned long long>(
                      allocate_statistics == nullptr ? 0U : allocate_statistics->observed_calls),
@@ -417,13 +557,16 @@ int main(int argc, char* argv[]) {
                  null_free ? 1U : 0U, in_place_reallocation ? 1U : 0U,
                  failed_reallocation ? 1U : 0U, cross_thread_reallocation ? 1U : 0U,
                  zero_reallocation ? 1U : 0U, preexisting_reallocation ? 1U : 0U,
-                 generations_valid ? 1U : 0U, statistics_valid ? 1U : 0U);
+                 heap_generations_valid ? 1U : 0U, generations_valid ? 1U : 0U,
+                 statistics_valid ? 1U : 0U, static_cast<unsigned long long>(heap_create_events),
+                 static_cast<unsigned long long>(heap_destroy_events),
+                 static_cast<unsigned long long>(heap_destroyed_generation_count));
     return 16;
   }
 
   std::printf(
       "status=ok events=%llu alloc-free=1 realloc=5 cross-thread=1 preexisting=1 "
-      "unmatched=1 live=1\n",
+      "unmatched=1 live=1 heap-generations=1 handle-reuse=1\n",
       static_cast<unsigned long long>(events.size()));
   return 0;
 }

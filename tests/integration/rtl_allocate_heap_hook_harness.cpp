@@ -17,25 +17,32 @@
 namespace {
 
 using RtlAllocateHeapFunction = PVOID(NTAPI*)(PVOID heap, ULONG flags, SIZE_T size);
+using RtlCreateHeapFunction = PVOID(NTAPI*)(ULONG flags, PVOID heap_base, SIZE_T reserve_size,
+                                            SIZE_T commit_size, PVOID lock, PVOID parameters);
 using RtlReAllocateHeapFunction = PVOID(NTAPI*)(PVOID heap, ULONG flags, PVOID address,
                                                 SIZE_T size);
 using RtlFreeHeapFunction = BOOLEAN(NTAPI*)(PVOID heap, ULONG flags, PVOID address);
+using RtlDestroyHeapFunction = PVOID(NTAPI*)(PVOID heap);
 
 constexpr std::size_t kHarnessQueueCapacity = 256U;
 
 noleax::agent::HookBackend* backend = nullptr;
 noleax::agent::windows::RtlHeapHooks* hook_set = nullptr;
 noleax::agent::windows::RtlHeapEventQueue* event_queue = nullptr;
+noleax::agent::windows::RtlCreateHeapHook* create_hook = nullptr;
 noleax::agent::windows::RtlAllocateHeapHook* allocate_hook = nullptr;
 noleax::agent::windows::RtlReAllocateHeapHook* reallocate_hook = nullptr;
 noleax::agent::windows::RtlFreeHeapHook* free_hook = nullptr;
+noleax::agent::windows::RtlDestroyHeapHook* destroy_hook = nullptr;
 
 void destroy_harness() noexcept {
   delete hook_set;
   hook_set = nullptr;
+  destroy_hook = nullptr;
   free_hook = nullptr;
   reallocate_hook = nullptr;
   allocate_hook = nullptr;
+  create_hook = nullptr;
   event_queue = nullptr;
   delete backend;
   backend = nullptr;
@@ -48,9 +55,11 @@ void destroy_harness() noexcept {
 
 [[nodiscard]] std::uint32_t verify_event_queue() noexcept {
   std::uint64_t dequeued = 0U;
+  std::uint64_t create_events = 0U;
   std::uint64_t allocate_events = 0U;
   std::uint64_t reallocate_events = 0U;
   std::uint64_t free_events = 0U;
+  std::uint64_t destroy_events = 0U;
   std::uint64_t captured_stacks = 0U;
   noleax::agent::windows::RtlHeapEvent event;
   while (event_queue->try_pop(event)) {
@@ -68,21 +77,37 @@ void destroy_harness() noexcept {
     if (exceptional != (event.exception_status != 0U)) {
       return 3U;
     }
-    if (event.operation == noleax::agent::windows::RtlHeapEventOperation::kAllocate) {
+    if (event.operation == noleax::agent::windows::RtlHeapEventOperation::kCreate) {
+      ++create_events;
+      if (succeeded != (event.result_address != 0U)) {
+        return 4U;
+      }
+    } else if (event.operation == noleax::agent::windows::RtlHeapEventOperation::kAllocate) {
       ++allocate_events;
       if (succeeded != (event.result_address != 0U) || event.address != 0U ||
-          event.raw_result != 0U) {
+          event.raw_result != 0U || event.auxiliary_address != 0U) {
         return 4U;
       }
     } else if (event.operation == noleax::agent::windows::RtlHeapEventOperation::kReallocate) {
       ++reallocate_events;
-      if (succeeded != (event.result_address != 0U) || event.raw_result != 0U) {
+      if (succeeded != (event.result_address != 0U) || event.raw_result != 0U ||
+          event.auxiliary_address != 0U) {
         return 5U;
       }
     } else if (event.operation == noleax::agent::windows::RtlHeapEventOperation::kFree) {
       ++free_events;
       if (succeeded != (event.raw_result != 0U) || event.requested_size != 0U ||
-          event.result_address != 0U) {
+          event.result_address != 0U || event.auxiliary_address != 0U) {
+        return 6U;
+      }
+    } else if (event.operation == noleax::agent::windows::RtlHeapEventOperation::kDestroy) {
+      ++destroy_events;
+      if (event.requested_size != 0U || event.result_address != 0U || event.address != 0U ||
+          event.auxiliary_address != 0U || event.flags != 0U ||
+          (event.status == noleax::agent::windows::RtlHeapEventStatus::kSuccess &&
+           event.raw_result != 0U) ||
+          (event.status == noleax::agent::windows::RtlHeapEventStatus::kFailure &&
+           event.raw_result == 0U)) {
         return 6U;
       }
     } else {
@@ -106,44 +131,57 @@ void destroy_harness() noexcept {
     }
   }
 
+  const std::uint64_t create_dropped = create_hook->dropped_event_count();
   const std::uint64_t allocate_dropped = allocate_hook->dropped_event_count();
   const std::uint64_t reallocate_dropped = reallocate_hook->dropped_event_count();
   const std::uint64_t free_dropped = free_hook->dropped_event_count();
-  const std::uint64_t total_dropped = allocate_dropped + reallocate_dropped + free_dropped;
-  const std::uint64_t total_recordable = allocate_hook->recordable_call_count() +
-                                         reallocate_hook->recordable_call_count() +
-                                         free_hook->recordable_call_count();
-  if (allocate_hook->event_queue_capacity() != kHarnessQueueCapacity ||
+  const std::uint64_t destroy_dropped = destroy_hook->dropped_event_count();
+  const std::uint64_t total_dropped =
+      create_dropped + allocate_dropped + reallocate_dropped + free_dropped + destroy_dropped;
+  const std::uint64_t total_recordable =
+      create_hook->recordable_call_count() + allocate_hook->recordable_call_count() +
+      reallocate_hook->recordable_call_count() + free_hook->recordable_call_count() +
+      destroy_hook->recordable_call_count();
+  if (create_hook->event_queue_capacity() != kHarnessQueueCapacity ||
+      allocate_hook->event_queue_capacity() != kHarnessQueueCapacity ||
       reallocate_hook->event_queue_capacity() != kHarnessQueueCapacity ||
       free_hook->event_queue_capacity() != kHarnessQueueCapacity ||
+      destroy_hook->event_queue_capacity() != kHarnessQueueCapacity ||
+      create_hook->maximum_stack_depth() != noleax::agent::windows::kMaximumCapturedStackDepth ||
       allocate_hook->maximum_stack_depth() != noleax::agent::windows::kMaximumCapturedStackDepth ||
       reallocate_hook->maximum_stack_depth() !=
           noleax::agent::windows::kMaximumCapturedStackDepth ||
       free_hook->maximum_stack_depth() != noleax::agent::windows::kMaximumCapturedStackDepth ||
-      total_dropped == 0U || event_queue->dropped_count() != total_dropped ||
+      destroy_hook->maximum_stack_depth() != noleax::agent::windows::kMaximumCapturedStackDepth ||
+      total_dropped == 0U || event_queue->dropped_count() != total_dropped || create_events == 0U ||
       allocate_events == 0U || reallocate_events == 0U || free_events == 0U ||
-      captured_stacks == 0U) {
+      destroy_events == 0U || captured_stacks == 0U) {
     return 10U;
   }
   if (dequeued > total_recordable || total_dropped != total_recordable - dequeued) {
     return 11U;
   }
-  if (!counters_reconcile(allocate_hook->successful_call_count(),
+  if (!counters_reconcile(create_hook->successful_call_count(), create_hook->failed_call_count(),
+                          create_hook->recordable_call_count()) ||
+      !counters_reconcile(allocate_hook->successful_call_count(),
                           allocate_hook->failed_call_count(),
                           allocate_hook->recordable_call_count()) ||
       !counters_reconcile(reallocate_hook->successful_call_count(),
                           reallocate_hook->failed_call_count(),
                           reallocate_hook->recordable_call_count()) ||
       !counters_reconcile(free_hook->successful_call_count(), free_hook->failed_call_count(),
-                          free_hook->recordable_call_count())) {
+                          free_hook->recordable_call_count()) ||
+      !counters_reconcile(destroy_hook->successful_call_count(), destroy_hook->failed_call_count(),
+                          destroy_hook->recordable_call_count())) {
     return 12U;
   }
   return 0U;
 }
 
 [[nodiscard]] std::uint32_t stop_harness(bool verify_queue = true) noexcept {
-  if (hook_set == nullptr || allocate_hook == nullptr || reallocate_hook == nullptr ||
-      free_hook == nullptr || event_queue == nullptr || backend == nullptr) {
+  if (hook_set == nullptr || create_hook == nullptr || allocate_hook == nullptr ||
+      reallocate_hook == nullptr || free_hook == nullptr || destroy_hook == nullptr ||
+      event_queue == nullptr || backend == nullptr) {
     return 1U;
   }
   if (!hook_set->uninstall()) {
@@ -158,14 +196,78 @@ void destroy_harness() noexcept {
 }
 
 [[nodiscard]] std::uint32_t verify_guard_behavior() noexcept {
+  const auto create = reinterpret_cast<RtlCreateHeapFunction>(create_hook->target_address());
   const auto allocate = reinterpret_cast<RtlAllocateHeapFunction>(allocate_hook->target_address());
   const auto reallocate =
       reinterpret_cast<RtlReAllocateHeapFunction>(reallocate_hook->target_address());
   const auto free_heap = reinterpret_cast<RtlFreeHeapFunction>(free_hook->target_address());
+  const auto destroy = reinterpret_cast<RtlDestroyHeapFunction>(destroy_hook->target_address());
   const HANDLE process_heap = GetProcessHeap();
-  if (allocate == nullptr || reallocate == nullptr || free_heap == nullptr ||
-      process_heap == nullptr) {
+  if (create == nullptr || allocate == nullptr || reallocate == nullptr || free_heap == nullptr ||
+      destroy == nullptr || process_heap == nullptr) {
     return 1U;
+  }
+
+  const std::uint64_t create_recordable_before = create_hook->recordable_call_count();
+  const std::uint64_t destroy_recordable_before = destroy_hook->recordable_call_count();
+  PVOID outermost_heap = create(HEAP_GROWABLE, nullptr, 0U, 0U, nullptr, nullptr);
+  if (outermost_heap == nullptr ||
+      create_hook->recordable_call_count() <= create_recordable_before ||
+      noleax::agent::current_hook_depth() != 0U || destroy(outermost_heap) != nullptr ||
+      destroy_hook->recordable_call_count() <= destroy_recordable_before) {
+    return 2U;
+  }
+
+  const std::uint64_t create_recursive_before = create_hook->recursive_call_count();
+  const std::uint64_t create_recordable_before_recursion = create_hook->recordable_call_count();
+  PVOID recursive_heap = nullptr;
+  {
+    const noleax::agent::HookInvocationGuard simulated_outer_hook;
+    recursive_heap = create(HEAP_GROWABLE, nullptr, 0U, 0U, nullptr, nullptr);
+  }
+  if (recursive_heap == nullptr) {
+    return 3U;
+  }
+  const std::uint64_t destroy_recursive_before = destroy_hook->recursive_call_count();
+  const std::uint64_t destroy_recordable_before_recursion = destroy_hook->recordable_call_count();
+  PVOID recursive_destroy_result = nullptr;
+  {
+    const noleax::agent::HookInvocationGuard simulated_outer_hook;
+    recursive_destroy_result = destroy(recursive_heap);
+  }
+  if (recursive_heap == nullptr || recursive_destroy_result != nullptr ||
+      create_hook->recursive_call_count() <= create_recursive_before ||
+      create_hook->recordable_call_count() != create_recordable_before_recursion ||
+      destroy_hook->recursive_call_count() <= destroy_recursive_before ||
+      destroy_hook->recordable_call_count() != destroy_recordable_before_recursion ||
+      noleax::agent::current_hook_depth() != 0U) {
+    return 3U;
+  }
+
+  const std::uint64_t create_internal_before = create_hook->internal_call_count();
+  const std::uint64_t create_recordable_before_internal = create_hook->recordable_call_count();
+  PVOID internal_heap = nullptr;
+  {
+    const noleax::agent::InternalThreadScope internal_thread;
+    internal_heap = create(HEAP_GROWABLE, nullptr, 0U, 0U, nullptr, nullptr);
+  }
+  if (internal_heap == nullptr) {
+    return 4U;
+  }
+  const std::uint64_t destroy_internal_before = destroy_hook->internal_call_count();
+  const std::uint64_t destroy_recordable_before_internal = destroy_hook->recordable_call_count();
+  PVOID internal_destroy_result = nullptr;
+  {
+    const noleax::agent::InternalThreadScope internal_thread;
+    internal_destroy_result = destroy(internal_heap);
+  }
+  if (internal_heap == nullptr || internal_destroy_result != nullptr ||
+      create_hook->internal_call_count() <= create_internal_before ||
+      create_hook->recordable_call_count() != create_recordable_before_internal ||
+      destroy_hook->internal_call_count() <= destroy_internal_before ||
+      destroy_hook->recordable_call_count() != destroy_recordable_before_internal ||
+      noleax::agent::current_thread_is_internal()) {
+    return 4U;
   }
 
   const std::uint64_t allocate_recordable_before = allocate_hook->recordable_call_count();
@@ -176,7 +278,7 @@ void destroy_harness() noexcept {
       noleax::agent::current_hook_depth() != 0U ||
       free_heap(process_heap, 0U, outermost) == FALSE ||
       free_hook->recordable_call_count() <= free_recordable_before) {
-    return 2U;
+    return 5U;
   }
 
   PVOID outermost_reallocation = allocate(process_heap, 0U, 56U);
@@ -186,7 +288,7 @@ void destroy_harness() noexcept {
       reallocate_hook->recordable_call_count() <= reallocate_recordable_before ||
       noleax::agent::current_hook_depth() != 0U ||
       free_heap(process_heap, 0U, outermost_reallocation) == FALSE) {
-    return 3U;
+    return 6U;
   }
 
   const std::uint64_t allocate_recursive_before = allocate_hook->recursive_call_count();
@@ -201,7 +303,7 @@ void destroy_harness() noexcept {
       allocate_hook->recordable_call_count() != allocate_recordable_before_recursion ||
       noleax::agent::current_hook_depth() != 0U ||
       free_heap(process_heap, 0U, recursive_allocation) == FALSE) {
-    return 4U;
+    return 7U;
   }
 
   const std::uint64_t allocate_internal_before = allocate_hook->internal_call_count();
@@ -216,7 +318,7 @@ void destroy_harness() noexcept {
       allocate_hook->recordable_call_count() != allocate_recordable_before_internal ||
       noleax::agent::current_thread_is_internal() ||
       free_heap(process_heap, 0U, internal_allocation) == FALSE) {
-    return 5U;
+    return 8U;
   }
 
   PVOID recursive_reallocation = allocate(process_heap, 0U, 72U);
@@ -233,7 +335,7 @@ void destroy_harness() noexcept {
       reallocate_hook->recordable_call_count() != reallocate_recordable_before_recursion ||
       noleax::agent::current_hook_depth() != 0U ||
       free_heap(process_heap, 0U, recursive_reallocation) == FALSE) {
-    return 6U;
+    return 9U;
   }
 
   PVOID internal_reallocation = allocate(process_heap, 0U, 80U);
@@ -250,7 +352,7 @@ void destroy_harness() noexcept {
       reallocate_hook->recordable_call_count() != reallocate_recordable_before_internal ||
       noleax::agent::current_thread_is_internal() ||
       free_heap(process_heap, 0U, internal_reallocation) == FALSE) {
-    return 7U;
+    return 10U;
   }
 
   PVOID recursive_free_allocation = allocate(process_heap, 0U, 112U);
@@ -265,7 +367,7 @@ void destroy_harness() noexcept {
       free_hook->recursive_call_count() <= free_recursive_before ||
       free_hook->recordable_call_count() != free_recordable_before_recursion ||
       noleax::agent::current_hook_depth() != 0U) {
-    return 8U;
+    return 11U;
   }
 
   PVOID internal_free_allocation = allocate(process_heap, 0U, 128U);
@@ -280,7 +382,7 @@ void destroy_harness() noexcept {
       free_hook->internal_call_count() <= free_internal_before ||
       free_hook->recordable_call_count() != free_recordable_before_internal ||
       noleax::agent::current_thread_is_internal()) {
-    return 9U;
+    return 12U;
   }
   return 0U;
 }
@@ -301,17 +403,26 @@ NOLEAX_HOOK_HARNESS_EXPORT std::uint32_t noleax_test_rtl_allocate_heap_hook_inst
     hook_set = new noleax::agent::windows::RtlHeapHooks{
         *backend, kHarnessQueueCapacity, noleax::agent::windows::kMaximumCapturedStackDepth};
     event_queue = &hook_set->event_queue();
+    create_hook = &hook_set->create_hook();
     allocate_hook = &hook_set->allocate_hook();
     reallocate_hook = &hook_set->reallocate_hook();
     free_hook = &hook_set->free_hook();
+    destroy_hook = &hook_set->destroy_hook();
 
     const auto result = hook_set->install();
     if (!result.installed()) {
-      std::uint32_t status = static_cast<std::uint32_t>(result.allocate.status);
-      if (result.allocate.installed()) {
-        status = result.reallocate.installed()
-                     ? static_cast<std::uint32_t>(result.free.status) + 40U
-                     : static_cast<std::uint32_t>(result.reallocate.status) + 20U;
+      std::uint32_t status = static_cast<std::uint32_t>(result.create.status);
+      if (result.create.installed()) {
+        status = static_cast<std::uint32_t>(result.allocate.status) + 20U;
+        if (result.allocate.installed()) {
+          status = static_cast<std::uint32_t>(result.reallocate.status) + 40U;
+          if (result.reallocate.installed()) {
+            status = static_cast<std::uint32_t>(result.free.status) + 60U;
+            if (result.free.installed()) {
+              status = static_cast<std::uint32_t>(result.destroy.status) + 80U;
+            }
+          }
+        }
       }
       static_cast<void>(backend->shutdown());
       destroy_harness();

@@ -154,6 +154,14 @@ if(WIN32)
   )
   noleax_set_project_warnings(noleax-rtl-reallocate-heap-quiescence-test)
 
+  add_executable(noleax-rtl-heap-lifecycle-quiescence-test
+    integration/rtl_heap_lifecycle_quiescence_test.cpp
+  )
+  target_link_libraries(noleax-rtl-heap-lifecycle-quiescence-test PRIVATE
+    noleax::hook-backend
+  )
+  noleax_set_project_warnings(noleax-rtl-heap-lifecycle-quiescence-test)
+
   if(MSVC)
     add_executable(noleax-rtl-free-heap-contract-test
       integration/rtl_free_heap_contract_test.cpp
@@ -226,6 +234,42 @@ if(WIN32)
       RUN_SERIAL TRUE
       TIMEOUT 180
     )
+
+    add_executable(noleax-rtl-heap-lifecycle-contract-test
+      integration/rtl_heap_lifecycle_contract_test.cpp
+    )
+    target_link_libraries(noleax-rtl-heap-lifecycle-contract-test PRIVATE
+      noleax::hook-backend
+    )
+    noleax_set_project_warnings(noleax-rtl-heap-lifecycle-contract-test)
+
+    add_test(NAME hook.rtl-heap-lifecycle-contract
+      COMMAND noleax-rtl-heap-lifecycle-contract-test
+    )
+    set_tests_properties(hook.rtl-heap-lifecycle-contract PROPERTIES
+      LABELS "hook;windows;rtl-heap;create;destroy;contract;generation;seh"
+      PASS_REGULAR_EXPRESSION "^status=ok create=4 destroy=2 exception-mode=matched "
+      RUN_SERIAL TRUE
+      TIMEOUT 120
+    )
+
+    add_executable(noleax-rtl-destroy-heap-isolation-test
+      integration/rtl_destroy_heap_isolation_test.cpp
+    )
+    target_link_libraries(noleax-rtl-destroy-heap-isolation-test PRIVATE
+      noleax::hook-backend
+    )
+    noleax_set_project_warnings(noleax-rtl-destroy-heap-isolation-test)
+
+    add_test(NAME hook.rtl-destroy-heap-isolation
+      COMMAND noleax-rtl-destroy-heap-isolation-test
+    )
+    set_tests_properties(hook.rtl-destroy-heap-isolation PROPERTIES
+      LABELS "hook;windows;rtl-heap;destroy;contract;fail-fast;isolated"
+      PASS_REGULAR_EXPRESSION "^status=ok cases=3 exits=0x[0-9a-f]+,0x[0-9a-f]+,0x[0-9a-f]+ baseline=hooked"
+      RUN_SERIAL TRUE
+      TIMEOUT 180
+    )
   endif()
 
   add_test(NAME hook.rtl-allocate-heap-quiescence-race
@@ -249,6 +293,15 @@ if(WIN32)
     PASS_REGULAR_EXPRESSION "^status=ok "
     RUN_SERIAL TRUE
     TIMEOUT 60
+  )
+  add_test(NAME hook.rtl-heap-lifecycle-quiescence-race
+    COMMAND noleax-rtl-heap-lifecycle-quiescence-test
+  )
+  set_tests_properties(hook.rtl-heap-lifecycle-quiescence-race PROPERTIES
+    LABELS "hook;windows;rtl-heap;create;destroy;quiescence;race;stress"
+    PASS_REGULAR_EXPRESSION "^status=ok "
+    RUN_SERIAL TRUE
+    TIMEOUT 120
   )
   set_tests_properties(hook.rtl-allocate-heap-quiescence-race PROPERTIES
     LABELS "hook;windows;rtl-heap;quiescence;race;stress"
@@ -450,10 +503,13 @@ if(WIN32)
         noleax-rtl-allocate-heap-quiescence-test
         noleax-rtl-free-heap-quiescence-test
         noleax-rtl-reallocate-heap-quiescence-test
+        noleax-rtl-heap-lifecycle-quiescence-test
         noleax-rtl-free-heap-contract-test
         noleax-rtl-free-heap-fail-fast-test
         noleax-rtl-reallocate-heap-contract-test
         noleax-rtl-reallocate-heap-fail-fast-test
+        noleax-rtl-heap-lifecycle-contract-test
+        noleax-rtl-destroy-heap-isolation-test
         noleax-rtl-allocate-heap-exception-test
         noleax-rtl-reallocate-heap-exception-test)
       add_test(NAME hook.windows-mitigations.${mitigation_target}
