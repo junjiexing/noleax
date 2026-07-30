@@ -1,7 +1,7 @@
 # Windows replacement quiescence
 
-> 状态：P4.8 Windows x64 完成
-> 范围：`RtlAllocateHeap` 停止记录、并发 revert、trampoline 回收和进程级代码生命周期
+> 状态：P4.8 Windows x64 完成；P5.1 已对 allocate/free 分别复用并通过门禁
+> 范围：`RtlAllocateHeap`/`RtlFreeHeap` 停止记录、并发 revert、trampoline 回收和代码生命周期
 
 ## 1. 要解决的窗口
 
@@ -22,7 +22,7 @@ revert，再等 replacement counter”仍不安全。
 |---|---|
 | `record` | 调用 trampoline，执行 guard、计数、栈捕获和 queue publish |
 | `original` | 只调用 trampoline，不再产生事件 |
-| `target` | 调用已恢复的 `RtlAllocateHeap` target，不访问 session、queue、guard 或 trampoline |
+| `target` | 调用对应的已恢复 target，不访问 session、queue、guard 或 trampoline |
 
 正常停止严格按以下顺序执行：
 
@@ -57,6 +57,10 @@ replacement 未在有界等待内退出，lease 不释放，Hoox 不 flush。若
 original trampoline、event queue、guard runtime 引用和 backend lease 都转为进程级保留，不能为了
 避免泄漏而释放仍可能被线程使用的状态。
 
+P5.1 组合对象的 event queue 由独立所有权持有。若 allocate/free 任一 hook 未能 quiesce，协调器会
+连同 hook state 一起保留共享 queue，避免只保留单 hook state、却随后析构其外部 queue 的
+use-after-free。
+
 writer 只有在 hook 不再 installed 且不再 teardown-pending 时才接受 `finish()`，所以 final drain
 之后不会再出现 queue producer。
 
@@ -66,10 +70,10 @@ writer 只有在 hook 不再 installed 且不再 teardown-pending 时才接受 `
 replacement 的模块固定到进程退出。即使线程已取到旧跳转但尚未被入口计数覆盖，replacement 代码也
 不会被 `FreeLibrary` 解除映射；该线程随后读取 `target` 路由并走已恢复入口。
 
-因此 P4 原型有两个刻意限制：
+因此当前 adapter 有两个刻意限制：
 
 - `FreeLibrary` 可以释放调用方引用，但包含 replacement 的 DLL 仍驻留到进程退出；
-- `RtlAllocateHeap` adapter 每进程只允许一次成功安装，避免旧跳转被误归入下一捕获 generation。
+- allocate/free adapter 各自每进程只允许一次成功安装，避免旧跳转被误归入下一捕获 generation。
 
 真正可重复安装并可解除模块 pin 的方案需要可证明覆盖所有线程 PC 的 patch rendezvous，留给后续
 注入生命周期设计。当前接口不会把“停止记录”误报为“DLL 已可解除映射”。
@@ -84,8 +88,8 @@ Windows 代码更新临界区：
 - 检查 `SuspendThread`/`ResumeThread` 返回值；
 - 使用 Hoox 已有的 VirtualAlloc-backed metal array，patch apply 临界区不走 process heap。
 
-无法打开或暂停的受保护线程仍是当前边界；P4 不支持 protected process。运行中安装的线程 PC 重定位
-也不在 P4.8 范围内，本阶段只在 hook 激活后创建压力线程并验证并发停止。
+无法打开或暂停的受保护线程仍是当前边界；当前版本不支持 protected process。运行中安装的线程 PC
+重定位也不在本阶段范围内，只在 hook 激活后创建压力线程并验证并发停止。
 
 ## 7. 自动验收
 
@@ -93,16 +97,15 @@ Windows 代码更新临界区：
 
 - held entry、路由快照和有界 quiescence 的确定性单测；
 - lifetime lease 阻止 uninstall flush 和 shutdown deinit；
-- 8 个持续 allocator worker 与线程创建/销毁 churn 同时执行 `uninstall(0)` 和后续 flush；
+- allocate/free 各自用 8 个持续 worker 与线程创建/销毁 churn 同时执行 `uninstall(0)` 和后续 flush；
 - 停止完成后继续执行至少 20,000 次分配，确认记录计数不再变化；
 - queue 的 `recordable = dequeued + dropped` 守恒；
 - 成功 stop 和 `FreeLibrary` 后模块仍被 pin，导出代码仍可执行；
 - 原有 writer final drain、MD/MT ABI 差分和全量回归。
 
-Debug 和 Release 全量均为 175/175 通过。加入 Windows RWX 暂停 overlay 后，Debug 并发 race
-（含 thread churn）连续 100 次、Release 并发 race 连续 100 次通过；overlay 前同一 Debug 测试在
-第 17 次出现崩溃。Release module-retention 连续 30 次、passthrough label 连续 20 轮、writer 四种
-模式各连续 20 轮也均通过。
+P5.1 Debug/Release 全量均为 182/182，hardened 为 192/192。加入 Windows RWX 暂停 overlay 后，
+allocate/free 并发 race（含 thread churn）各连续 100 次通过；overlay 前原 allocate Debug 测试在第
+17 次出现崩溃。Release module-retention、passthrough、writer 与组合生命周期测试也全部通过。
 
 Release x64 object 的 replacement 反汇编复核确认，正常路径只调用 original/恢复后的 target、
 固定 TEB 槽 guard、`GetLastError`/`SetLastError`、`QueryPerformanceCounter`、
@@ -128,6 +131,6 @@ checksum=0x7caf2ccfa0606232
 . .\scripts\Enter-NoleaxDevShell.ps1
 cmake --build --preset windows-x64-debug
 ctest --preset windows-x64-debug -R "replacement lifecycle|lifetime lease|quiescence|module-retention" --output-on-failure
-ctest --preset windows-x64-debug -R "hook.rtl-allocate-heap-quiescence-race" --repeat until-fail:100 --output-on-failure
-ctest --preset windows-x64-release -R "hook.rtl-allocate-heap-quiescence-race" --repeat until-fail:100 --output-on-failure
+ctest --preset windows-x64-debug -R "hook.rtl-(allocate|free)-heap-quiescence-race" --repeat until-fail:100 --output-on-failure
+ctest --preset windows-x64-release -R "hook.rtl-(allocate|free)-heap-quiescence-race" --repeat until-fail:100 --output-on-failure
 ~~~

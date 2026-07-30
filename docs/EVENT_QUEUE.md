@@ -1,7 +1,7 @@
 # Preallocated MPSC Event Queue
 
-> 状态：P4.7 Windows x64 完成
-> 范围：`RtlAllocateHeap` 原始事件和栈入队、overflow 统计及后台 writer 消费边界
+> 状态：P5.1 Windows x64 alloc/free 共享队列完成
+> 范围：`RtlAllocateHeap`/`RtlFreeHeap` 原始事件、overflow 归因及后台 writer 消费边界
 
 ## 1. 合同
 
@@ -34,8 +34,9 @@ consumer 只按 reservation 顺序读取。它 acquire-load slot sequence，复�
 把 slot 推进到下一 generation。较晚的 producer 即使先写完，也不能越过尚未 publish 的早期 slot，
 因此队列输出顺序与 reservation 顺序一致。
 
-`reset_quiescent` 只允许在没有 producer/consumer 时调用。adapter 每次安装前重置队列；卸载后才允许
-最终 drain。P4.8 已由 replacement lifecycle 保证 reset、final drain 和对象销毁前没有 producer；
+`reset_quiescent` 只允许在没有 producer/consumer 时调用。独立 hook 拥有的 queue 在安装前重置；
+P5.1 组合对象拥有的共享 queue 随对象新建，且当前 adapter 每进程只允许一次成功安装。卸载后才允许
+最终 drain。replacement lifecycle 保证 reset、final drain 和对象销毁前没有 producer；
 详见 [HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)。
 
 ## 3. Overflow 与 Loss
@@ -43,8 +44,8 @@ consumer 只按 reservation 顺序读取。它 acquire-load slot sequence，复�
 队列满时，当前 event 不获得 reservation 和 `queue_sequence`，生产者立即返回 false，并以饱和 CAS
 增加 64-bit dropped counter。计数到 `UINT64_MAX` 后保持饱和，不允许回绕为零。
 
-单 consumer 可以通过原子 exchange 获取一个精确的 dropped interval count。P4.7 writer 把非零
-值转换为：
+底层 queue 保留总 dropped counter；P5.1 的 allocate/free hook 还分别维护饱和 dropped counter，
+使单 consumer 能把 overflow 归因到 api_id。writer 把两个 API 的非零 interval count 汇总为：
 
 ~~~text
 LossReason   = queue_full
@@ -57,15 +58,17 @@ tick_range = absent
 被拒绝的 event 没有 reservation，因此不能编造精确 sequence/tick range。任何 queue Loss 都设置
 `event_loss`，使 outstanding 分析保持 incomplete。
 
-## 4. RtlAllocateHeap 原始事件
+## 4. RtlHeap 原始事件
 
-P4.6 的 in-process event 固定为 576 bytes，包含：
+P5.1 的统一 in-process event 固定为 600 bytes，包含：
 
 - queue sequence；
 - QueryPerformanceCounter ticks；
 - thread id；
-- heap handle、flags、requested size；
-- result address 和 success/failure；
+- allocate/free operation；
+- heap handle、flags、requested size/address；
+- result address、raw BOOLEAN result 和 success/failure/exception；
+- exception NTSTATUS；
 - 最多 64 帧、520-byte 的定长 `CapturedStack`。
 
 只有 guard 分类为 outermost 的调用会在 original 返回后尝试入队；recursive 和 internal-thread 调用
@@ -74,9 +77,9 @@ replacement 在 original 返回后立即保存 `LastError`，完成计时、捕�
 Windows API 与队列操作不会改变目标可观察到的错误状态。栈状态和失败合同见
 [STACK_CAPTURE.md](STACK_CAPTURE.md)。
 
-默认 adapter 容量为 16,384 个 event。包含 per-slot sequence 后预分配约 9 MiB；测试 harness 显式
-使用 256 个 slot 以稳定制造 overflow。P4.7 writer 只消费该固定队列，不在 hook 热路径扩容；未来
-产品配置仍需由 agent 根据 byte budget 推导容量。
+默认 adapter 容量为 16,384 个 event。包含 per-slot sequence 和对齐后预分配约 9.5 MiB；测试
+harness 显式使用 256 个 slot 以稳定制造 overflow。writer 只消费该固定队列，不在 hook 热路径
+扩容；未来产品配置仍需由 agent 根据 byte budget 推导容量。
 
 ## 5. 验证
 
@@ -87,12 +90,12 @@ Windows API 与队列操作不会改变目标可观察到的错误状态。栈�
 - 8 producer 固定满队列，验证每次失败均进入 dropped count；
 - 8 producer 与单 consumer 同时运行，验证 publish/acquire 和 reuse。
 
-真实 hook harness 在卸载后 drain 队列，逐项检查 sequence、ticks、thread、status/result 和 stack
-编码一致性，并要求：
+真实组合 hook harness 在卸载后 drain 队列，逐项检查 sequence、ticks、thread、operation、
+status/result 和 stack 编码一致性，并要求：
 
 ~~~text
-recordable_call_count == dequeued_event_count + dropped_event_count
-dropped_event_count > 0
+allocate_recordable + free_recordable == dequeued + allocate_dropped + free_dropped
+allocate_dropped + free_dropped > 0
 ~~~
 
 同一 MD/MT workload 的 hooked/unhooked 摘要仍须逐字节一致。
@@ -101,6 +104,6 @@ dropped_event_count > 0
 . .\scripts\Enter-NoleaxDevShell.ps1
 cmake --build --preset windows-x64-debug
 cmake --build --preset windows-x64-release
-ctest --preset windows-x64-debug -R "bounded MPSC|rtl-allocate-heap-passthrough" --output-on-failure
-ctest --preset windows-x64-release -R "bounded MPSC|rtl-allocate-heap-passthrough" --output-on-failure
+ctest --preset windows-x64-debug -R "bounded MPSC|rtl-.*heap|rtl-allocate-heap-passthrough" --output-on-failure
+ctest --preset windows-x64-release -R "bounded MPSC|rtl-.*heap|rtl-allocate-heap-passthrough" --output-on-failure
 ~~~

@@ -110,6 +110,26 @@ if(WIN32)
   )
   noleax_set_project_warnings(noleax-rtl-allocate-heap-trace-writer-test)
 
+  add_executable(noleax-rtl-heap-trace-writer-test
+    integration/rtl_heap_trace_writer_test.cpp
+  )
+  target_link_libraries(noleax-rtl-heap-trace-writer-test PRIVATE
+    noleax::hook-backend
+    noleax::analyzer
+  )
+  noleax_set_project_warnings(noleax-rtl-heap-trace-writer-test)
+
+  add_test(NAME hook.rtl-heap-trace-writer-lifecycle
+    COMMAND noleax-rtl-heap-trace-writer-test
+      "$<TARGET_FILE_DIR:noleax-rtl-heap-trace-writer-test>/rtl-heap-lifecycle.nlx"
+  )
+  set_tests_properties(hook.rtl-heap-trace-writer-lifecycle PROPERTIES
+    LABELS "hook;trace;writer;windows;rtl-heap;free;lifecycle;cross-thread"
+    PASS_REGULAR_EXPRESSION "^status=ok events=[0-9]+ matched=1 cross-thread=1 "
+    RUN_SERIAL TRUE
+    TIMEOUT 120
+  )
+
   add_executable(noleax-rtl-allocate-heap-quiescence-test
     integration/rtl_allocate_heap_quiescence_test.cpp
   )
@@ -118,8 +138,64 @@ if(WIN32)
   )
   noleax_set_project_warnings(noleax-rtl-allocate-heap-quiescence-test)
 
+  add_executable(noleax-rtl-free-heap-quiescence-test
+    integration/rtl_free_heap_quiescence_test.cpp
+  )
+  target_link_libraries(noleax-rtl-free-heap-quiescence-test PRIVATE
+    noleax::hook-backend
+  )
+  noleax_set_project_warnings(noleax-rtl-free-heap-quiescence-test)
+
+  if(MSVC)
+    add_executable(noleax-rtl-free-heap-contract-test
+      integration/rtl_free_heap_contract_test.cpp
+    )
+    target_link_libraries(noleax-rtl-free-heap-contract-test PRIVATE
+      noleax::hook-backend
+    )
+    noleax_set_project_warnings(noleax-rtl-free-heap-contract-test)
+
+    add_test(NAME hook.rtl-free-heap-contract
+      COMMAND noleax-rtl-free-heap-contract-test
+    )
+    set_tests_properties(hook.rtl-free-heap-contract PROPERTIES
+      LABELS "hook;windows;rtl-heap;free;contract"
+      PASS_REGULAR_EXPRESSION "^status=ok cases=4 outermost=4 recursive=1 internal=1 "
+      RUN_SERIAL TRUE
+      TIMEOUT 60
+    )
+
+    add_executable(noleax-rtl-free-heap-fail-fast-test
+      integration/rtl_free_heap_fail_fast_test.cpp
+    )
+    target_link_libraries(noleax-rtl-free-heap-fail-fast-test PRIVATE
+      noleax::hook-backend
+    )
+    noleax_set_project_warnings(noleax-rtl-free-heap-fail-fast-test)
+
+    add_test(NAME hook.rtl-free-heap-fail-fast-contract
+      COMMAND noleax-rtl-free-heap-fail-fast-test
+    )
+    set_tests_properties(hook.rtl-free-heap-fail-fast-contract PROPERTIES
+      LABELS "hook;windows;rtl-heap;free;contract;fail-fast;isolated"
+      PASS_REGULAR_EXPRESSION "^status=ok cases=3 exit=0xc0000374 baseline=hooked"
+      RUN_SERIAL TRUE
+      TIMEOUT 180
+    )
+  endif()
+
   add_test(NAME hook.rtl-allocate-heap-quiescence-race
     COMMAND noleax-rtl-allocate-heap-quiescence-test
+  )
+
+  add_test(NAME hook.rtl-free-heap-quiescence-race
+    COMMAND noleax-rtl-free-heap-quiescence-test
+  )
+  set_tests_properties(hook.rtl-free-heap-quiescence-race PROPERTIES
+    LABELS "hook;windows;rtl-heap;free;quiescence;race;stress"
+    PASS_REGULAR_EXPRESSION "^status=ok "
+    RUN_SERIAL TRUE
+    TIMEOUT 60
   )
   set_tests_properties(hook.rtl-allocate-heap-quiescence-race PROPERTIES
     LABELS "hook;windows;rtl-heap;quiescence;race;stress"
@@ -298,7 +374,12 @@ if(WIN32)
         noleax-rtl-heap-baseline-md
         noleax-rtl-heap-baseline-mt
         noleax-rtl-allocate-heap-hook-harness
+        noleax-rtl-allocate-heap-trace-writer-test
+        noleax-rtl-heap-trace-writer-test
         noleax-rtl-allocate-heap-quiescence-test
+        noleax-rtl-free-heap-quiescence-test
+        noleax-rtl-free-heap-contract-test
+        noleax-rtl-free-heap-fail-fast-test
         noleax-rtl-allocate-heap-exception-test)
       add_test(NAME hook.windows-mitigations.${mitigation_target}
         COMMAND "${CMAKE_COMMAND}"

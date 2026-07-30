@@ -1,7 +1,7 @@
 # RtlAllocateHeap Hook Prototype
 
-> 状态：P4.9 Windows x64 完成；单 API prototype 保持 disabled
-> 范围：guarded raw-stack event queue 与后台 trace writer，不进入任何产品 profile
+> 状态：P4.9 Windows x64 完成；P5.1 已接入 alloc/free 共享队列，产品 profile 仍 disabled
+> 范围：guarded raw-stack event queue 与后台 trace writer，可独立或与 `RtlFreeHeap` 组合
 
 ## 1. 目的
 
@@ -11,6 +11,10 @@ P4.3 首次在正式测试路径 hook `ntdll!RtlAllocateHeap`，验证 Hoox tram
 自身仍不写 trace；P4.7 由预先启动并标记为 internal 的后台线程消费队列、去重调用栈并写 trace。
 P4.8 已增加 replacement gate、并发 revert 和 fail-safe 模块生命周期。P4.9 增加 SEH-safe 清理、
 异常失败事件以及 CFG/CET hardened 门禁。
+
+P5.1 保留原 allocate-only 构造方式，同时把 raw event 扩展为统一 `RtlHeapEvent`；组合路径由
+`RtlHeapHooks` 让 allocate/free 引用同一个 queue，跨 API 共用唯一 sequence。free adapter 与配对
+语义见 [RTL_FREE_HEAP_HOOK.md](RTL_FREE_HEAP_HOOK.md) 和 [TRACE_WRITER.md](TRACE_WRITER.md)。
 
 精确函数类型为：
 
@@ -92,15 +96,15 @@ ID。Noleax 正常路径没有 allocator、文件、loader、日志、符号或�
 
 writer 以 empty、normal、2-slot queue-limit、8 KiB file-limit 和 exception 五种模式验证。每个
 生成文件均由正式 EventStream 回读，检查 StackDefinition 引用、Loss、统计守恒、终止记录和文件
-硬上限；exception 模式额外检查 NTSTATUS failure event 和 SEH stack-detail Loss。当前 Debug/Release
-全量各 178 项通过。writer 重复压力和完整说明见
+硬上限；exception 模式额外检查 NTSTATUS failure event 和 SEH stack-detail Loss。P5.1 当前
+Debug/Release 全量各 182 项通过。writer 重复压力和完整说明见
 [TRACE_WRITER.md](TRACE_WRITER.md)。
 
 P4.9 的隔离进程 SEH 合同确认 baseline/hooked 都抛出 `STATUS_NO_MEMORY (0xc0000017)`，exception
 flags/parameters 一致，且 `LastError` 同为 8。异常 unwind 后 hook depth 和 replacement in-flight
-均为零，下一次普通 allocation 仍被记录，hook 可正常 quiesce/shutdown。hardened 产物全量 183/183
-通过，五个真实 PE 都包含 CFG/CET 标记；当前机器的真实 hook 进程报告 `cfg=1, cet=1`，并发卸载
-100 次及 MD/MT 8×20,000×2 三轮长差分通过。详见
+均为零，下一次普通 allocation 仍被记录，hook 可正常 quiesce/shutdown。P5.1 hardened 产物全量
+192/192 通过，10 个真实 PE 都包含 CFG/CET 标记；当前机器的 allocate/free hook 进程均报告
+`cfg=1, cet=1`，两个 quiescence 目标各 100 次及 MD/MT 8×20,000×2 三轮长差分通过。详见
 [WINDOWS_HOOK_HARDENING.md](WINDOWS_HOOK_HARDENING.md)。
 
 运行方法：
@@ -115,7 +119,7 @@ ctest --preset windows-x64-release -L passthrough --repeat until-fail:20
 
 ## 5. 未完成边界
 
-P4.9 的 Application Verifier/Full Page Heap 三轮压力、日志 review 和 IFEO 回滚均已通过。
-`RtlAllocateHeap` 仍保持 disabled，不是因为本 API 留有 P4 门禁，而是 P5 尚未实现 `RtlFreeHeap`、
-`RtlReAllocateHeap` 等配套生命周期 API；单独启用 allocation 事件不能形成产品级泄漏结论。P4.8
-生命周期见 [HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)。
+P5.1 的 alloc/free Application Verifier/Full Page Heap 三轮压力、日志 review 和 IFEO 回滚均已通过。
+产品 profile 仍保持 disabled，不是因为 allocate/free 留有稳定性门禁，而是 P5 尚未实现
+`RtlReAllocateHeap`、heap generation、VM/section-view 等配套生命周期 API。P4.8 生命周期见
+[HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)。

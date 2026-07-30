@@ -151,9 +151,11 @@ BOOLEAN NTAPI RtlFreeHeap(
 语义：
 
 - 返回 TRUE 为成功。
-- 成功时结束匹配 allocation generation。
-- 失败时保持 live。
-- 未匹配地址写 unmatched event。
+- 成功时仅结束同一 `(heap_handle, address)` 的匹配 allocation generation。
+- 成功但未知的非零地址在 CaptureScope 声明存在未知旧分配时写 `preexisting`，否则写
+  `unmatched`；成功的 null address 写 `unmatched`。
+- 返回失败或以 SEH 离开时保持原 generation live；异常事件保留 NTSTATUS。
+- alloc/free 必须共用一个 queue，不能用两个独立队列的时间戳推断生命周期顺序。
 
 必要测试：
 
@@ -300,21 +302,27 @@ NTSTATUS NTAPI NtUnmapViewOfSection(
 |---|---:|---:|---:|---:|---:|---:|---:|
 | RtlCreateHeap | pending | pending | pending | pending | pending | pending | no |
 | RtlDestroyHeap | pending | pending | pending | pending | pending | pending | no |
-| RtlAllocateHeap | P4.9 hardened prototype | guard/queue/stack/SEH pass | ABI/LastError/exception/overflow/stack pass | 8x20k + TLS/unwind/quiescence pass | PE + runtime pass | AppVerifier Full 3/3 pass | no |
+| RtlAllocateHeap | P4.9 hardened prototype | guard/shared-queue/stack/SEH pass | ABI/LastError/exception/overflow/stack pass | 8x20k + alloc/free quiescence pass | PE + runtime pass | AppVerifier Full 3/3 pass | no |
 | RtlReAllocateHeap | pending | pending | pending | pending | pending | pending | no |
-| RtlFreeHeap | pending | pending | pending | pending | pending | pending | no |
+| RtlFreeHeap | P5.1 review candidate | guard/shared-queue/stack/SEH pass | return/LastError/exception/fail-fast/trace pass | cross-thread + 8x20k + quiescence pass | PE + runtime pass | AppVerifier Full 3/3 pass | no |
 | NtAllocateVirtualMemory | pending | pending | pending | pending | pending | pending | no |
 | NtFreeVirtualMemory | pending | pending | pending | pending | pending | pending | no |
 | NtMapViewOfSection | pending | pending | pending | pending | pending | pending | no |
 | NtUnmapViewOfSection | pending | pending | pending | pending | pending | pending | no |
 
-P4.9 prototype 已通过真实 hook contract 差分、guard 探针、新线程 TLS 启动、强制 queue overflow、
-双策略 unwind、writer、SEH finally、CFG/CET quiescence 及 Application Verifier/Full Page Heap 三轮
-提权压力；24 份 verifier 日志为零记录，IFEO 设置全部回滚。默认 profile 仍保持 disabled，因为 P5
-尚未补齐 free/realloc 等配套生命周期 API，不能把单一 allocation prototype 当作产品 profile。
-workload 与 hardening 证据见
+P5.1 在 P4.9 allocate prototype 上增加 `RtlFreeHeap`，并把两种事件放入同一个预分配 MPSC queue，
+形成跨 API 的唯一 sequence。组合 writer 按 `(heap,address)` 关联 allocation_id，覆盖 matched、
+cross-thread、preexisting、unmatched 和 outstanding generation；每个 API 的调用/成功/失败/丢失统计
+分别守恒。free 合同覆盖普通返回与 SEH；bad address、wrong heap、double free 的隔离进程
+baseline/hooked 均为 `0xc0000374`。
+
+完整门禁为 Debug/Release 182/182、hardened 192/192、alloc/free quiescence 各 100/100、10 个 PE 的
+CFG/CET metadata/runtime 和 Application Verifier/Full Page Heap 三轮；本轮 27 份 verifier 日志为零
+记录，7 个 IFEO key 全部回滚。默认 profile 仍保持 disabled，因为 realloc、heap generation 和 VM/
+section-view API 尚未补齐。workload 与 hardening 证据见
 [RTL_HEAP_BASELINE.md](RTL_HEAP_BASELINE.md) 和
 [RTL_ALLOCATE_HEAP_HOOK.md](RTL_ALLOCATE_HEAP_HOOK.md)，guard 设计与崩溃根因见
 [HOOK_GUARD.md](HOOK_GUARD.md)，队列合同见 [EVENT_QUEUE.md](EVENT_QUEUE.md)，栈合同见
-[STACK_CAPTURE.md](STACK_CAPTURE.md)，平台门禁见
+[STACK_CAPTURE.md](STACK_CAPTURE.md)，free 设计见
+[RTL_FREE_HEAP_HOOK.md](RTL_FREE_HEAP_HOOK.md)，平台门禁见
 [WINDOWS_HOOK_HARDENING.md](WINDOWS_HOOK_HARDENING.md)。

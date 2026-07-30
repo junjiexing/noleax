@@ -121,32 +121,46 @@ try {
     $mdExecutable = Join-Path $binaryDirectory "noleax-rtl-heap-baseline-md.exe"
     $mtExecutable = Join-Path $binaryDirectory "noleax-rtl-heap-baseline-mt.exe"
     $hookHarness = Join-Path $binaryDirectory "noleax-rtl-allocate-heap-hook-harness.dll"
-    $quiescenceExecutable =
+    $allocateQuiescenceExecutable =
         Join-Path $binaryDirectory "noleax-rtl-allocate-heap-quiescence-test.exe"
-    $traceWriterExecutable =
+    $freeQuiescenceExecutable =
+        Join-Path $binaryDirectory "noleax-rtl-free-heap-quiescence-test.exe"
+    $allocateTraceWriterExecutable =
         Join-Path $binaryDirectory "noleax-rtl-allocate-heap-trace-writer-test.exe"
-    foreach ($path in @($mdExecutable, $mtExecutable, $hookHarness, $quiescenceExecutable,
-            $traceWriterExecutable)) {
+    $heapTraceWriterExecutable =
+        Join-Path $binaryDirectory "noleax-rtl-heap-trace-writer-test.exe"
+    $freeContractExecutable =
+        Join-Path $binaryDirectory "noleax-rtl-free-heap-contract-test.exe"
+    foreach ($path in @($mdExecutable, $mtExecutable, $hookHarness,
+            $allocateQuiescenceExecutable, $freeQuiescenceExecutable,
+            $allocateTraceWriterExecutable, $heapTraceWriterExecutable,
+            $freeContractExecutable)) {
         if (-not (Test-Path -LiteralPath $path)) {
             throw "Required hardened artifact is missing: $path"
         }
     }
 
     Invoke-CheckedCommand ctest --preset $Preset --output-on-failure
-    $mitigationOutput = @(& $quiescenceExecutable)
-    if ($LASTEXITCODE -ne 0 -or $mitigationOutput.Count -ne 1 -or
-        $mitigationOutput[0] -notmatch " cfg=1 ") {
-        throw "The hardened hook target did not report CFG enforcement: $($mitigationOutput -join ' ')"
-    }
-    if ($mitigationOutput[0] -notmatch " cet=1 ") {
-        if ($RequireCetRuntime) {
-            throw "The hardened hook target did not report CET shadow-stack enforcement."
+    foreach ($quiescenceExecutable in @($allocateQuiescenceExecutable,
+            $freeQuiescenceExecutable)) {
+        $mitigationOutput = @(& $quiescenceExecutable)
+        if ($LASTEXITCODE -ne 0 -or $mitigationOutput.Count -ne 1 -or
+            $mitigationOutput[0] -notmatch " cfg=1 ") {
+            throw "The hardened hook target did not report CFG enforcement: " +
+                "$($mitigationOutput -join ' ')"
         }
-        Write-Warning "CET metadata is present, but this machine did not enforce a user shadow stack."
-    } else {
-        Write-Host "Runtime mitigations passed: $($mitigationOutput[0])"
+        if ($mitigationOutput[0] -notmatch " cet=1 ") {
+            if ($RequireCetRuntime) {
+                throw "The hardened hook target did not report CET shadow-stack enforcement."
+            }
+            Write-Warning ("CET metadata is present, but this machine did not enforce a user " +
+                "shadow stack for $([IO.Path]::GetFileName($quiescenceExecutable)).")
+        } else {
+            Write-Host "Runtime mitigations passed: $($mitigationOutput[0])"
+        }
     }
-    Invoke-CheckedCommand ctest --preset $Preset -R hook.rtl-allocate-heap-quiescence-race `
+    Invoke-CheckedCommand ctest --preset $Preset `
+        -R "hook.rtl-(allocate|free)-heap-quiescence-race" `
         --repeat "until-fail:$RaceRepeats" --output-on-failure
 
     $longArguments = @(
@@ -177,8 +191,11 @@ try {
     $targetNames = @(
         [IO.Path]::GetFileName($mdExecutable),
         [IO.Path]::GetFileName($mtExecutable),
-        [IO.Path]::GetFileName($quiescenceExecutable),
-        [IO.Path]::GetFileName($traceWriterExecutable)
+        [IO.Path]::GetFileName($allocateQuiescenceExecutable),
+        [IO.Path]::GetFileName($freeQuiescenceExecutable),
+        [IO.Path]::GetFileName($allocateTraceWriterExecutable),
+        [IO.Path]::GetFileName($heapTraceWriterExecutable),
+        [IO.Path]::GetFileName($freeContractExecutable)
     )
     $ifeoRoot = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options"
     foreach ($targetName in $targetNames) {
@@ -226,10 +243,11 @@ try {
         )
         Assert-MatchingWorkloads $mdExecutable $mtExecutable $hookHarness $verifierArguments `
             $VerifierRepeats "appverifier-pageheap"
-        Invoke-CheckedCommand ctest --preset $Preset -R hook.rtl-allocate-heap-quiescence-race `
+        Invoke-CheckedCommand ctest --preset $Preset `
+            -R "hook.rtl-(allocate|free)-heap-quiescence-race" `
             --repeat "until-fail:$VerifierRepeats" --output-on-failure
         Invoke-CheckedCommand ctest --preset $Preset `
-            -R hook.rtl-allocate-heap-trace-writer-normal `
+            -R "hook.rtl-allocate-heap-trace-writer-normal|hook.rtl-heap-trace-writer-lifecycle|hook.rtl-free-heap-contract" `
             --repeat "until-fail:$VerifierRepeats" --output-on-failure
     } catch {
         $phaseFailure = $_
@@ -278,7 +296,8 @@ try {
         throw "Application Verifier cleanup failed: $($cleanupFailures -join '; ')"
     }
 
-    Write-Host "Windows hook hardening gate passed (CFG, CET metadata/runtime, SEH, Page Heap, AppVerifier)."
+    Write-Host ("Windows allocate/free hook hardening gate passed " +
+        "(CFG, CET metadata/runtime, fail-fast, Page Heap, AppVerifier).")
 } finally {
     Pop-Location
 }

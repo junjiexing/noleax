@@ -4,9 +4,9 @@
 > 文档版本：0.1
 > 更新日期：2026-07-30
 > 确认日期：2026-07-29
-> 当前阶段：P4 Windows Rtl hook 安全原型已完成（`feat/windows-hook-agent`，待阶段 review/合并）
-> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8、P4.9
-> 下一工作项：P4 阶段 review/合并门禁；P5 开始前需人工确认
+> 当前阶段：P5.1 `RtlFreeHeap` 实现和自动门禁已完成（`feat/rtl-free-heap-hook`，待人工 review/合并）
+> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8、P4.9、P5.1
+> 下一工作项：P5.1 人工验收和合并；未经确认不开始 P5.2
 
 ## 1. 文档目的
 
@@ -1327,15 +1327,39 @@ Verifier 10.0.26100 的 `Heaps.Full=true` 下完成三轮 baseline/hooked 差分
 
 目标：按规范化 API 清单逐个增加且逐个验收。
 
-推荐顺序：
+| ID | AI 任务 | 交付物 | 自动验收 |
+|---|---|---|---|
+| P5.1 | `RtlFreeHeap` | free adapter、alloc/free 共享队列、生命周期配对 | ABI/LastError/SEH/fail-fast/跨线程/Page Heap |
+| P5.2 | `RtlReAllocateHeap` | realloc adapter 和 generation 转换 | 原地/移动/失败/零大小/异常差分 |
+| P5.3 | `RtlCreateHeap`/`RtlDestroyHeap` | heap generation | 多 heap、销毁含 live allocation、失败隔离 |
+| P5.4 | `NtAllocateVirtualMemory`/`NtFreeVirtualMemory` | VM generation | reserve/commit/decommit/release/递归抑制 |
+| P5.5 | `NtMapViewOfSection`/`NtUnmapViewOfSection` | section-view generation | offset/size/multi-view/失败差分 |
+| P5.6 | 模块加载/卸载跟踪 | module generation 和相对栈帧 | unload/reload/地址复用/符号化 |
+| P5.7 | profile、过滤和统计 | 可启用 Windows agent profile | registry 对齐、组合压力、端到端 trace |
 
-1. RtlFreeHeap。
-2. RtlReAllocateHeap。
-3. RtlCreateHeap/RtlDestroyHeap。
-4. NtAllocateVirtualMemory/NtFreeVirtualMemory。
-5. NtMapViewOfSection/NtUnmapViewOfSection。
-6. 模块加载/卸载跟踪。
-7. profile、过滤和统计。
+P5.1 状态：实现和自动门禁已通过，等待当前功能分支的人工验收与合并。`RtlFreeHeap` 使用精确
+`BOOLEAN NTAPI(PVOID, ULONG, PVOID)` ABI，复用固定 TEB guard、SEH `__finally`、原始 `LastError`
+恢复、replacement in-flight 和 quiescent teardown。`RtlHeapHooks` 让 allocate/free 共用一个预分配
+MPSC queue；queue reservation 形成跨 API 的唯一总顺序，各 hook 仍分别维护调用、成功、失败、异常
+和丢失计数。
+
+后台 writer 保留原 allocate-only 构造方式，并新增 alloc/free 组合方式。组合模式使用
+`api_id=1/2`，按 `(heap_handle, address)` 将成功 free 关联到 allocation_id；成功但未知的非零地址按
+CaptureScope 标记为 `preexisting` 或 `unmatched`，失败/异常 free 不结束 generation。跨线程 free、
+preexisting、null unmatched 和 capture 结束时仍 live 的 generation 均由正式 EventStream 与
+GenerationTracker 回读验证。
+
+合同测试覆盖普通、null address、null heap 和非常规 flags；Full Page Heap 会使非常规 flags 的
+baseline 抛出 `0xc0000005`，hooked 必须逐字段保持相同异常和 `LastError`，并生成 exception event。
+bad address、wrong heap、double free 在隔离子进程中均要求 baseline/hooked 同为
+`0xc0000374`。Debug/Release 各 182/182、hardened 192/192、alloc/free quiescence 各 100/100、
+MD/MT 8×20,000×2 三轮差分、10 个 PE 的 CFG/CET metadata 与运行时门禁均通过。管理员
+Application Verifier/Full Page Heap 三轮通过；本轮 27 份日志导出 XML 后为零 verifier record，
+7 个 IFEO key 全部清理。详见 [RTL_FREE_HEAP_HOOK.md](RTL_FREE_HEAP_HOOK.md)、
+[TRACE_WRITER.md](TRACE_WRITER.md) 和 [WINDOWS_HOOK_HARDENING.md](WINDOWS_HOOK_HARDENING.md)。
+
+P5.1 尚未启用产品 profile：realloc、heap create/destroy、VM 和 section-view 生命周期仍未覆盖，不能
+把当前组合当作完整 Windows 泄漏捕获范围。
 
 每增加一个 API：
 
