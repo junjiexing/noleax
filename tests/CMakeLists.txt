@@ -121,6 +121,30 @@ if(WIN32)
     TIMEOUT 60
   )
 
+  add_executable(noleax-controller-attach-test
+    integration/controller_attach_test.cpp
+  )
+  target_link_libraries(noleax-controller-attach-test PRIVATE
+    noleax::analyzer
+    noleax::controller
+  )
+  noleax_set_project_warnings(noleax-controller-attach-test)
+
+  add_test(NAME controller.runtime-attach
+    COMMAND noleax-controller-attach-test
+      "$<TARGET_FILE:noleax-agent>"
+      "$<TARGET_FILE:noleax-controller-target>"
+      "$<TARGET_FILE_DIR:noleax-controller-attach-test>/controller-attach.nlx"
+      "$<TARGET_FILE_DIR:noleax-controller-attach-test>/controller-attach.ready"
+  )
+  set_tests_properties(controller.runtime-attach PROPERTIES
+    LABELS "controller;agent;ipc;injection;remote-thread;attach;trace;windows"
+    PASS_REGULAR_EXPRESSION
+      "^status=ok kind=attach preexisting-unknown=1 state=finalized events=[1-9][0-9]*"
+    RUN_SERIAL TRUE
+    TIMEOUT 60
+  )
+
   add_executable(noleax-injector-rollback-test
     integration/injector_rollback_test.cpp
   )

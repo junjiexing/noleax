@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <limits>
 #include <string>
+#include <string_view>
 
 namespace {
 
@@ -53,24 +54,28 @@ using CaptureIsReady = bool (*)() noexcept;
 }  // namespace
 
 int wmain(int argc, wchar_t* argv[]) {
-  if (argc != 3) {
+  if (argc != 3 && argc != 4) {
     return 2;
   }
   const std::uint32_t duration_ms = parse_duration(argv[2]);
   if (duration_ms == 0U) {
     return 3;
   }
+  const bool expected_ready = argc == 3 || std::wstring_view{argv[3]} == L"1";
   const HMODULE agent = GetModuleHandleW(L"noleax-agent.dll");
   const auto is_ready = agent == nullptr ? nullptr
                                          : reinterpret_cast<CaptureIsReady>(GetProcAddress(
                                                agent, "noleax_agent_capture_is_ready"));
   const bool ready = is_ready != nullptr && is_ready();
+  const HANDLE heap = GetProcessHeap();
+  void* outstanding = HeapAlloc(heap, 0U, 128U * 1024U);
   if (!write_marker(argv[1], ready)) {
+    if (outstanding != nullptr) {
+      static_cast<void>(HeapFree(heap, 0U, outstanding));
+    }
     return 4;
   }
 
-  const HANDLE heap = GetProcessHeap();
-  void* outstanding = HeapAlloc(heap, 0U, 128U * 1024U);
   const ULONGLONG deadline = GetTickCount64() + duration_ms;
   std::uint64_t iteration = 0U;
   while (GetTickCount64() < deadline) {
@@ -92,5 +97,5 @@ int wmain(int argc, wchar_t* argv[]) {
   if (outstanding != nullptr) {
     static_cast<void>(HeapFree(heap, 0U, outstanding));
   }
-  return ready ? 0 : 5;
+  return ready == expected_ready ? 0 : 5;
 }
