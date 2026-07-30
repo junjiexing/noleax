@@ -228,6 +228,8 @@ try {
     } catch {
         $phaseFailure = $_
     } finally {
+        # Finish every appverif mutation before inspecting/removing container keys. A later
+        # appverif invocation may otherwise recreate an empty key already checked in this loop.
         foreach ($targetName in $configuredTargets) {
             $keyPath = Join-Path $ifeoRoot $targetName
             try {
@@ -237,6 +239,14 @@ try {
                         $cleanupFailures.Add("cleanup command failed for $targetName")
                     }
                 }
+            } catch {
+                $cleanupFailures.Add("cleanup command raised for ${targetName}: $($_.Exception.Message)")
+            }
+        }
+
+        foreach ($targetName in $configuredTargets) {
+            $keyPath = Join-Path $ifeoRoot $targetName
+            try {
                 # Current appverif builds can delete every value but retain the target's empty IFEO
                 # container. It is safe to remove here because preflight proved the key did not exist.
                 if (Test-RegistryKeyEmpty $keyPath) {
@@ -246,7 +256,7 @@ try {
                     $cleanupFailures.Add("settings remain after cleanup: $keyPath")
                 }
             } catch {
-                $cleanupFailures.Add("cleanup raised for ${targetName}: $($_.Exception.Message)")
+                $cleanupFailures.Add("cleanup verification raised for ${targetName}: $($_.Exception.Message)")
             }
         }
     }

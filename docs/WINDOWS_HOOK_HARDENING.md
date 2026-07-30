@@ -55,8 +55,8 @@ replacement in-flight 都为零，异常事件可出队，下一次普通 alloca
 3. 检查 `GlobalFlag` 包含 `0x02000000`，证明 Full Page Heap 已启用；
 4. workload 自身要求 `verifier.dll`/`vrfcore.dll` 已加载，并再次检查进程 global flags；
 5. 比较 MD/MT 的 baseline/hooked 摘要，重复 quiescence 和 normal writer；
-6. 无论成功或失败都在 `finally` 中删除本轮创建的设置；若当前 AppVerifier 版本留下零值、零子键的
-   空 IFEO 容器，则只删除这个已确认由本轮新建的空 key；
+6. 无论成功或失败都在 `finally` 中先完成全部 AppVerifier 删除，再统一检查 IFEO；若当前版本留下
+   零值、零子键的空容器，则只删除已确认由本轮新建的空 key；
 7. 同时保留并报告 phase 原始错误和 cleanup 错误，避免清理问题遮蔽根因。
 
 脚本不会覆盖或删除预先存在的 AppVerifier 设置。AppVerifier 日志保留在其系统默认目录，供人工检查。
