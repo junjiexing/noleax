@@ -32,3 +32,25 @@ and are a baseline for regression and human acceptance, not a universal performa
 
 Changing a product default requires a reviewed benchmark report. P8 does not automatically select a
 faster option if it weakens stack detail, trace size, or compatibility.
+
+## P8 reference result
+
+Commit `74dbf03` was measured on 2026-07-30 using Windows 10.0.19045 x64 with 24 logical
+processors. The clean-worktree run used one warm-up and three measured repetitions, 13,500 heap
+operations and 15,619,170 requested bytes per repetition. All 15 measured traces were complete with
+zero dropped events.
+
+| Case | Median target time | Baseline ratio | Median trace size |
+|---|---:|---:|---:|
+| uninstrumented | 4.752 ms | 1.000x | n/a |
+| default | 7.766 ms | 1.634x | 410,192 B |
+| stack-16 | 7.854 ms | 1.653x | 411,146 B |
+| stack-32 | 6.725 ms | 1.415x | 411,205 B |
+| compression-none | 6.058 ms | 1.275x | 1,644,913 B |
+| compression-zstd1 | 5.732 ms | 1.206x | 183,038 B |
+
+These short target intervals are useful for comparing this host, but they do not justify a default
+change by themselves. LZ4 remains the V1 default: `none` produced roughly four times the trace size,
+and selecting Zstd from one short host run would need broader CPU and workload validation. Stack
+depth 64 remains the default because the smaller depths did not materially reduce trace size and
+discard diagnostic detail.
