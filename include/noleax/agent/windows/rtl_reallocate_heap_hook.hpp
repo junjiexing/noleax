@@ -33,8 +33,12 @@ class RtlReAllocateHeapHook {
       std::uint32_t flush_attempts = HookBackend::kDefaultFlushAttempts) noexcept;
   [[nodiscard]] bool flush(
       std::uint32_t max_attempts = HookBackend::kDefaultFlushAttempts) noexcept;
+  [[nodiscard]] bool stop_recording(
+      std::uint32_t max_attempts = HookBackend::kDefaultFlushAttempts) noexcept;
 
   [[nodiscard]] bool is_installed() const noexcept;
+  [[nodiscard]] bool is_recording() const noexcept;
+  [[nodiscard]] std::uint64_t recording_in_flight_count() const noexcept;
   [[nodiscard]] bool has_pending_teardown() const noexcept;
   [[nodiscard]] bool replacement_module_is_pinned() const noexcept;
   [[nodiscard]] std::uint64_t replacement_in_flight_count() const noexcept;

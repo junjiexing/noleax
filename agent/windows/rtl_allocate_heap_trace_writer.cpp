@@ -70,6 +70,19 @@ static_assert(kMaximumTerminalTailSize <= kMinimumTerminalReserveSize);
   return hooks;
 }
 
+[[nodiscard]] RtlHeapEventQueue& validate_profile_event_queue(WindowsMemoryHooks& profile,
+                                                              RtlAllocateHeapHook* heap_hook,
+                                                              NtMemoryHooks* virtual_memory_hooks) {
+  RtlHeapEventQueue& event_queue = profile.event_queue();
+  if (heap_hook != nullptr && &heap_hook->event_queue() != &event_queue) {
+    throw std::invalid_argument{"NT Heap profile hooks do not use the profile event queue"};
+  }
+  if (virtual_memory_hooks != nullptr && &virtual_memory_hooks->event_queue() != &event_queue) {
+    throw std::invalid_argument{"virtual-memory profile hooks do not use the profile event queue"};
+  }
+  return event_queue;
+}
+
 [[nodiscard]] RtlFreeHeapHook* validate_free_hook(RtlAllocateHeapHook& allocate_hook,
                                                   RtlFreeHeapHook* free_hook) {
   if (free_hook == nullptr) {
@@ -348,6 +361,45 @@ class RtlAllocateHeapTraceWriter::Implementation final {
     state_changed_.wait(lock, [this] { return thread_ready_; });
   }
 
+  Implementation(WindowsMemoryHooks& profile, std::ostream& output,
+                 const noleax::trace::FileHeader& file_header,
+                 RtlAllocateHeapTraceWriterOptions options)
+      : hook_{profile.nt_heap_hooks() == nullptr
+                  ? nullptr
+                  : &validate_hook(profile.nt_heap_hooks()->allocate_hook())},
+        reallocate_hook_{
+            hook_ == nullptr
+                ? nullptr
+                : validate_reallocate_hook(*hook_, &profile.nt_heap_hooks()->reallocate_hook())},
+        free_hook_{hook_ == nullptr
+                       ? nullptr
+                       : validate_free_hook(*hook_, &profile.nt_heap_hooks()->free_hook())},
+        create_hook_{hook_ == nullptr
+                         ? nullptr
+                         : validate_create_hook(*hook_, &profile.nt_heap_hooks()->create_hook())},
+        destroy_hook_{hook_ == nullptr ? nullptr
+                                       : validate_destroy_hook(
+                                             *hook_, &profile.nt_heap_hooks()->destroy_hook())},
+        nt_memory_hooks_{profile.virtual_memory_hooks() == nullptr
+                             ? nullptr
+                             : &validate_nt_memory_hooks(*profile.virtual_memory_hooks())},
+        event_queue_{validate_profile_event_queue(profile, hook_, nt_memory_hooks_)},
+        options_{validate_options(options)},
+        dictionary_{options_.stack_dictionary_capacity},
+        writer_{output, file_header, options_.trace},
+        completeness_{options_.capture_scope},
+        monotonic_origin_{file_header.monotonic_origin} {
+    module_tracker_ =
+        std::make_unique<WindowsModuleTracker>(monotonic_origin_, options_.module_queue_capacity);
+    module_payload_.reserve(options_.chunk_target_size);
+    stack_payload_.reserve(options_.chunk_target_size);
+    event_payload_.reserve(options_.chunk_target_size);
+    write_metadata();
+    worker_ = std::thread{[this] { thread_main(); }};
+    std::unique_lock lock{state_mutex_};
+    state_changed_.wait(lock, [this] { return thread_ready_; });
+  }
+
   ~Implementation() {
     request_stop();
     if (worker_.joinable()) {
@@ -381,18 +433,17 @@ class RtlAllocateHeapTraceWriter::Implementation final {
   }
 
   [[nodiscard]] RtlAllocateHeapTraceWriterResult finish() {
-    if ((hook_ != nullptr && (hook_->is_installed() || hook_->has_pending_teardown())) ||
-        (reallocate_hook_ != nullptr &&
-         (reallocate_hook_->is_installed() || reallocate_hook_->has_pending_teardown())) ||
-        (free_hook_ != nullptr &&
-         (free_hook_->is_installed() || free_hook_->has_pending_teardown())) ||
-        (create_hook_ != nullptr &&
-         (create_hook_->is_installed() || create_hook_->has_pending_teardown())) ||
-        (destroy_hook_ != nullptr &&
-         (destroy_hook_->is_installed() || destroy_hook_->has_pending_teardown())) ||
-        (nt_memory_hooks_ != nullptr &&
-         (nt_memory_hooks_->is_installed() || nt_memory_hooks_->has_pending_teardown()))) {
-      throw std::logic_error{"all selected memory hooks must be fully uninstalled before finish"};
+    const auto hook_not_stopped = [](const auto* hook) {
+      return hook != nullptr &&
+             (hook->has_pending_teardown() ||
+              (hook->is_installed() &&
+               (hook->is_recording() || hook->recording_in_flight_count() != 0U)));
+    };
+    if (hook_not_stopped(hook_) || hook_not_stopped(reallocate_hook_) ||
+        hook_not_stopped(free_hook_) || hook_not_stopped(create_hook_) ||
+        hook_not_stopped(destroy_hook_) || hook_not_stopped(nt_memory_hooks_)) {
+      throw std::logic_error{
+          "all selected memory hooks must be logically stopped or fully uninstalled before finish"};
     }
     request_stop();
     if (worker_.joinable()) {
@@ -1603,12 +1654,10 @@ class RtlAllocateHeapTraceWriter::Implementation final {
       const std::uint64_t dropped =
           total_dropped(queue_allocate_dropped_events_, trace_allocate_dropped_events_,
                         "allocation dropped event count overflow");
-      allocate_statistics = noleax::trace::ApiStatistics{kRtlAllocateHeapApiId,
-                                                         hook_->recordable_call_count(),
-                                                         hook_->successful_call_count(),
-                                                         hook_->failed_call_count(),
-                                                         0U,
-                                                         dropped};
+      allocate_statistics = noleax::trace::ApiStatistics{
+          kRtlAllocateHeapApiId,          hook_->recordable_call_count(),
+          hook_->successful_call_count(), hook_->failed_call_count(),
+          hook_->filtered_call_count(),   dropped};
       statistics.per_api.push_back(*allocate_statistics);
     }
     std::optional<noleax::trace::ApiStatistics> reallocate_statistics;
@@ -1672,24 +1721,18 @@ class RtlAllocateHeapTraceWriter::Implementation final {
       const std::uint64_t unmap_dropped =
           total_dropped(queue_unmap_dropped_events_, trace_unmap_dropped_events_,
                         "section unmap dropped event count overflow");
-      vm_allocate_statistics = noleax::trace::ApiStatistics{kNtAllocateVirtualMemoryApiId,
-                                                            allocate.recordable_calls,
-                                                            allocate.successful_calls,
-                                                            allocate.failed_calls,
-                                                            0U,
-                                                            allocate_dropped};
+      vm_allocate_statistics = noleax::trace::ApiStatistics{
+          kNtAllocateVirtualMemoryApiId, allocate.recordable_calls, allocate.successful_calls,
+          allocate.failed_calls,         allocate.filtered_calls,   allocate_dropped};
       vm_free_statistics = noleax::trace::ApiStatistics{kNtFreeVirtualMemoryApiId,
                                                         free.recordable_calls,
                                                         free.successful_calls,
                                                         free.failed_calls,
                                                         0U,
                                                         free_dropped};
-      map_statistics = noleax::trace::ApiStatistics{kNtMapViewOfSectionApiId,
-                                                    map.recordable_calls,
-                                                    map.successful_calls,
-                                                    map.failed_calls,
-                                                    0U,
-                                                    map_dropped};
+      map_statistics = noleax::trace::ApiStatistics{kNtMapViewOfSectionApiId, map.recordable_calls,
+                                                    map.successful_calls,     map.failed_calls,
+                                                    map.filtered_calls,       map_dropped};
       unmap_statistics = noleax::trace::ApiStatistics{kNtUnmapViewOfSectionApiId,
                                                       unmap.recordable_calls,
                                                       unmap.successful_calls,
@@ -1708,6 +1751,8 @@ class RtlAllocateHeapTraceWriter::Implementation final {
                   "aggregate successful operation count overflow");
       checked_add(statistics.failed_operations, api.failed_operations,
                   "aggregate failed operation count overflow");
+      checked_add(statistics.filtered_before_queue, api.filtered_before_queue,
+                  "aggregate filtered call count overflow");
       checked_add(statistics.dropped_events, api.dropped_events,
                   "aggregate dropped event count overflow");
     }
@@ -1719,6 +1764,8 @@ class RtlAllocateHeapTraceWriter::Implementation final {
     checked_add(completed_operations, statistics.failed_operations,
                 "completed operation count overflow");
     std::uint64_t accounted_events = written_events_;
+    checked_add(accounted_events, statistics.filtered_before_queue,
+                "accounted filtered event count overflow");
     checked_add(accounted_events, statistics.dropped_events, "accounted event count overflow");
     if (completed_operations != statistics.observed_calls ||
         accounted_events != statistics.observed_calls) {
@@ -1726,6 +1773,8 @@ class RtlAllocateHeapTraceWriter::Implementation final {
     }
     if (allocate_statistics.has_value()) {
       std::uint64_t accounted_allocations = written_allocate_events_;
+      checked_add(accounted_allocations, allocate_statistics->filtered_before_queue,
+                  "accounted filtered allocation event count overflow");
       checked_add(accounted_allocations, allocate_statistics->dropped_events,
                   "accounted allocation event count overflow");
       if (accounted_allocations != allocate_statistics->observed_calls) {
@@ -1766,6 +1815,8 @@ class RtlAllocateHeapTraceWriter::Implementation final {
     }
     if (vm_allocate_statistics.has_value()) {
       std::uint64_t accounted_allocations = written_vm_allocate_events_;
+      checked_add(accounted_allocations, vm_allocate_statistics->filtered_before_queue,
+                  "accounted filtered virtual allocation event count overflow");
       checked_add(accounted_allocations, vm_allocate_statistics->dropped_events,
                   "accounted virtual allocation event count overflow");
       if (accounted_allocations != vm_allocate_statistics->observed_calls) {
@@ -1783,6 +1834,8 @@ class RtlAllocateHeapTraceWriter::Implementation final {
     }
     if (map_statistics.has_value()) {
       std::uint64_t accounted_maps = written_map_events_;
+      checked_add(accounted_maps, map_statistics->filtered_before_queue,
+                  "accounted filtered section map event count overflow");
       checked_add(accounted_maps, map_statistics->dropped_events,
                   "accounted section map event count overflow");
       if (accounted_maps != map_statistics->observed_calls) {
@@ -1977,6 +2030,12 @@ RtlAllocateHeapTraceWriter::RtlAllocateHeapTraceWriter(NtMemoryHooks& nt_memory_
                                                        RtlAllocateHeapTraceWriterOptions options)
     : implementation_{
           std::make_unique<Implementation>(nt_memory_hooks, output, file_header, options)} {}
+
+RtlAllocateHeapTraceWriter::RtlAllocateHeapTraceWriter(WindowsMemoryHooks& hooks,
+                                                       std::ostream& output,
+                                                       const noleax::trace::FileHeader& file_header,
+                                                       RtlAllocateHeapTraceWriterOptions options)
+    : implementation_{std::make_unique<Implementation>(hooks, output, file_header, options)} {}
 
 RtlAllocateHeapTraceWriter::~RtlAllocateHeapTraceWriter() = default;
 

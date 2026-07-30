@@ -72,4 +72,5 @@ P5.2 新增的测试覆盖：
 管理员门禁结束后 10 个 IFEO key 均不存在。平台强化门禁由
 [WINDOWS_HOOK_HARDENING.md](WINDOWS_HOOK_HARDENING.md) 和
 `scripts/Test-WindowsHookHardening.ps1` 统一执行；heap generation 设计见
-[RTL_HEAP_LIFECYCLE_HOOK.md](RTL_HEAP_LIFECYCLE_HOOK.md)。profile 在 P5.7 前仍不启用。
+[RTL_HEAP_LIFECYCLE_HOOK.md](RTL_HEAP_LIFECYCLE_HOOK.md)。P5.7 已启用 NT Heap/native profile；realloc
+不受 `capture.min_size` 过滤，以保留 generation 转换。

@@ -108,5 +108,5 @@ P5.3 结果：
 .\scripts\Test-WindowsHookHardening.ps1 -RequireCetRuntime
 ~~~
 
-产品 profile 仍保持 disabled；P5.4 已完成 VM reserve/commit/decommit/release，P5.5 补齐
-section-view 生命周期后，才能继续把 Windows agent 推进为完整候选。
+P5.7 已启用 `windows-nt-heap` 与 `windows-native` 产品 profile，并通过九 API 共享队列、过滤统计、
+逻辑停录和完整 trace 回读门禁。详见 [WINDOWS_HOOK_PROFILES.md](WINDOWS_HOOK_PROFILES.md)。

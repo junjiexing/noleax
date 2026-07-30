@@ -1,6 +1,6 @@
 # Windows replacement quiescence
 
-> 状态：P4.8 Windows x64 完成；P5.5 已对五个 NT Heap 与五个 NT memory 物理入口复用
+> 状态：P5.7 Windows x64 完成；产品 profile 已拆分逻辑停录与物理卸载
 > 范围：Windows memory adapter 的停止记录、并发 revert、trampoline 回收和代码生命周期
 
 ## 1. 要解决的窗口
@@ -24,19 +24,21 @@ revert，再等 replacement counter”仍不安全。
 | `original` | 只调用 trampoline，不再产生事件 |
 | `target` | 调用对应的已恢复 target，不访问 session、queue、guard 或 trampoline |
 
-正常停止严格按以下顺序执行：
+P5.7 另维护 `recording_in_flight`：只有读取到 `record` 快照的调用计入它；所有 replacement 调用仍计入
+原有 `in_flight`。产品停止严格按以下顺序执行：
 
-1. `record -> original`，先关闭新事件。
-2. 调用 `HookBackend::uninstall(target, 0)`，只 revert，禁止 Hoox flush。
-3. Hoox overlay 在改写 target 前暂停其他线程；Windows 上重复线程快照，直到没有新线程需要暂停，
-   再写 patch、flush instruction cache 并恢复线程。
-4. revert 返回后发布 `target` 路由。
-5. 等待 Noleax replacement in-flight 归零。
-6. 释放 trampoline lifetime lease，随后才允许 Hoox flush 和 deinit。
-7. 清除活动 session；writer 此时可以 final drain、写 Statistics/EndOfTrace 并退出。
+1. 所选 hook 一次性执行 `record -> original`，关闭新事件。
+2. 等待 `recording_in_flight` 归零；新进入调用仍可透传 original，但不会访问 queue。
+3. writer final drain、写 Statistics/EndOfTrace 并退出。
+4. controller 停止或挂起目标 worker，避免物理 patch 时仍持续创建并运行目标线程。
+5. 调用 `HookBackend::uninstall(target, 0)`，只 revert，禁止 Hoox flush。
+6. revert 返回后发布 `target` 路由，再等待完整 replacement `in_flight` 归零。
+7. 释放 trampoline lifetime lease，随后才允许 Hoox flush 和 deinit。
 
-入口计数和路由快照使用同一个顺序一致原子序。读取到旧路由的线程必然已经计入 in-flight；在路由
-切换后才执行第一条 replacement 指令的线程会读取 `target`，不再访问已经回收的 session。
+入口计数和路由快照使用同一个顺序一致原子序。读取到 `record` 的线程必然先计入
+`recording_in_flight`；因此步骤 2 返回后 writer 可安全结束。物理卸载仍使用完整 `in_flight`；读取到
+旧路由的线程必然已经计数，在 target 路由发布后才进入 replacement 的线程不再访问已经回收的
+session。
 
 ## 3. Hoox lifetime lease
 
@@ -62,8 +64,9 @@ P5.3 heap 组合对象与 P5.5 `NtMemoryHooks` 的 event queue 都由独立所�
 连同 hook state 一起保留共享 queue，避免只保留单 hook state、却随后析构其外部 queue 的
 use-after-free。
 
-writer 只有在 hook 不再 installed 且不再 teardown-pending 时才接受 `finish()`，所以 final drain
-之后不会再出现 queue producer。
+writer 在 hook 已完全卸载，或仍 installed 但已逻辑停录、`recording_in_flight=0` 时接受
+`finish()`；teardown-pending 或仍记录时拒绝结束。后者是产品 profile 的标准路径，保证 final drain
+之后不会再出现 queue producer，同时把危险的物理 patch 延后到目标 worker 停止之后。
 
 ## 5. DLL pin 和当前限制
 
@@ -71,10 +74,11 @@ writer 只有在 hook 不再 installed 且不再 teardown-pending 时才接受 `
 replacement 的模块固定到进程退出。即使线程已取到旧跳转但尚未被入口计数覆盖，replacement 代码也
 不会被 `FreeLibrary` 解除映射；该线程随后读取 `target` 路由并走已恢复入口。
 
-因此当前 adapter 有两个刻意限制：
+因此当前 adapter 有三个刻意限制：
 
 - `FreeLibrary` 可以释放调用方引用，但包含 replacement 的 DLL 仍驻留到进程退出；
 - adapter 集合各自每进程只允许一次成功安装，避免旧跳转被误归入下一捕获 generation。
+- 产品 profile 不承诺在目标线程持续运行时安全物理 revert；controller 必须先停住目标 worker。
 
 真正可重复安装并可解除模块 pin 的方案需要可证明覆盖所有线程 PC 的 patch rendezvous，留给后续
 注入生命周期设计。当前接口不会把“停止记录”误报为“DLL 已可解除映射”。
@@ -104,6 +108,13 @@ Windows 代码更新临界区：
 - queue 的 `recordable = dequeued + dropped` 守恒；
 - 成功 stop 和 `FreeLibrary` 后模块仍被 pin，导出代码仍可执行；
 - 原有 writer final drain、MD/MT ABI 差分和全量回归。
+
+P5.7 新增 native profile 组合门禁：九个逻辑 API 共用一个 queue；持续 heap/VM worker 与线程 churn
+期间先逻辑停录，停录后的九组 recordable counter 保持不变；writer 先完成并退出，worker 停止后才
+物理 uninstall。该门禁同时验证 `written + filtered + dropped = observed` 和正式 trace 回读。
+
+最终门禁中五组既有 race 与 native profile 各连续 100/100；Debug/Release 各 205/205、hardened
+230/230，Application Verifier/Full Page Heap 三轮通过。
 
 P5.4 Debug/Release 全量均为 193/193，hardened 为 213/213。加入 Windows RWX 暂停 overlay 后，
 allocate/reallocate/free、五 hook heap lifecycle 和双 hook NT VM 并发 race（含 thread churn）各连续

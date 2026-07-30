@@ -1,6 +1,6 @@
 # Windows NT section view hook
 
-> 状态：P5.5 Windows x64 完成；产品 profile 等待 P5.7 启用
+> 状态：P5.7 Windows x64 完成；section view 已接入产品 profile
 
 ## 1. 规范化入口
 

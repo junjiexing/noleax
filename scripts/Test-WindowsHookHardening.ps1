@@ -151,6 +151,8 @@ try {
         Join-Path $binaryDirectory "noleax-nt-section-view-contract-test.exe"
     $ntVirtualMemoryTraceWriterExecutable =
         Join-Path $binaryDirectory "noleax-nt-virtual-memory-trace-writer-test.exe"
+    $nativeProfileExecutable =
+        Join-Path $binaryDirectory "noleax-windows-native-profile-test.exe"
     $moduleGenerationTraceExecutable =
         Join-Path $binaryDirectory "noleax-module-generation-trace-test.exe"
     $moduleTrackerExecutable =
@@ -164,7 +166,8 @@ try {
             $reallocateExceptionExecutable, $heapLifecycleContractExecutable,
             $destroyIsolationExecutable, $ntVirtualMemoryContractExecutable,
             $ntSectionViewContractExecutable, $ntVirtualMemoryTraceWriterExecutable,
-            $moduleGenerationTraceExecutable, $moduleTrackerExecutable)) {
+            $nativeProfileExecutable, $moduleGenerationTraceExecutable,
+            $moduleTrackerExecutable)) {
         if (-not (Test-Path -LiteralPath $path)) {
             throw "Required hardened artifact is missing: $path"
         }
@@ -192,6 +195,9 @@ try {
     }
     Invoke-CheckedCommand ctest --preset $Preset `
         -R "hook.(rtl-((allocate|reallocate|free)-heap|heap-lifecycle)|nt-virtual-memory)-quiescence-race" `
+        --repeat "until-fail:$RaceRepeats" --output-on-failure
+    Invoke-CheckedCommand ctest --preset $Preset `
+        -R "^hook.windows-native-profile$" `
         --repeat "until-fail:$RaceRepeats" --output-on-failure
 
     $longArguments = @(
@@ -236,6 +242,7 @@ try {
         [IO.Path]::GetFileName($ntVirtualMemoryContractExecutable),
         [IO.Path]::GetFileName($ntSectionViewContractExecutable),
         [IO.Path]::GetFileName($ntVirtualMemoryTraceWriterExecutable),
+        [IO.Path]::GetFileName($nativeProfileExecutable),
         [IO.Path]::GetFileName($moduleGenerationTraceExecutable),
         [IO.Path]::GetFileName($moduleTrackerExecutable)
     )
@@ -289,7 +296,7 @@ try {
             -R "hook.(rtl-((allocate|reallocate|free)-heap|heap-lifecycle)|nt-virtual-memory)-quiescence-race" `
             --repeat "until-fail:$VerifierRepeats" --output-on-failure
         Invoke-CheckedCommand ctest --preset $Preset `
-            -R "hook.rtl-allocate-heap-trace-writer-normal|hook.rtl-heap-trace-writer-lifecycle|hook.rtl-(free|reallocate)-heap-contract|hook.rtl-reallocate-heap-seh-contract|hook.rtl-heap-lifecycle-contract|hook.nt-virtual-memory-(contract|trace-writer)|hook.nt-section-view-(contract|unmatched-trace)|hook.module-(generation-trace|tracker-bounded-queue)" `
+            -R "hook.rtl-allocate-heap-trace-writer-normal|hook.rtl-heap-trace-writer-lifecycle|hook.rtl-(free|reallocate)-heap-contract|hook.rtl-reallocate-heap-seh-contract|hook.rtl-heap-lifecycle-contract|hook.nt-virtual-memory-(contract|trace-writer)|hook.nt-section-view-(contract|unmatched-trace)|hook.windows-native-profile|hook.module-(generation-trace|tracker-bounded-queue)" `
             --repeat "until-fail:$VerifierRepeats" --output-on-failure
     } catch {
         $phaseFailure = $_

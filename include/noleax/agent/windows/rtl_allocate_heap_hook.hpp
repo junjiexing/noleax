@@ -18,9 +18,11 @@ class RtlAllocateHeapHook {
 
   explicit RtlAllocateHeapHook(HookBackend& backend,
                                std::size_t event_queue_capacity = kDefaultEventQueueCapacity,
-                               std::uint16_t maximum_stack_depth = kDefaultMaximumStackDepth);
+                               std::uint16_t maximum_stack_depth = kDefaultMaximumStackDepth,
+                               std::uint64_t minimum_capture_size = 0U);
   RtlAllocateHeapHook(HookBackend& backend, RtlHeapEventQueue& event_queue,
-                      std::uint16_t maximum_stack_depth = kDefaultMaximumStackDepth);
+                      std::uint16_t maximum_stack_depth = kDefaultMaximumStackDepth,
+                      std::uint64_t minimum_capture_size = 0U);
   ~RtlAllocateHeapHook();
 
   RtlAllocateHeapHook(const RtlAllocateHeapHook&) = delete;
@@ -33,8 +35,12 @@ class RtlAllocateHeapHook {
       std::uint32_t flush_attempts = HookBackend::kDefaultFlushAttempts) noexcept;
   [[nodiscard]] bool flush(
       std::uint32_t max_attempts = HookBackend::kDefaultFlushAttempts) noexcept;
+  [[nodiscard]] bool stop_recording(
+      std::uint32_t max_attempts = HookBackend::kDefaultFlushAttempts) noexcept;
 
   [[nodiscard]] bool is_installed() const noexcept;
+  [[nodiscard]] bool is_recording() const noexcept;
+  [[nodiscard]] std::uint64_t recording_in_flight_count() const noexcept;
   [[nodiscard]] bool has_pending_teardown() const noexcept;
   [[nodiscard]] bool replacement_module_is_pinned() const noexcept;
   [[nodiscard]] std::uint64_t replacement_in_flight_count() const noexcept;
@@ -45,10 +51,12 @@ class RtlAllocateHeapHook {
   [[nodiscard]] std::uint64_t successful_call_count() const noexcept;
   [[nodiscard]] std::uint64_t failed_call_count() const noexcept;
   [[nodiscard]] std::uint64_t exceptional_call_count() const noexcept;
+  [[nodiscard]] std::uint64_t filtered_call_count() const noexcept;
   [[nodiscard]] std::uint64_t dropped_event_count() const noexcept;
   [[nodiscard]] std::uint64_t take_dropped_event_count() noexcept;
   [[nodiscard]] std::size_t event_queue_capacity() const noexcept;
   [[nodiscard]] std::uint16_t maximum_stack_depth() const noexcept;
+  [[nodiscard]] std::uint64_t minimum_capture_size() const noexcept;
   [[nodiscard]] bool try_dequeue_event(RtlAllocateHeapEvent& event) noexcept;
   [[nodiscard]] RtlHeapEventQueue& event_queue() noexcept;
   [[nodiscard]] const RtlHeapEventQueue& event_queue() const noexcept;
@@ -71,6 +79,7 @@ class RtlAllocateHeapHook {
   HookBackend* backend_{nullptr};
   void* target_{nullptr};
   std::uint16_t maximum_stack_depth_{kDefaultMaximumStackDepth};
+  std::uint64_t minimum_capture_size_{0U};
   State state_{State::kInactive};
   bool guard_runtime_acquired_{false};
   bool trampoline_lease_acquired_{false};

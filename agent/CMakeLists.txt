@@ -16,6 +16,7 @@ if(WIN32)
     windows/rtl_heap_hooks.cpp
     windows/stack_capture.cpp
     windows/stack_dictionary.cpp
+    windows/windows_memory_hooks.cpp
   )
 endif()
 

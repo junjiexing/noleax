@@ -94,6 +94,11 @@ color = "auto"
 
 示例展示 schema，不表示所有键在所有 operation 中都有效。与当前 operation 无关但非默认的配置键应报错，避免用户误以为设置已生效。
 
+`capture.min_size` 与 `--capture-min-size` 语义相同。Windows V1 只在入队前过滤严格小于阈值的
+`RtlAllocateHeap`、`NtAllocateVirtualMemory` 和 `NtMapViewOfSection`；realloc、free/unmap 与 heap
+生命周期事件不被过滤。命令行指定该值时覆盖配置文件。完整规则见
+[WINDOWS_HOOK_PROFILES.md](WINDOWS_HOOK_PROFILES.md)。
+
 ## 3. operation
 
 允许值：

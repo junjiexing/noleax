@@ -7,27 +7,19 @@
 #include <memory>
 #include <string>
 
+#include "noleax/agent/windows/hook_registry.hpp"
 #include "noleax/agent/windows/nt_memory_hooks.hpp"
 #include "noleax/agent/windows/rtl_allocate_heap_hook.hpp"
 #include "noleax/agent/windows/rtl_create_heap_hook.hpp"
 #include "noleax/agent/windows/rtl_destroy_heap_hook.hpp"
 #include "noleax/agent/windows/rtl_free_heap_hook.hpp"
 #include "noleax/agent/windows/rtl_reallocate_heap_hook.hpp"
+#include "noleax/agent/windows/windows_memory_hooks.hpp"
 #include "noleax/trace/completeness.hpp"
 #include "noleax/trace/trace_reader.hpp"
 #include "noleax/trace/trace_writer.hpp"
 
 namespace noleax::agent::windows {
-
-inline constexpr noleax::trace::ApiId kRtlAllocateHeapApiId = 1U;
-inline constexpr noleax::trace::ApiId kRtlFreeHeapApiId = 2U;
-inline constexpr noleax::trace::ApiId kRtlReAllocateHeapApiId = 3U;
-inline constexpr noleax::trace::ApiId kRtlCreateHeapApiId = 4U;
-inline constexpr noleax::trace::ApiId kRtlDestroyHeapApiId = 5U;
-inline constexpr noleax::trace::ApiId kNtAllocateVirtualMemoryApiId = 6U;
-inline constexpr noleax::trace::ApiId kNtFreeVirtualMemoryApiId = 7U;
-inline constexpr noleax::trace::ApiId kNtMapViewOfSectionApiId = 8U;
-inline constexpr noleax::trace::ApiId kNtUnmapViewOfSectionApiId = 9U;
 
 struct RtlAllocateHeapTraceWriterOptions {
   noleax::trace::TraceWriterOptions trace;
@@ -81,6 +73,9 @@ class RtlAllocateHeapTraceWriter final {
                              const noleax::trace::FileHeader& file_header,
                              RtlAllocateHeapTraceWriterOptions options = {});
   RtlAllocateHeapTraceWriter(NtMemoryHooks& nt_memory_hooks, std::ostream& output,
+                             const noleax::trace::FileHeader& file_header,
+                             RtlAllocateHeapTraceWriterOptions options = {});
+  RtlAllocateHeapTraceWriter(WindowsMemoryHooks& hooks, std::ostream& output,
                              const noleax::trace::FileHeader& file_header,
                              RtlAllocateHeapTraceWriterOptions options = {});
   ~RtlAllocateHeapTraceWriter();

@@ -112,6 +112,12 @@ V1 profile：
 | windows-virtual-memory | NT virtual memory allocate/free/map/unmap |
 | windows-native | 上述两组并集 |
 
+`--capture-min-size` 在 Windows V1 只于 hook 热路径过滤尺寸严格小于阈值的
+`RtlAllocateHeap`、`NtAllocateVirtualMemory` 和 `NtMapViewOfSection` creation-side 事件。成功 VM/
+map 使用系统返回的实际大小，失败或异常使用请求大小。realloc、free/unmap、heap create/destroy
+始终记录，以保留已观察 generation 的转换和关闭。被过滤调用仍计入 capture Statistics，但没有
+事件、sequence 或调用栈。详见 [WINDOWS_HOOK_PROFILES.md](WINDOWS_HOOK_PROFILES.md)。
+
 on-trace-full：
 
 - stop

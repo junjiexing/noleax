@@ -41,6 +41,7 @@ struct RtlAllocateHeapHookState final {
     successful_calls.store(0U, std::memory_order_relaxed);
     failed_calls.store(0U, std::memory_order_relaxed);
     exceptional_calls.store(0U, std::memory_order_relaxed);
+    filtered_calls.store(0U, std::memory_order_relaxed);
     dropped_events.store(0U, std::memory_order_relaxed);
   }
 
@@ -54,8 +55,10 @@ struct RtlAllocateHeapHookState final {
   std::atomic<std::uint64_t> successful_calls{0U};
   std::atomic<std::uint64_t> failed_calls{0U};
   std::atomic<std::uint64_t> exceptional_calls{0U};
+  std::atomic<std::uint64_t> filtered_calls{0U};
   std::atomic<std::uint64_t> dropped_events{0U};
   std::uint16_t maximum_stack_depth{0U};
+  std::uint64_t minimum_capture_size{0U};
 };
 
 namespace {
@@ -111,6 +114,11 @@ void increment_saturating(std::atomic<std::uint64_t>& value) noexcept {
     const std::uint32_t exception_status = exception_pointers->ExceptionRecord->ExceptionCode;
     hook_state->failed_calls.fetch_add(1U, std::memory_order_relaxed);
     hook_state->exceptional_calls.fetch_add(1U, std::memory_order_relaxed);
+    if (static_cast<std::uint64_t>(size) < hook_state->minimum_capture_size) {
+      increment_saturating(hook_state->filtered_calls);
+      SetLastError(preserved_last_error);
+      return EXCEPTION_CONTINUE_SEARCH;
+    }
     const std::uint16_t maximum_stack_depth = hook_state->maximum_stack_depth;
     const bool queued = hook_state->event_queue->try_emplace(
         [heap, flags, size, exception_status, maximum_stack_depth](
@@ -201,33 +209,37 @@ PVOID NTAPI replacement_rtl_allocate_heap(PVOID heap, ULONG flags, SIZE_T size) 
           if (entry_kind == HookEntryKind::kOutermost) {
             (result == nullptr ? hook_state->failed_calls : hook_state->successful_calls)
                 .fetch_add(1U, std::memory_order_relaxed);
-            const std::uint16_t maximum_stack_depth = hook_state->maximum_stack_depth;
-            const bool queued = hook_state->event_queue->try_emplace(
-                [heap, flags, size, result, maximum_stack_depth](
-                    RtlAllocateHeapEvent& event, std::uint64_t queue_sequence) noexcept {
-                  event = RtlAllocateHeapEvent{};
-                  LARGE_INTEGER ticks{};
-                  static_cast<void>(QueryPerformanceCounter(&ticks));
-                  event.queue_sequence = queue_sequence;
-                  event.monotonic_ticks = static_cast<std::uint64_t>(ticks.QuadPart);
-                  event.thread_id = static_cast<std::uint64_t>(GetCurrentThreadId());
-                  event.heap_handle =
-                      static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(heap));
-                  event.requested_size = static_cast<std::uint64_t>(size);
-                  event.result_address =
-                      static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(result));
-                  event.address = 0U;
-                  event.raw_result = 0U;
-                  event.auxiliary_address = 0U;
-                  event.flags = flags;
-                  event.operation = RtlHeapEventOperation::kAllocate;
-                  event.status = result == nullptr ? RtlAllocateHeapEventStatus::kFailure
-                                                   : RtlAllocateHeapEventStatus::kSuccess;
-                  event.exception_status = 0U;
-                  capture_current_stack(event.stack, maximum_stack_depth, 1U);
-                });
-            if (!queued) {
-              increment_saturating(hook_state->dropped_events);
+            if (static_cast<std::uint64_t>(size) < hook_state->minimum_capture_size) {
+              increment_saturating(hook_state->filtered_calls);
+            } else {
+              const std::uint16_t maximum_stack_depth = hook_state->maximum_stack_depth;
+              const bool queued = hook_state->event_queue->try_emplace(
+                  [heap, flags, size, result, maximum_stack_depth](
+                      RtlAllocateHeapEvent& event, std::uint64_t queue_sequence) noexcept {
+                    event = RtlAllocateHeapEvent{};
+                    LARGE_INTEGER ticks{};
+                    static_cast<void>(QueryPerformanceCounter(&ticks));
+                    event.queue_sequence = queue_sequence;
+                    event.monotonic_ticks = static_cast<std::uint64_t>(ticks.QuadPart);
+                    event.thread_id = static_cast<std::uint64_t>(GetCurrentThreadId());
+                    event.heap_handle =
+                        static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(heap));
+                    event.requested_size = static_cast<std::uint64_t>(size);
+                    event.result_address =
+                        static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(result));
+                    event.address = 0U;
+                    event.raw_result = 0U;
+                    event.auxiliary_address = 0U;
+                    event.flags = flags;
+                    event.operation = RtlHeapEventOperation::kAllocate;
+                    event.status = result == nullptr ? RtlAllocateHeapEventStatus::kFailure
+                                                     : RtlAllocateHeapEventStatus::kSuccess;
+                    event.exception_status = 0U;
+                    capture_current_stack(event.stack, maximum_stack_depth, 1U);
+                  });
+              if (!queued) {
+                increment_saturating(hook_state->dropped_events);
+              }
             }
           }
 
@@ -239,7 +251,7 @@ PVOID NTAPI replacement_rtl_allocate_heap(PVOID heap, ULONG flags, SIZE_T size) 
       if (guard_entered) {
         leave_hook_invocation_unscoped();
       }
-      replacement_lifecycle.leave_unscoped();
+      replacement_lifecycle.leave_unscoped(route);
     }
   } __except (record_exception_filter(GetExceptionInformation(), route, hook_state, guard_entered,
                                       entry_kind, original_completed, heap, flags, size)) {
@@ -249,7 +261,7 @@ PVOID NTAPI replacement_rtl_allocate_heap(PVOID heap, ULONG flags, SIZE_T size) 
   if (guard_entered) {
     leave_hook_invocation_unscoped();
   }
-  replacement_lifecycle.leave_unscoped();
+  replacement_lifecycle.leave_unscoped(route);
 #endif
   return result;
 }
@@ -284,18 +296,22 @@ void release_owner(RtlAllocateHeapHook* owner, bool clear_hook_state) noexcept {
 }  // namespace
 
 RtlAllocateHeapHook::RtlAllocateHeapHook(HookBackend& backend, std::size_t event_queue_capacity,
-                                         std::uint16_t maximum_stack_depth)
+                                         std::uint16_t maximum_stack_depth,
+                                         std::uint64_t minimum_capture_size)
     : hook_state_{std::make_unique<RtlAllocateHeapHookState>(event_queue_capacity)},
       backend_{&backend},
-      maximum_stack_depth_{maximum_stack_depth} {
+      maximum_stack_depth_{maximum_stack_depth},
+      minimum_capture_size_{minimum_capture_size} {
   initialize();
 }
 
 RtlAllocateHeapHook::RtlAllocateHeapHook(HookBackend& backend, RtlHeapEventQueue& event_queue,
-                                         std::uint16_t maximum_stack_depth)
+                                         std::uint16_t maximum_stack_depth,
+                                         std::uint64_t minimum_capture_size)
     : hook_state_{std::make_unique<RtlAllocateHeapHookState>(event_queue)},
       backend_{&backend},
-      maximum_stack_depth_{maximum_stack_depth} {
+      maximum_stack_depth_{maximum_stack_depth},
+      minimum_capture_size_{minimum_capture_size} {
   initialize();
 }
 
@@ -322,6 +338,7 @@ void RtlAllocateHeapHook::initialize() {
   }
   guard_runtime_acquired_ = true;
   hook_state_->maximum_stack_depth = maximum_stack_depth_;
+  hook_state_->minimum_capture_size = minimum_capture_size_;
 }
 
 RtlAllocateHeapHook::~RtlAllocateHeapHook() {
@@ -433,7 +450,23 @@ bool RtlAllocateHeapHook::flush(std::uint32_t max_attempts) noexcept {
   return try_finish_teardown(max_attempts);
 }
 
+bool RtlAllocateHeapHook::stop_recording(std::uint32_t max_attempts) noexcept {
+  if (state_ != State::kInstalled) {
+    return state_ == State::kInactive || state_ == State::kRetired;
+  }
+  replacement_lifecycle.stop_recording();
+  return replacement_lifecycle.wait_for_recording_quiescence(max_attempts);
+}
+
 bool RtlAllocateHeapHook::is_installed() const noexcept { return state_ == State::kInstalled; }
+
+bool RtlAllocateHeapHook::is_recording() const noexcept {
+  return state_ == State::kInstalled && replacement_lifecycle.route() == ReplacementRoute::kRecord;
+}
+
+std::uint64_t RtlAllocateHeapHook::recording_in_flight_count() const noexcept {
+  return replacement_lifecycle.recording_in_flight();
+}
 
 bool RtlAllocateHeapHook::has_pending_teardown() const noexcept {
   return state_ == State::kTeardownPending;
@@ -475,6 +508,10 @@ std::uint64_t RtlAllocateHeapHook::exceptional_call_count() const noexcept {
   return hook_state_->exceptional_calls.load(std::memory_order_relaxed);
 }
 
+std::uint64_t RtlAllocateHeapHook::filtered_call_count() const noexcept {
+  return hook_state_->filtered_calls.load(std::memory_order_relaxed);
+}
+
 std::uint64_t RtlAllocateHeapHook::dropped_event_count() const noexcept {
   return hook_state_->dropped_events.load(std::memory_order_relaxed);
 }
@@ -489,6 +526,10 @@ std::size_t RtlAllocateHeapHook::event_queue_capacity() const noexcept {
 
 std::uint16_t RtlAllocateHeapHook::maximum_stack_depth() const noexcept {
   return maximum_stack_depth_;
+}
+
+std::uint64_t RtlAllocateHeapHook::minimum_capture_size() const noexcept {
+  return minimum_capture_size_;
 }
 
 bool RtlAllocateHeapHook::try_dequeue_event(RtlAllocateHeapEvent& event) noexcept {

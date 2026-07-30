@@ -239,7 +239,7 @@ BOOLEAN NTAPI replacement_rtl_free_heap(PVOID heap, ULONG flags, PVOID address) 
       if (guard_entered) {
         leave_hook_invocation_unscoped();
       }
-      replacement_lifecycle.leave_unscoped();
+      replacement_lifecycle.leave_unscoped(route);
     }
   } __except (record_exception_filter(GetExceptionInformation(), route, hook_state, guard_entered,
                                       entry_kind, original_completed, heap, flags, address)) {
@@ -249,7 +249,7 @@ BOOLEAN NTAPI replacement_rtl_free_heap(PVOID heap, ULONG flags, PVOID address) 
   if (guard_entered) {
     leave_hook_invocation_unscoped();
   }
-  replacement_lifecycle.leave_unscoped();
+  replacement_lifecycle.leave_unscoped(route);
 #endif
   return result;
 }
@@ -433,7 +433,23 @@ bool RtlFreeHeapHook::flush(std::uint32_t max_attempts) noexcept {
   return try_finish_teardown(max_attempts);
 }
 
+bool RtlFreeHeapHook::stop_recording(std::uint32_t max_attempts) noexcept {
+  if (state_ != State::kInstalled) {
+    return state_ == State::kInactive || state_ == State::kRetired;
+  }
+  replacement_lifecycle.stop_recording();
+  return replacement_lifecycle.wait_for_recording_quiescence(max_attempts);
+}
+
 bool RtlFreeHeapHook::is_installed() const noexcept { return state_ == State::kInstalled; }
+
+bool RtlFreeHeapHook::is_recording() const noexcept {
+  return state_ == State::kInstalled && replacement_lifecycle.route() == ReplacementRoute::kRecord;
+}
+
+std::uint64_t RtlFreeHeapHook::recording_in_flight_count() const noexcept {
+  return replacement_lifecycle.recording_in_flight();
+}
 
 bool RtlFreeHeapHook::has_pending_teardown() const noexcept {
   return state_ == State::kTeardownPending;

@@ -33,6 +33,7 @@ struct ApiHookState {
     successful_calls.store(0U, std::memory_order_relaxed);
     failed_calls.store(0U, std::memory_order_relaxed);
     exceptional_calls.store(0U, std::memory_order_relaxed);
+    filtered_calls.store(0U, std::memory_order_relaxed);
     dropped_events.store(0U, std::memory_order_relaxed);
   }
 
@@ -44,6 +45,7 @@ struct ApiHookState {
   std::atomic<std::uint64_t> successful_calls{0U};
   std::atomic<std::uint64_t> failed_calls{0U};
   std::atomic<std::uint64_t> exceptional_calls{0U};
+  std::atomic<std::uint64_t> filtered_calls{0U};
   std::atomic<std::uint64_t> dropped_events{0U};
 };
 
@@ -354,6 +356,7 @@ void release_owner(NtMemoryHooks* owner, bool clear_hook_state) noexcept {
       api.successful_calls.load(std::memory_order_relaxed),
       api.failed_calls.load(std::memory_order_relaxed),
       api.exceptional_calls.load(std::memory_order_relaxed),
+      api.filtered_calls.load(std::memory_order_relaxed),
       api.dropped_events.load(std::memory_order_relaxed),
   };
 }
@@ -375,7 +378,9 @@ struct NtMemoryHookState final {
     unmap.reset_quiescent();
     unmap_ex_original_trampoline.store(nullptr, std::memory_order_relaxed);
     maximum_stack_depth = stack_depth;
-    event_queue->reset_quiescent();
+    if (owned_event_queue != nullptr) {
+      owned_event_queue->reset_quiescent();
+    }
   }
 
   std::unique_ptr<NtVirtualMemoryEventQueue> owned_event_queue;
@@ -386,6 +391,7 @@ struct NtMemoryHookState final {
   ApiHookState unmap;
   std::atomic<void*> unmap_ex_original_trampoline{nullptr};
   std::uint16_t maximum_stack_depth{kMaximumCapturedStackDepth};
+  std::uint64_t minimum_capture_size{0U};
 };
 
 namespace {
@@ -404,6 +410,11 @@ LONG record_allocate_exception_filter(EXCEPTION_POINTERS* exception_pointers,
       exception_pointers != nullptr && exception_pointers->ExceptionRecord != nullptr) {
     hook_state->allocate.failed_calls.fetch_add(1U, std::memory_order_relaxed);
     hook_state->allocate.exceptional_calls.fetch_add(1U, std::memory_order_relaxed);
+    if (static_cast<std::uint64_t>(requested_size) < hook_state->minimum_capture_size) {
+      increment_saturating(hook_state->allocate.filtered_calls);
+      SetLastError(preserved_last_error);
+      return EXCEPTION_CONTINUE_SEARCH;
+    }
     const std::uint32_t exception_status = exception_pointers->ExceptionRecord->ExceptionCode;
     const std::uint16_t maximum_stack_depth = hook_state->maximum_stack_depth;
     const bool queued = hook_state->event_queue->try_emplace(
@@ -462,6 +473,11 @@ LONG record_map_exception_filter(EXCEPTION_POINTERS* exception_pointers, Replace
       exception_pointers != nullptr && exception_pointers->ExceptionRecord != nullptr) {
     hook_state->map.failed_calls.fetch_add(1U, std::memory_order_relaxed);
     hook_state->map.exceptional_calls.fetch_add(1U, std::memory_order_relaxed);
+    if (static_cast<std::uint64_t>(requested_view_size) < hook_state->minimum_capture_size) {
+      increment_saturating(hook_state->map.filtered_calls);
+      SetLastError(preserved_last_error);
+      return EXCEPTION_CONTINUE_SEARCH;
+    }
     const std::uint32_t exception_status = exception_pointers->ExceptionRecord->ExceptionCode;
     const std::uint16_t maximum_stack_depth = hook_state->maximum_stack_depth;
     const bool queued = hook_state->event_queue->try_emplace(
@@ -564,18 +580,24 @@ NTSTATUS NTAPI replacement_nt_allocate_virtual_memory(HANDLE process, PVOID* bas
             (nt_success(result) ? hook_state->allocate.successful_calls
                                 : hook_state->allocate.failed_calls)
                 .fetch_add(1U, std::memory_order_relaxed);
-            const std::uint16_t maximum_stack_depth = hook_state->maximum_stack_depth;
-            const bool queued = hook_state->event_queue->try_emplace(
-                [=](NtVirtualMemoryEvent& event, std::uint64_t queue_sequence) noexcept {
-                  fill_vm_event(event, queue_sequence, RtlHeapEventOperation::kVmAllocate, process,
-                                requested_base, result_base, requested_size, result_size, zero_bits,
-                                allocation_type, protect, result,
-                                nt_success(result) ? NtVirtualMemoryEventStatus::kSuccess
-                                                   : NtVirtualMemoryEventStatus::kFailure,
-                                0U, maximum_stack_depth);
-                });
-            if (!queued) {
-              increment_saturating(hook_state->allocate.dropped_events);
+            const std::uint64_t filter_size = static_cast<std::uint64_t>(
+                nt_success(result) && result_size != 0U ? result_size : requested_size);
+            if (filter_size < hook_state->minimum_capture_size) {
+              increment_saturating(hook_state->allocate.filtered_calls);
+            } else {
+              const std::uint16_t maximum_stack_depth = hook_state->maximum_stack_depth;
+              const bool queued = hook_state->event_queue->try_emplace(
+                  [=](NtVirtualMemoryEvent& event, std::uint64_t queue_sequence) noexcept {
+                    fill_vm_event(event, queue_sequence, RtlHeapEventOperation::kVmAllocate,
+                                  process, requested_base, result_base, requested_size, result_size,
+                                  zero_bits, allocation_type, protect, result,
+                                  nt_success(result) ? NtVirtualMemoryEventStatus::kSuccess
+                                                     : NtVirtualMemoryEventStatus::kFailure,
+                                  0U, maximum_stack_depth);
+                  });
+              if (!queued) {
+                increment_saturating(hook_state->allocate.dropped_events);
+              }
             }
           }
           SetLastError(original_last_error);
@@ -586,7 +608,7 @@ NTSTATUS NTAPI replacement_nt_allocate_virtual_memory(HANDLE process, PVOID* bas
       if (guard_entered) {
         leave_hook_invocation_unscoped();
       }
-      allocate_replacement_lifecycle.leave_unscoped();
+      allocate_replacement_lifecycle.leave_unscoped(route);
     }
   } __except (record_allocate_exception_filter(
       GetExceptionInformation(), route, hook_state, guard_entered, entry_kind, original_completed,
@@ -597,7 +619,7 @@ NTSTATUS NTAPI replacement_nt_allocate_virtual_memory(HANDLE process, PVOID* bas
   if (guard_entered) {
     leave_hook_invocation_unscoped();
   }
-  allocate_replacement_lifecycle.leave_unscoped();
+  allocate_replacement_lifecycle.leave_unscoped(route);
 #endif
   return result;
 }
@@ -674,7 +696,7 @@ NTSTATUS NTAPI replacement_nt_free_virtual_memory(HANDLE process, PVOID* base_ad
       if (guard_entered) {
         leave_hook_invocation_unscoped();
       }
-      free_replacement_lifecycle.leave_unscoped();
+      free_replacement_lifecycle.leave_unscoped(route);
     }
   } __except (record_free_exception_filter(GetExceptionInformation(), route, hook_state,
                                            guard_entered, entry_kind, original_completed, process,
@@ -685,7 +707,7 @@ NTSTATUS NTAPI replacement_nt_free_virtual_memory(HANDLE process, PVOID* base_ad
   if (guard_entered) {
     leave_hook_invocation_unscoped();
   }
-  free_replacement_lifecycle.leave_unscoped();
+  free_replacement_lifecycle.leave_unscoped(route);
 #endif
   return result;
 }
@@ -748,22 +770,29 @@ NTSTATUS NTAPI replacement_nt_map_view_of_section(HANDLE section, HANDLE process
             static_cast<void>(safely_read(view_size, result_view_size));
             (nt_success(result) ? hook_state->map.successful_calls : hook_state->map.failed_calls)
                 .fetch_add(1U, std::memory_order_relaxed);
-            const std::uint16_t maximum_stack_depth = hook_state->maximum_stack_depth;
-            const std::uint64_t raw_section_offset =
-                static_cast<std::uint64_t>(requested_section_offset.QuadPart);
-            const bool queued = hook_state->event_queue->try_emplace(
-                [=](NtVirtualMemoryEvent& event, std::uint64_t queue_sequence) noexcept {
-                  fill_section_event(event, queue_sequence, RtlHeapEventOperation::kSectionMap,
-                                     section, process, requested_base, result_base,
-                                     requested_view_size, result_view_size, zero_bits, commit_size,
-                                     raw_section_offset, inherit_disposition, allocation_type,
-                                     protect, result,
-                                     nt_success(result) ? NtVirtualMemoryEventStatus::kSuccess
-                                                        : NtVirtualMemoryEventStatus::kFailure,
-                                     0U, maximum_stack_depth);
-                });
-            if (!queued) {
-              increment_saturating(hook_state->map.dropped_events);
+            const std::uint64_t filter_size = static_cast<std::uint64_t>(
+                nt_success(result) && result_view_size != 0U ? result_view_size
+                                                             : requested_view_size);
+            if (filter_size < hook_state->minimum_capture_size) {
+              increment_saturating(hook_state->map.filtered_calls);
+            } else {
+              const std::uint16_t maximum_stack_depth = hook_state->maximum_stack_depth;
+              const std::uint64_t raw_section_offset =
+                  static_cast<std::uint64_t>(requested_section_offset.QuadPart);
+              const bool queued = hook_state->event_queue->try_emplace(
+                  [=](NtVirtualMemoryEvent& event, std::uint64_t queue_sequence) noexcept {
+                    fill_section_event(event, queue_sequence, RtlHeapEventOperation::kSectionMap,
+                                       section, process, requested_base, result_base,
+                                       requested_view_size, result_view_size, zero_bits,
+                                       commit_size, raw_section_offset, inherit_disposition,
+                                       allocation_type, protect, result,
+                                       nt_success(result) ? NtVirtualMemoryEventStatus::kSuccess
+                                                          : NtVirtualMemoryEventStatus::kFailure,
+                                       0U, maximum_stack_depth);
+                  });
+              if (!queued) {
+                increment_saturating(hook_state->map.dropped_events);
+              }
             }
           }
           SetLastError(original_last_error);
@@ -774,7 +803,7 @@ NTSTATUS NTAPI replacement_nt_map_view_of_section(HANDLE section, HANDLE process
       if (guard_entered) {
         leave_hook_invocation_unscoped();
       }
-      map_replacement_lifecycle.leave_unscoped();
+      map_replacement_lifecycle.leave_unscoped(route);
     }
   } __except (record_map_exception_filter(
       GetExceptionInformation(), route, hook_state, guard_entered, entry_kind, original_completed,
@@ -787,7 +816,7 @@ NTSTATUS NTAPI replacement_nt_map_view_of_section(HANDLE section, HANDLE process
   if (guard_entered) {
     leave_hook_invocation_unscoped();
   }
-  map_replacement_lifecycle.leave_unscoped();
+  map_replacement_lifecycle.leave_unscoped(route);
 #endif
   return result;
 }
@@ -852,7 +881,7 @@ NTSTATUS NTAPI replacement_nt_unmap_view_of_section(HANDLE process, PVOID base_a
       if (guard_entered) {
         leave_hook_invocation_unscoped();
       }
-      unmap_replacement_lifecycle.leave_unscoped();
+      unmap_replacement_lifecycle.leave_unscoped(route);
     }
   } __except (record_unmap_exception_filter(GetExceptionInformation(), route, hook_state,
                                             guard_entered, entry_kind, original_completed, process,
@@ -863,7 +892,7 @@ NTSTATUS NTAPI replacement_nt_unmap_view_of_section(HANDLE process, PVOID base_a
   if (guard_entered) {
     leave_hook_invocation_unscoped();
   }
-  unmap_replacement_lifecycle.leave_unscoped();
+  unmap_replacement_lifecycle.leave_unscoped(route);
 #endif
   return result;
 }
@@ -929,7 +958,7 @@ NTSTATUS NTAPI replacement_nt_unmap_view_of_section_ex(HANDLE process, PVOID bas
       if (guard_entered) {
         leave_hook_invocation_unscoped();
       }
-      unmap_replacement_lifecycle.leave_unscoped();
+      unmap_replacement_lifecycle.leave_unscoped(route);
     }
   } __except (record_unmap_exception_filter(GetExceptionInformation(), route, hook_state,
                                             guard_entered, entry_kind, original_completed, process,
@@ -940,7 +969,7 @@ NTSTATUS NTAPI replacement_nt_unmap_view_of_section_ex(HANDLE process, PVOID bas
   if (guard_entered) {
     leave_hook_invocation_unscoped();
   }
-  unmap_replacement_lifecycle.leave_unscoped();
+  unmap_replacement_lifecycle.leave_unscoped(route);
 #endif
   return result;
 }
@@ -948,18 +977,20 @@ NTSTATUS NTAPI replacement_nt_unmap_view_of_section_ex(HANDLE process, PVOID bas
 }  // namespace
 
 NtMemoryHooks::NtMemoryHooks(HookBackend& backend, std::size_t event_queue_capacity,
-                             std::uint16_t maximum_stack_depth)
+                             std::uint16_t maximum_stack_depth, std::uint64_t minimum_capture_size)
     : hook_state_{std::make_unique<NtMemoryHookState>(event_queue_capacity)},
       backend_{&backend},
-      maximum_stack_depth_{maximum_stack_depth} {
+      maximum_stack_depth_{maximum_stack_depth},
+      minimum_capture_size_{minimum_capture_size} {
   initialize();
 }
 
 NtMemoryHooks::NtMemoryHooks(HookBackend& backend, NtVirtualMemoryEventQueue& event_queue,
-                             std::uint16_t maximum_stack_depth)
+                             std::uint16_t maximum_stack_depth, std::uint64_t minimum_capture_size)
     : hook_state_{std::make_unique<NtMemoryHookState>(event_queue)},
       backend_{&backend},
-      maximum_stack_depth_{maximum_stack_depth} {
+      maximum_stack_depth_{maximum_stack_depth},
+      minimum_capture_size_{minimum_capture_size} {
   initialize();
 }
 
@@ -990,6 +1021,7 @@ void NtMemoryHooks::initialize() {
   }
   guard_runtime_acquired_ = true;
   hook_state_->maximum_stack_depth = maximum_stack_depth_;
+  hook_state_->minimum_capture_size = minimum_capture_size_;
 }
 
 NtMemoryHooks::~NtMemoryHooks() {
@@ -1271,6 +1303,22 @@ bool NtMemoryHooks::flush(std::uint32_t max_attempts) noexcept {
   return try_finish_teardown(max_attempts);
 }
 
+bool NtMemoryHooks::stop_recording(std::uint32_t max_attempts) noexcept {
+  if (state_ != State::kInstalled) {
+    return state_ == State::kInactive || state_ == State::kRetired;
+  }
+  allocate_replacement_lifecycle.stop_recording();
+  free_replacement_lifecycle.stop_recording();
+  map_replacement_lifecycle.stop_recording();
+  unmap_replacement_lifecycle.stop_recording();
+  const bool allocate_done =
+      allocate_replacement_lifecycle.wait_for_recording_quiescence(max_attempts);
+  const bool free_done = free_replacement_lifecycle.wait_for_recording_quiescence(max_attempts);
+  const bool map_done = map_replacement_lifecycle.wait_for_recording_quiescence(max_attempts);
+  const bool unmap_done = unmap_replacement_lifecycle.wait_for_recording_quiescence(max_attempts);
+  return allocate_done && free_done && map_done && unmap_done;
+}
+
 bool NtMemoryHooks::try_finish_teardown(std::uint32_t max_attempts) noexcept {
   if (!allocate_replacement_quiescent_) {
     if (allocate_lifecycle_started_ &&
@@ -1361,6 +1409,27 @@ void NtMemoryHooks::abandon_pending_teardown() noexcept {
 
 bool NtMemoryHooks::is_installed() const noexcept { return state_ == State::kInstalled; }
 
+bool NtMemoryHooks::is_recording() const noexcept {
+  return state_ == State::kInstalled &&
+         (allocate_replacement_lifecycle.route() == ReplacementRoute::kRecord ||
+          free_replacement_lifecycle.route() == ReplacementRoute::kRecord ||
+          map_replacement_lifecycle.route() == ReplacementRoute::kRecord ||
+          unmap_replacement_lifecycle.route() == ReplacementRoute::kRecord);
+}
+
+std::uint64_t NtMemoryHooks::recording_in_flight_count() const noexcept {
+  std::uint64_t total = allocate_replacement_lifecycle.recording_in_flight();
+  const auto add_saturating = [&total](std::uint64_t value) {
+    total = value > std::numeric_limits<std::uint64_t>::max() - total
+                ? std::numeric_limits<std::uint64_t>::max()
+                : total + value;
+  };
+  add_saturating(free_replacement_lifecycle.recording_in_flight());
+  add_saturating(map_replacement_lifecycle.recording_in_flight());
+  add_saturating(unmap_replacement_lifecycle.recording_in_flight());
+  return total;
+}
+
 bool NtMemoryHooks::has_pending_teardown() const noexcept {
   return state_ == State::kTeardownPending;
 }
@@ -1425,6 +1494,8 @@ std::size_t NtMemoryHooks::event_queue_capacity() const noexcept {
 }
 
 std::uint16_t NtMemoryHooks::maximum_stack_depth() const noexcept { return maximum_stack_depth_; }
+
+std::uint64_t NtMemoryHooks::minimum_capture_size() const noexcept { return minimum_capture_size_; }
 
 bool NtMemoryHooks::try_dequeue_event(NtVirtualMemoryEvent& event) noexcept {
   return hook_state_->event_queue->try_pop(event);

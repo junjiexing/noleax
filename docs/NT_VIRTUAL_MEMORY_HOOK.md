@@ -64,5 +64,6 @@ dictionary 和文件大小上限沿用 [TRACE_WRITER.md](TRACE_WRITER.md) 的合
 3/3。Application Verifier/Full Page Heap 下 workload、五组 race、trace 和合同各三轮通过；本轮
 54 份 `.dat` 日志按 15 个 image 导出 XML 后为零 `LogEntry`，15 个 IFEO key 全部清理。
 
-产品 profile 仍不启用；P5.5 已补齐 section-view generation，P5.6/P5.7 再完成模块相对帧、registry
-和完整组合门禁。
+P5.7 已将 VM 与 section-view family 接入 `windows-virtual-memory` 和 `windows-native` 产品 profile；
+native 模式与 NT Heap 共用 queue，并通过完整组合、过滤、统计和逻辑停录门禁。详见
+[WINDOWS_HOOK_PROFILES.md](WINDOWS_HOOK_PROFILES.md)。

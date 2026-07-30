@@ -4,9 +4,9 @@
 > 文档版本：0.1
 > 更新日期：2026-07-30
 > 确认日期：2026-07-29
-> 当前阶段：P5.6 module generation 与相对栈帧实现完成（`feat/windows-agent-full-api`）
-> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8、P4.9、P5.1、P5.2、P5.3、P5.4、P5.5、P5.6
-> 下一工作项：P5.7 profile、过滤和统计收口
+> 当前阶段：P5 Windows agent 完整 API 覆盖完成
+> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8、P4.9、P5.1、P5.2、P5.3、P5.4、P5.5、P5.6、P5.7
+> 下一工作项：P6.1 controller/agent IPC
 
 ## 1. 文档目的
 
@@ -1411,6 +1411,23 @@ hash 与完整比较包含 ModuleId、offset 和绝对地址，因此 unload/rel
 StackId。正式 EventStream 校验 generation、live range 和相对地址一致性；真实 DLL fixture 已覆盖
 同基址 reload、不同 ModuleId/StackId 及卸载后的离线符号化。详见
 [MODULE_TRACKING.md](MODULE_TRACKING.md)。
+
+P5.7 状态：新增九个逻辑 API、十个物理 export 的唯一 registry，并用独立 test registry 做一一
+对应门禁。`windows-nt-heap`、`windows-virtual-memory` 和 `windows-native` 三个 profile 由
+`WindowsMemoryHooks` 按 registry 选择；native profile 的 heap 与 VM hook 共用一个 664-byte
+MPSC queue，因此九种事件具有同一 queue sequence。
+
+`capture.min_size` 在 replacement 热路径、栈捕获和入队前过滤 `RtlAllocateHeap`、
+`NtAllocateVirtualMemory` 和 `NtMapViewOfSection`；realloc、free/unmap 与 heap 生命周期事件始终保留。
+writer 将 filtered 纳入每 API 和 aggregate Statistics，守恒式为
+`written + filtered + dropped = observed`。产品停止流程拆为逻辑停录与物理 revert：先切换到 original
+并等待所有 record 路由退出，writer 完成 final drain 后停止目标 worker，最后才执行物理 uninstall，
+规避运行中多字节 patch revert 的不可证明窗口。完整语义见
+[WINDOWS_HOOK_PROFILES.md](WINDOWS_HOOK_PROFILES.md)。
+
+P5.7 最终门禁为 Debug/Release 各 205/205、hardened 230/230、25 个 PE 的 CFG/CET metadata；五组
+既有 race 与 native profile 各 100/100，MD/MT 8×20,000×2 长差分 3/3。Application Verifier/Full
+Page Heap 下三轮门禁通过，19 个目标 IFEO key 全部清理。
 
 每增加一个 API：
 

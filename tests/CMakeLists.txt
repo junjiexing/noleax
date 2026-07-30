@@ -77,6 +77,7 @@ if(WIN32)
     unit/hook_backend_test.cpp
     unit/stack_capture_test.cpp
     unit/stack_dictionary_test.cpp
+    unit/windows_hook_registry_test.cpp
   )
   target_link_libraries(noleax-unit-tests PRIVATE noleax::hook-backend)
 
@@ -127,6 +128,27 @@ if(WIN32)
     noleax::analyzer
   )
   noleax_set_project_warnings(noleax-nt-virtual-memory-trace-writer-test)
+
+  add_executable(noleax-windows-native-profile-test
+    integration/windows_native_profile_test.cpp
+  )
+  target_link_libraries(noleax-windows-native-profile-test PRIVATE
+    noleax::hook-backend
+    noleax::analyzer
+  )
+  noleax_set_project_warnings(noleax-windows-native-profile-test)
+
+  add_test(NAME hook.windows-native-profile
+    COMMAND noleax-windows-native-profile-test
+      "$<TARGET_FILE_DIR:noleax-windows-native-profile-test>/windows-native-profile.nlx"
+  )
+  set_tests_properties(hook.windows-native-profile PROPERTIES
+    LABELS "hook;trace;writer;windows;profile;registry;filter;statistics;quiescence;stress"
+    PASS_REGULAR_EXPRESSION
+      "^status=ok profile=windows-native apis=9 events=[0-9]+ filtered=[1-9][0-9]* stable=1 writer-before-revert=1 operations=[1-9][0-9]*"
+    RUN_SERIAL TRUE
+    TIMEOUT 180
+  )
 
   add_library(noleax-module-generation-fixture SHARED
     integration/module_generation_fixture.cpp
@@ -651,6 +673,7 @@ if(WIN32)
         noleax-nt-virtual-memory-contract-test
         noleax-nt-section-view-contract-test
         noleax-nt-virtual-memory-trace-writer-test
+        noleax-windows-native-profile-test
         noleax-module-generation-fixture
         noleax-module-generation-trace-test
         noleax-module-tracker-test

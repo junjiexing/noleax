@@ -37,7 +37,9 @@ struct RtlCreateHeapHookState final {
     failed_calls.store(0U, std::memory_order_relaxed);
     exceptional_calls.store(0U, std::memory_order_relaxed);
     dropped_events.store(0U, std::memory_order_relaxed);
-    event_queue->reset_quiescent();
+    if (owned_event_queue != nullptr) {
+      owned_event_queue->reset_quiescent();
+    }
   }
 
   std::unique_ptr<RtlHeapEventQueue> owned_event_queue;
@@ -231,7 +233,7 @@ PVOID NTAPI replacement_rtl_create_heap(ULONG flags, PVOID heap_base, SIZE_T res
       if (guard_entered) {
         leave_hook_invocation_unscoped();
       }
-      replacement_lifecycle.leave_unscoped();
+      replacement_lifecycle.leave_unscoped(route);
     }
   } __except (record_exception_filter(GetExceptionInformation(), route, hook_state, guard_entered,
                                       entry_kind, original_completed, flags, heap_base,
@@ -242,7 +244,7 @@ PVOID NTAPI replacement_rtl_create_heap(ULONG flags, PVOID heap_base, SIZE_T res
   if (guard_entered) {
     leave_hook_invocation_unscoped();
   }
-  replacement_lifecycle.leave_unscoped();
+  replacement_lifecycle.leave_unscoped(route);
 #endif
   return result;
 }
@@ -421,7 +423,21 @@ bool RtlCreateHeapHook::flush(std::uint32_t max_attempts) noexcept {
   return try_finish_teardown(max_attempts);
 }
 
+bool RtlCreateHeapHook::stop_recording(std::uint32_t max_attempts) noexcept {
+  if (state_ != State::kInstalled) {
+    return state_ == State::kInactive || state_ == State::kRetired;
+  }
+  replacement_lifecycle.stop_recording();
+  return replacement_lifecycle.wait_for_recording_quiescence(max_attempts);
+}
+
 bool RtlCreateHeapHook::is_installed() const noexcept { return state_ == State::kInstalled; }
+bool RtlCreateHeapHook::is_recording() const noexcept {
+  return state_ == State::kInstalled && replacement_lifecycle.route() == ReplacementRoute::kRecord;
+}
+std::uint64_t RtlCreateHeapHook::recording_in_flight_count() const noexcept {
+  return replacement_lifecycle.recording_in_flight();
+}
 bool RtlCreateHeapHook::has_pending_teardown() const noexcept {
   return state_ == State::kTeardownPending;
 }

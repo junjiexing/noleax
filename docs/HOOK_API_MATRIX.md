@@ -1,6 +1,6 @@
 # Windows V1 Hook API Matrix
 
-> 状态：P5.6；九个逻辑 API、模块 generation 与相对栈帧已完成，profile 等待 P5.7 启用
+> 状态：P5.7；九个逻辑 API、十个物理入口和三个产品 profile 已启用
 > backend：Hoox v0.1.1 replace_fast
 > target：Windows x64
 
@@ -303,15 +303,15 @@ Ex adapter；它与 legacy 入口共享逻辑 API ID、统计和 generation，�
 
 | API | Adapter | Unit | Contract | Concurrency | CFG/CET | Page Heap | Enabled |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| RtlCreateHeap | P5.3 combined candidate | guard/shared-queue/stack/SEH pass | ABI/LastError/failure/exception-mode/overflow/raw-event pass | five-hook quiescence + handle reuse pass | PE + runtime pass | combined Full Page Heap 3/3 pass | no |
-| RtlDestroyHeap | P5.3 combined candidate | guard/shared-queue/stack/SEH pass | ABI/LastError/null/bad/double/raw-event pass | five-hook quiescence + destroy-live pass | PE + runtime pass | combined Full Page Heap 3/3 pass | no |
-| RtlAllocateHeap | P5.3 combined candidate | guard/shared-queue/stack/SEH pass | ABI/LastError/exception/overflow/stack/trace pass | 8x20k + five-hook quiescence pass | PE + runtime pass | combined Full Page Heap 3/3 pass | no |
-| RtlReAllocateHeap | P5.3 combined candidate | guard/shared-queue/stack/SEH pass | in-place/move/zero/OOM/LastError/exception/fail-fast/trace pass | cross-thread + 8x20k + quiescence pass | PE + runtime pass | combined Full Page Heap 3/3 pass | no |
-| RtlFreeHeap | P5.3 combined candidate | guard/shared-queue/stack/SEH pass | return/LastError/exception/fail-fast/trace pass | cross-thread + 8x20k + quiescence pass | PE + runtime pass | AppVerifier Full 3/3 pass | no |
-| NtAllocateVirtualMemory | P5.4 combined candidate | guard/shared-queue/stack/SEH pass | ABI/LastError/reserve/commit/failure/remote/trace pass | thread-churn quiescence 100/100 pass | PE + runtime pass | AppVerifier Full 3/3 pass | no |
-| NtFreeVirtualMemory | P5.4 combined candidate | guard/shared-queue/stack/SEH pass | ABI/LastError/decommit/release/failure/remote/trace pass | thread-churn quiescence 100/100 pass | PE + runtime pass | AppVerifier Full 3/3 pass | no |
-| NtMapViewOfSection | P5.5 combined candidate | guard/shared-queue/stack/SEH pass | pagefile/file/offset/multi-view/failure/remote pass | five-target quiescence 100/100 pass | PE + runtime pass | combined Full Page Heap 3/3 pass | no |
-| NtUnmapViewOfSection/Ex | P5.5 combined candidate | guard/shared-queue/stack/SEH pass | interior/repeat/wrapper/preexisting/unmatched pass | legacy+Ex quiescence 100/100 pass | PE + runtime pass | combined Full Page Heap 3/3 pass | no |
+| RtlCreateHeap | P5.7 enabled | guard/shared-queue/stack/SEH pass | ABI/LastError/failure/exception-mode/overflow/raw-event pass | five-hook + native-profile quiescence pass | PE + runtime pass | combined Full Page Heap pass | yes |
+| RtlDestroyHeap | P5.7 enabled | guard/shared-queue/stack/SEH pass | ABI/LastError/null/bad/double/raw-event pass | five-hook + native-profile quiescence pass | PE + runtime pass | combined Full Page Heap pass | yes |
+| RtlAllocateHeap | P5.7 enabled | guard/shared-queue/stack/SEH pass | ABI/LastError/exception/overflow/stack/trace/filter pass | native-profile thread churn pass | PE + runtime pass | combined Full Page Heap pass | yes |
+| RtlReAllocateHeap | P5.7 enabled | guard/shared-queue/stack/SEH pass | in-place/move/zero/OOM/LastError/exception/fail-fast/trace pass | cross-thread + native-profile pass | PE + runtime pass | combined Full Page Heap pass | yes |
+| RtlFreeHeap | P5.7 enabled | guard/shared-queue/stack/SEH pass | return/LastError/exception/fail-fast/trace pass | cross-thread + native-profile pass | PE + runtime pass | AppVerifier Full pass | yes |
+| NtAllocateVirtualMemory | P5.7 enabled | guard/shared-queue/stack/SEH pass | ABI/LastError/reserve/commit/failure/remote/trace/filter pass | native-profile thread churn pass | PE + runtime pass | AppVerifier Full pass | yes |
+| NtFreeVirtualMemory | P5.7 enabled | guard/shared-queue/stack/SEH pass | ABI/LastError/decommit/release/failure/remote/trace pass | native-profile thread churn pass | PE + runtime pass | AppVerifier Full pass | yes |
+| NtMapViewOfSection | P5.7 enabled | guard/shared-queue/stack/SEH pass | pagefile/file/offset/multi-view/failure/remote/filter pass | native-profile quiescence pass | PE + runtime pass | combined Full Page Heap pass | yes |
+| NtUnmapViewOfSection/Ex | P5.7 enabled | guard/shared-queue/stack/SEH pass | interior/repeat/wrapper/preexisting/unmatched pass | native-profile quiescence pass | PE + runtime pass | combined Full Page Heap pass | yes |
 
 P5.1 在 P4.9 allocate prototype 上增加 `RtlFreeHeap`，并把两种事件放入同一个预分配 MPSC queue，
 形成跨 API 的唯一 sequence。组合 writer 按 `(heap,address)` 关联 allocation_id，覆盖 matched、
@@ -364,3 +364,9 @@ P5.6 增加 `LdrRegisterDllNotification` 模块跟踪。loader callback 只复�
 writer 分配 ModuleId、编码 ModuleLoad/Unload，并用 generation-aware 相对帧去重。真实 DLL fixture
 覆盖 load/unload/reload、同一基址和绝对 PC 复用、不同 StackId，以及卸载后的离线符号化。设计与
 门禁见 [MODULE_TRACKING.md](MODULE_TRACKING.md)。
+
+P5.7 增加唯一产品/test registry、三个 profile、creation-side 热路径过滤和逻辑停录协调器。
+`windows-native` 的十个物理入口共用一个 queue，九个逻辑 API 在同一 trace 中通过正式 analyzer
+回读。最终门禁为 Debug/Release 205/205、hardened 230/230、25 个 CFG/CET PE、五组既有 race 与
+native profile 各 100/100、长差分 3/3，以及 Application Verifier/Full Page Heap 三轮；19 个 IFEO
+key 全部清理。详见 [WINDOWS_HOOK_PROFILES.md](WINDOWS_HOOK_PROFILES.md)。

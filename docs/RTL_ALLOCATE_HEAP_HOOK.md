@@ -1,6 +1,6 @@
 # RtlAllocateHeap Hook Prototype
 
-> 状态：P4.9 Windows x64 adapter 完成；P5.3 已接入五 hook 共享队列，产品 profile 仍 disabled
+> 状态：P5.7 Windows x64 完成；已接入 NT Heap/native 产品 profile 与热路径过滤
 > 范围：guarded raw-stack event queue 与后台 trace writer，可独立或参与五 hook 组合
 
 ## 1. 目的
@@ -119,9 +119,9 @@ ctest --preset windows-x64-release -L passthrough --output-on-failure
 ctest --preset windows-x64-release -L passthrough --repeat until-fail:20
 ~~~
 
-## 5. 未完成边界
+## 5. 产品边界
 
-P5.4 的 NT Heap/NT VM Application Verifier/Full Page Heap 三轮压力、日志 review 和 15 个 IFEO key
-回滚均已通过。产品 profile 仍保持 disabled，不是因为 NT Heap adapter 留有稳定性门禁，而是 P5 尚未
-实现 section-view、模块 generation 等配套生命周期能力。P4.8 生命周期见
-[HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)。
+P5.7 已补齐 section-view、模块 generation、registry、过滤与组合 trace，并启用
+`windows-nt-heap`/`windows-native` profile。产品停止先逻辑停录和 final drain，目标 worker 停止后
+才物理 revert；完整生命周期见 [HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)，profile 语义见
+[WINDOWS_HOOK_PROFILES.md](WINDOWS_HOOK_PROFILES.md)。

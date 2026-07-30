@@ -1,6 +1,6 @@
 # Windows Memory Background Trace Writer
 
-> 状态：P5.6 Windows x64 模块 generation 与相对栈帧完成
+> 状态：P5.7 Windows x64 产品 profile、过滤与统计完成
 > 范围：进程内 trace、heap/allocation/mapping generation 配对和安全停止
 
 ## 1. 目标与边界
@@ -29,34 +29,39 @@
 
 ## 2. 共享队列与跨 API 顺序
 
-五个 NT Heap hook 使用一个预分配 queue，五个 NT memory 物理入口使用另一个预分配 queue。统一的 664-byte
-`RtlHeapEvent` 通过 operation 区分九种逻辑 API，并包含所需参数、raw result、异常状态和定长栈。每个
-queue 域成功 reservation 时
-分配唯一 sequence，因此不同线程、不同 API 的生命周期顺序不依赖可能倒退或相同的 QPC tick。
+独立 heap-only 或 VM-only 模式各使用一个预分配 queue。P5.7 的 `windows-native` 产品 profile 让五个
+NT Heap hook 与五个 NT memory 物理入口共用同一个 queue。统一的 664-byte `RtlHeapEvent` 通过
+operation 区分九种逻辑 API，并包含所需参数、raw result、异常状态和定长栈。成功 reservation 时分配
+唯一 sequence，因此完整 native profile 中不同线程、不同 API 的生命周期顺序不依赖可能倒退或相同的
+QPC tick。
 
 每个 hook 分别保存 dropped counter，后台 writer 才能把共享 queue overflow 归因到正确 api_id；底层
 queue 的总 dropped counter 只用于队列级诊断。被 queue 拒绝的事件没有 sequence，Loss 因而只保存
 数量，不伪造范围。
 
-组合模式的安全调用顺序是：
+产品 profile 的安全调用顺序是：
 
-1. 构造 `HookBackend` 和 `RtlHeapHooks`；后者拥有共享 queue，并让五个 hook 取得各自的固定 TEB
-   guard 引用。
-2. 在 hook 安装前构造 `RtlHeapTraceWriter`；它校验五个 hook 引用同一个 queue、写 CaptureScope
-   metadata，并启动带 `InternalThreadScope` 的 worker。
-3. 由 `RtlHeapHooks::install()` 安装 create/allocate/reallocate/free/destroy，再调用 `begin_capture()`。
+1. 构造 `HookBackend` 和 `WindowsMemoryHooks`；后者按 registry 选择 profile，并拥有全部所选 hook
+   共用的 queue。
+2. 在 hook 安装前用 profile 构造 `RtlHeapTraceWriter`；它校验 queue、写 CaptureScope metadata，并
+   启动带 `InternalThreadScope` 的 worker。
+3. 调用 `WindowsMemoryHooks::install()`，再调用 writer `begin_capture()`。
 4. 目标线程产生事件，worker 按共享 sequence 并发 drain。
-5. 调用 `RtlHeapHooks::uninstall()`；五个 hook 都完成 revert、replacement quiescence 和 Hoox flush。
+5. 调用 `stop_recording()`，一次性把所选 replacement 切到 original 路由，并等待 record 路由的
+   in-flight 归零；此后目标线程可继续运行，但不再访问 queue。
 6. 调用 writer `finish()`，完成 final drain、Statistics、EndOfTrace 和 worker join。
-7. 最后 shutdown `HookBackend` 并关闭输出流。
+7. 停止或挂起目标 worker，确认不会再持续进入被 hook API 后，调用 profile `uninstall()` 做物理
+   revert 和 Hoox flush。
+8. 最后 shutdown `HookBackend` 并关闭输出流。
 
 组合 writer 会拒绝独立 queue、已安装的任一 hook 或未初始化 guard runtime。`begin_capture()` 要求
-五个 hook 均已安装；`finish()` 要求五个 hook 均不再 installed/teardown-pending，避免过早写出正常
-结束。完整 teardown 原理见 [HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)。
+所选 hook 均已安装；`finish()` 接受“已逻辑停录且 record in-flight 为零”或“已完全卸载”两种状态，
+但拒绝仍在记录或 teardown-pending 的 hook。完整 teardown 原理见
+[HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)。
 
-NT-memory-only 模式采用相同顺序：writer 在 `NtMemoryHooks::install()` 前启动，`begin_capture()` 要求五个
-物理 target 均已安装，`finish()` 要求全部完成 quiescent teardown。P5.5 不跨两个独立 queue 合并 heap
-与 VM 事件；NT Heap outermost guard 会抑制其嵌套 backing VM 调用，完整统一 registry 留给 P5.7。
+旧的单 hook、heap-only 和 VM-only 构造方式继续兼容，可在完全 uninstall 后再 finish。NT Heap
+outermost guard 仍抑制其嵌套 backing VM 调用，避免 native profile 对同一逻辑 heap allocation 重复
+记账。
 
 ## 3. 生命周期配对
 
@@ -121,12 +126,14 @@ Statistics 同时保存 aggregate 与所选模式下的 `api_id=1..9`。每个�
 
 ~~~text
 successful_operations + failed_operations == observed_calls
-written_events + queue_dropped_events + trace_dropped_events == observed_calls
-decoded_events == observed_calls - dropped_events
+written_events + filtered_before_queue + queue_dropped_events + trace_dropped_events == observed_calls
+decoded_events == observed_calls - filtered_before_queue - dropped_events
 ~~~
 
-异常计入 failed_operations；stack-only Loss 不丢失事件。所有累计加法先检查 uint64 overflow，正式
-decoder 再次校验 Statistics 与实际 Event 数量。
+其中 decoded events 为 `observed - filtered_before_queue - dropped_events`。异常计入
+failed_operations；stack-only Loss 不丢失事件。所有累计加法先检查 uint64 overflow，正式 decoder
+再次校验 Statistics 与实际 Event 数量。过滤语义见
+[WINDOWS_HOOK_PROFILES.md](WINDOWS_HOOK_PROFILES.md)。
 
 ## 6. 文件硬上限
 
@@ -165,6 +172,11 @@ P5.6 增加初始模块快照、固定 loader-notification queue、PE/CodeView i
 和 generation-aware stack dictionary。真实 fixture 覆盖 unload/reload、同基址复用、相同绝对 PC 的
 不同 StackId，以及模块卸载后的离线符号化。详见 [MODULE_TRACKING.md](MODULE_TRACKING.md)。
 
+P5.7 增加 profile 构造方式和九 API 单 queue 端到端测试。测试在持续 heap/VM worker 与线程 churn
+下先逻辑停录，确认九组 recordable counter 冻结；writer 在物理 revert 前结束，目标 worker 停止后
+才 uninstall。三种 creation-side filter、每 API/aggregate Statistics、九个 API ID、GenerationTracker
+和 EndOfTrace 均由正式 decoder 校验。
+
 `RtlFreeHeap` 与 `RtlReAllocateHeap` 合同、fail-fast、quiescence、CFG/CET 和 Full Page Heap 证据见
 [RTL_FREE_HEAP_HOOK.md](RTL_FREE_HEAP_HOOK.md) 与
 [RTL_REALLOCATE_HEAP_HOOK.md](RTL_REALLOCATE_HEAP_HOOK.md) 及
@@ -177,6 +189,6 @@ P5.6 增加初始模块快照、固定 loader-notification queue、PE/CodeView i
 . .\scripts\Enter-NoleaxDevShell.ps1
 cmake --build --preset windows-x64-debug
 cmake --build --preset windows-x64-release
-ctest --preset windows-x64-debug -R "rtl-heap-trace-writer|rtl-free-heap|trace-writer" --output-on-failure
-ctest --preset windows-x64-release -R "rtl-heap-trace-writer|rtl-free-heap|trace-writer" --output-on-failure
+ctest --preset windows-x64-debug -R "windows-native-profile|rtl-heap-trace-writer|trace-writer" --output-on-failure
+ctest --preset windows-x64-release -R "windows-native-profile|rtl-heap-trace-writer|trace-writer" --output-on-failure
 ~~~

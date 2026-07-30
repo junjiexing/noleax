@@ -18,7 +18,7 @@ class ReplacementLifecycle final {
  public:
   class Entry final {
    public:
-    ~Entry() noexcept { lifecycle_->leave_unscoped(); }
+    ~Entry() noexcept { lifecycle_->leave_unscoped(route_); }
 
     Entry(const Entry&) = delete;
     Entry& operator=(const Entry&) = delete;
@@ -56,10 +56,30 @@ class ReplacementLifecycle final {
     if (previous == std::numeric_limits<std::uint64_t>::max()) {
       std::terminate();
     }
-    return route_.load(std::memory_order_seq_cst);
+    const std::uint64_t previous_recording =
+        recording_in_flight_.fetch_add(1U, std::memory_order_seq_cst);
+    if (previous_recording == std::numeric_limits<std::uint64_t>::max()) {
+      std::terminate();
+    }
+    const ReplacementRoute route = route_.load(std::memory_order_seq_cst);
+    if (route != ReplacementRoute::kRecord) {
+      const std::uint64_t previous_nonrecording =
+          recording_in_flight_.fetch_sub(1U, std::memory_order_seq_cst);
+      if (previous_nonrecording == 0U) {
+        std::terminate();
+      }
+    }
+    return route;
   }
 
-  void leave_unscoped() noexcept {
+  void leave_unscoped(ReplacementRoute route) noexcept {
+    if (route == ReplacementRoute::kRecord) {
+      const std::uint64_t previous_recording =
+          recording_in_flight_.fetch_sub(1U, std::memory_order_seq_cst);
+      if (previous_recording == 0U) {
+        std::terminate();
+      }
+    }
     const std::uint64_t previous = in_flight_.fetch_sub(1U, std::memory_order_seq_cst);
     if (previous == 0U) {
       std::terminate();
@@ -86,9 +106,25 @@ class ReplacementLifecycle final {
     return in_flight_.load(std::memory_order_seq_cst);
   }
 
+  [[nodiscard]] std::uint64_t recording_in_flight() const noexcept {
+    return recording_in_flight_.load(std::memory_order_seq_cst);
+  }
+
   [[nodiscard]] bool wait_for_quiescence(std::uint32_t max_yields) const noexcept {
     for (std::uint32_t yielded = 0U;; ++yielded) {
       if (in_flight_.load(std::memory_order_seq_cst) == 0U) {
+        return true;
+      }
+      if (yielded == max_yields) {
+        return false;
+      }
+      std::this_thread::yield();
+    }
+  }
+
+  [[nodiscard]] bool wait_for_recording_quiescence(std::uint32_t max_yields) const noexcept {
+    for (std::uint32_t yielded = 0U;; ++yielded) {
+      if (recording_in_flight_.load(std::memory_order_seq_cst) == 0U) {
         return true;
       }
       if (yielded == max_yields) {
@@ -104,6 +140,7 @@ class ReplacementLifecycle final {
 
   std::atomic<ReplacementRoute> route_{ReplacementRoute::kTarget};
   std::atomic<std::uint64_t> in_flight_{0U};
+  std::atomic<std::uint64_t> recording_in_flight_{0U};
 };
 
 }  // namespace noleax::agent

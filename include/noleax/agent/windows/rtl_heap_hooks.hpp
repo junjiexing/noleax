@@ -35,7 +35,11 @@ class RtlHeapHooks final {
 
   explicit RtlHeapHooks(HookBackend& backend,
                         std::size_t event_queue_capacity = kDefaultEventQueueCapacity,
-                        std::uint16_t maximum_stack_depth = kDefaultMaximumStackDepth);
+                        std::uint16_t maximum_stack_depth = kDefaultMaximumStackDepth,
+                        std::uint64_t minimum_capture_size = 0U);
+  RtlHeapHooks(HookBackend& backend, RtlHeapEventQueue& event_queue,
+               std::uint16_t maximum_stack_depth = kDefaultMaximumStackDepth,
+               std::uint64_t minimum_capture_size = 0U);
   ~RtlHeapHooks();
 
   RtlHeapHooks(const RtlHeapHooks&) = delete;
@@ -48,6 +52,11 @@ class RtlHeapHooks final {
       std::uint32_t flush_attempts = HookBackend::kDefaultFlushAttempts) noexcept;
   [[nodiscard]] bool flush(
       std::uint32_t max_attempts = HookBackend::kDefaultFlushAttempts) noexcept;
+  [[nodiscard]] bool stop_recording(
+      std::uint32_t max_attempts = HookBackend::kDefaultFlushAttempts) noexcept;
+  [[nodiscard]] bool is_installed() const noexcept;
+  [[nodiscard]] bool is_recording() const noexcept;
+  [[nodiscard]] std::uint64_t recording_in_flight_count() const noexcept;
 
   [[nodiscard]] RtlCreateHeapHook& create_hook() noexcept;
   [[nodiscard]] const RtlCreateHeapHook& create_hook() const noexcept;
@@ -61,14 +70,17 @@ class RtlHeapHooks final {
   [[nodiscard]] const RtlDestroyHeapHook& destroy_hook() const noexcept;
   [[nodiscard]] RtlHeapEventQueue& event_queue() noexcept;
   [[nodiscard]] const RtlHeapEventQueue& event_queue() const noexcept;
+  [[nodiscard]] std::uint64_t minimum_capture_size() const noexcept;
 
  private:
-  std::unique_ptr<RtlHeapEventQueue> event_queue_;
+  std::unique_ptr<RtlHeapEventQueue> owned_event_queue_;
+  RtlHeapEventQueue* event_queue_{nullptr};
   RtlCreateHeapHook create_hook_;
   RtlAllocateHeapHook allocate_hook_;
   RtlReAllocateHeapHook reallocate_hook_;
   RtlFreeHeapHook free_hook_;
   RtlDestroyHeapHook destroy_hook_;
+  std::uint64_t minimum_capture_size_{0U};
 };
 
 }  // namespace noleax::agent::windows
