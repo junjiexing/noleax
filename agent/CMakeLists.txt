@@ -44,10 +44,17 @@ add_library(noleax-agent SHARED
   agent.cpp
 )
 
+if(WIN32)
+  target_sources(noleax-agent PRIVATE
+    windows/agent_runtime.cpp
+  )
+endif()
+
 target_link_libraries(noleax-agent
   PRIVATE
     noleax::hook-backend
     noleax::core
+    noleax::ipc
 )
 
 target_compile_definitions(noleax-agent PRIVATE NOLEAX_AGENT_BUILD)

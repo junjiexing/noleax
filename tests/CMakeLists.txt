@@ -75,6 +75,7 @@ set_tests_properties(config.print-effective PROPERTIES
 
 if(WIN32)
   target_sources(noleax-unit-tests PRIVATE
+    unit/controller_process_test.cpp
     unit/ipc_named_pipe_test.cpp
     unit/hook_guard_test.cpp
     unit/hook_backend_test.cpp
@@ -83,6 +84,37 @@ if(WIN32)
     unit/windows_hook_registry_test.cpp
   )
   target_link_libraries(noleax-unit-tests PRIVATE noleax::hook-backend)
+  target_link_libraries(noleax-unit-tests PRIVATE noleax::controller)
+  target_link_libraries(noleax-unit-tests PRIVATE Shell32)
+
+  add_executable(noleax-controller-target
+    targets/controller_target.cpp
+  )
+  noleax_set_project_warnings(noleax-controller-target)
+
+  add_executable(noleax-controller-launch-test
+    integration/controller_launch_test.cpp
+  )
+  target_link_libraries(noleax-controller-launch-test PRIVATE
+    noleax::analyzer
+    noleax::controller
+  )
+  noleax_set_project_warnings(noleax-controller-launch-test)
+
+  add_test(NAME controller.suspended-launch-ready
+    COMMAND noleax-controller-launch-test
+      "$<TARGET_FILE:noleax-agent>"
+      "$<TARGET_FILE:noleax-controller-target>"
+      "$<TARGET_FILE_DIR:noleax-controller-launch-test>/controller-launch.nlx"
+      "$<TARGET_FILE_DIR:noleax-controller-launch-test>/controller-launch.ready"
+  )
+  set_tests_properties(controller.suspended-launch-ready PROPERTIES
+    LABELS "controller;agent;ipc;injection;remote-thread;launch;trace;windows"
+    PASS_REGULAR_EXPRESSION
+      "^status=ok kind=launch ready-before-main=1 state=finalized events=[1-9][0-9]*"
+    RUN_SERIAL TRUE
+    TIMEOUT 60
+  )
 
   add_library(noleax-hook-backend-fixture SHARED
     integration/hook_backend_fixture.cpp

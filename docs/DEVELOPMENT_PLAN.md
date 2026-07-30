@@ -4,9 +4,9 @@
 > 文档版本：0.1
 > 更新日期：2026-07-30
 > 确认日期：2026-07-29
-> 当前阶段：P6.1 controller/agent IPC 完成（`feat/windows-controller-injection`）
-> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8、P4.9、P5.1、P5.2、P5.3、P5.4、P5.5、P5.6、P5.7、P6.1
-> 下一工作项：P6.2 suspended launch
+> 当前阶段：P6.2 suspended launch 完成（`feat/windows-controller-injection`）
+> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8、P4.9、P5.1、P5.2、P5.3、P5.4、P5.5、P5.6、P5.7、P6.1、P6.2
+> 下一工作项：P6.3 remote-thread bootstrap rollback
 
 ## 1. 文档目的
 
@@ -1463,6 +1463,11 @@ named-pipe channel。frame 在读取 payload 前拒绝未知版本、类型、fl
 声明；字符串和 payload 均要求完全消费。connect、accept、读写共享调用级 deadline，timeout 使用
 `CancelIoEx` 完成清理。协议预留两阶段 stop/finalize，以保持 P5.7 的逻辑停录、writer drain、目标
 线程暂停、物理 revert 顺序。详见 [IPC_PROTOCOL.md](IPC_PROTOCOL.md)。
+
+P6.2 状态：新增 Windows x64 controller、显式 agent bootstrap 和 suspended launch。controller 以
+`CREATE_SUSPENDED` 创建目标，在初始 loader 阶段通过 `ntdll!LdrLoadDll` 的固定 ABI stub 加载 agent，
+完成 pipe 身份校验、hook 安装和 `CaptureReady` 后才恢复主线程。集成测试同时验证目标 `main` 观察到
+ready、trace 可由正式 analyzer 回读，以及 stop 后进入 finalized 状态。
 
 人工验证：
 
