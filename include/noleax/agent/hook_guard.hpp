@@ -48,6 +48,7 @@ class InternalThreadScope final {
 };
 
 [[nodiscard]] std::uint32_t current_hook_depth() noexcept;
+[[nodiscard]] std::uint32_t current_internal_depth() noexcept;
 [[nodiscard]] bool current_thread_is_internal() noexcept;
 
 }  // namespace noleax::agent

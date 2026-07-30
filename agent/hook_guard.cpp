@@ -193,6 +193,8 @@ InternalThreadScope::~InternalThreadScope() noexcept {
 
 std::uint32_t current_hook_depth() noexcept { return load_thread_state().hook_depth; }
 
+std::uint32_t current_internal_depth() noexcept { return load_thread_state().internal_depth; }
+
 bool current_thread_is_internal() noexcept { return load_thread_state().internal_depth != 0U; }
 
 }  // namespace noleax::agent

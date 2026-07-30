@@ -6,7 +6,120 @@
 #include <limits>
 #include <thread>
 
+#include "noleax/agent/hook_guard.hpp"
+
 namespace noleax::agent {
+
+namespace detail {
+
+inline constexpr std::uint32_t kReplacementGateCoordinatorDepth = 2U;
+
+inline std::atomic<bool> replacement_gate_closed{false};
+inline std::atomic<std::uint64_t> replacement_gate_epoch{0U};
+inline std::atomic<std::uint64_t> replacement_gate_transitions{0U};
+inline std::atomic<std::uint64_t> replacement_active_calls{0U};
+inline std::atomic<std::uint64_t> replacement_gate_waiters{0U};
+
+inline void increment_or_terminate(std::atomic<std::uint64_t>& value) noexcept {
+  if (value.fetch_add(1U, std::memory_order_seq_cst) == std::numeric_limits<std::uint64_t>::max()) {
+    std::terminate();
+  }
+}
+
+inline void decrement_or_terminate(std::atomic<std::uint64_t>& value) noexcept {
+  if (value.fetch_sub(1U, std::memory_order_seq_cst) == 0U) {
+    std::terminate();
+  }
+}
+
+inline void enter_replacement_gate() noexcept {
+  const bool guard_ready = hook_guard_runtime_is_ready();
+  const std::uint32_t internal_depth = guard_ready ? current_internal_depth() : 0U;
+  const std::uint32_t hook_depth = guard_ready ? current_hook_depth() : 0U;
+  // Nested hook calls must finish their outer callback. The coordinator owns two internal scopes
+  // so it alone can service IPC and teardown while ordinary internal workers are parked.
+  if (hook_depth != 0U || internal_depth >= kReplacementGateCoordinatorDepth) {
+    increment_or_terminate(replacement_active_calls);
+    return;
+  }
+  for (;;) {
+    increment_or_terminate(replacement_gate_transitions);
+    const bool closed = replacement_gate_closed.load(std::memory_order_seq_cst);
+    if (!closed) {
+      increment_or_terminate(replacement_active_calls);
+      decrement_or_terminate(replacement_gate_transitions);
+      return;
+    }
+    decrement_or_terminate(replacement_gate_transitions);
+    increment_or_terminate(replacement_gate_waiters);
+    for (;;) {
+      const std::uint64_t epoch = replacement_gate_epoch.load(std::memory_order_acquire);
+      const bool still_closed = replacement_gate_closed.load(std::memory_order_seq_cst);
+      if (!still_closed) {
+        break;
+      }
+      replacement_gate_epoch.wait(epoch, std::memory_order_acquire);
+    }
+    decrement_or_terminate(replacement_gate_waiters);
+  }
+}
+
+inline void leave_replacement_gate() noexcept { decrement_or_terminate(replacement_active_calls); }
+
+}  // namespace detail
+
+class ReplacementGateCoordinatorScope final {
+ public:
+  ReplacementGateCoordinatorScope() noexcept = default;
+
+  ReplacementGateCoordinatorScope(const ReplacementGateCoordinatorScope&) = delete;
+  ReplacementGateCoordinatorScope& operator=(const ReplacementGateCoordinatorScope&) = delete;
+  ReplacementGateCoordinatorScope(ReplacementGateCoordinatorScope&&) = delete;
+  ReplacementGateCoordinatorScope& operator=(ReplacementGateCoordinatorScope&&) = delete;
+
+ private:
+  InternalThreadScope internal_scope_;
+  InternalThreadScope coordinator_scope_;
+};
+
+class ReplacementQuiescenceGate final {
+ public:
+  [[nodiscard]] static bool close_and_wait(std::uint32_t max_yields) noexcept {
+    detail::replacement_gate_closed.store(true, std::memory_order_seq_cst);
+    for (std::uint32_t yielded = 0U;; ++yielded) {
+      if (detail::replacement_gate_transitions.load(std::memory_order_seq_cst) == 0U &&
+          detail::replacement_active_calls.load(std::memory_order_seq_cst) == 0U) {
+        return true;
+      }
+      if (yielded == max_yields) {
+        return false;
+      }
+      std::this_thread::yield();
+    }
+  }
+
+  static void open() noexcept {
+    detail::replacement_gate_closed.store(false, std::memory_order_seq_cst);
+    detail::replacement_gate_epoch.fetch_add(1U, std::memory_order_release);
+    detail::replacement_gate_epoch.notify_all();
+  }
+
+  [[nodiscard]] static bool is_closed() noexcept {
+    return detail::replacement_gate_closed.load(std::memory_order_seq_cst);
+  }
+
+  [[nodiscard]] static std::uint64_t active_call_count() noexcept {
+    return detail::replacement_active_calls.load(std::memory_order_seq_cst);
+  }
+
+  [[nodiscard]] static std::uint64_t transition_count() noexcept {
+    return detail::replacement_gate_transitions.load(std::memory_order_seq_cst);
+  }
+
+  [[nodiscard]] static std::uint64_t waiter_count() noexcept {
+    return detail::replacement_gate_waiters.load(std::memory_order_seq_cst);
+  }
+};
 
 enum class ReplacementRoute : std::uint8_t {
   kTarget,
@@ -52,22 +165,26 @@ class ReplacementLifecycle final {
   // The unscoped pair exists for Windows replacements that require SEH __finally cleanup.
   // Every successful enter must be paired with exactly one leave.
   [[nodiscard]] ReplacementRoute enter_unscoped() noexcept {
+    detail::enter_replacement_gate();
+    const std::uint64_t previous_transition =
+        entry_transitions_.fetch_add(1U, std::memory_order_seq_cst);
+    if (previous_transition == std::numeric_limits<std::uint64_t>::max()) {
+      std::terminate();
+    }
+    const ReplacementRoute route = route_.load(std::memory_order_seq_cst);
     const std::uint64_t previous = in_flight_.fetch_add(1U, std::memory_order_seq_cst);
     if (previous == std::numeric_limits<std::uint64_t>::max()) {
       std::terminate();
     }
-    const std::uint64_t previous_recording =
-        recording_in_flight_.fetch_add(1U, std::memory_order_seq_cst);
-    if (previous_recording == std::numeric_limits<std::uint64_t>::max()) {
-      std::terminate();
-    }
-    const ReplacementRoute route = route_.load(std::memory_order_seq_cst);
-    if (route != ReplacementRoute::kRecord) {
-      const std::uint64_t previous_nonrecording =
-          recording_in_flight_.fetch_sub(1U, std::memory_order_seq_cst);
-      if (previous_nonrecording == 0U) {
+    if (route == ReplacementRoute::kRecord) {
+      const std::uint64_t previous_recording =
+          recording_in_flight_.fetch_add(1U, std::memory_order_seq_cst);
+      if (previous_recording == std::numeric_limits<std::uint64_t>::max()) {
         std::terminate();
       }
+    }
+    if (entry_transitions_.fetch_sub(1U, std::memory_order_seq_cst) == 0U) {
+      std::terminate();
     }
     return route;
   }
@@ -84,6 +201,7 @@ class ReplacementLifecycle final {
     if (previous == 0U) {
       std::terminate();
     }
+    detail::leave_replacement_gate();
   }
 
   void start_recording() noexcept {
@@ -112,7 +230,8 @@ class ReplacementLifecycle final {
 
   [[nodiscard]] bool wait_for_quiescence(std::uint32_t max_yields) const noexcept {
     for (std::uint32_t yielded = 0U;; ++yielded) {
-      if (in_flight_.load(std::memory_order_seq_cst) == 0U) {
+      if (entry_transitions_.load(std::memory_order_seq_cst) == 0U &&
+          in_flight_.load(std::memory_order_seq_cst) == 0U) {
         return true;
       }
       if (yielded == max_yields) {
@@ -124,7 +243,8 @@ class ReplacementLifecycle final {
 
   [[nodiscard]] bool wait_for_recording_quiescence(std::uint32_t max_yields) const noexcept {
     for (std::uint32_t yielded = 0U;; ++yielded) {
-      if (recording_in_flight_.load(std::memory_order_seq_cst) == 0U) {
+      if (entry_transitions_.load(std::memory_order_seq_cst) == 0U &&
+          recording_in_flight_.load(std::memory_order_seq_cst) == 0U) {
         return true;
       }
       if (yielded == max_yields) {
@@ -139,6 +259,7 @@ class ReplacementLifecycle final {
   static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
 
   std::atomic<ReplacementRoute> route_{ReplacementRoute::kTarget};
+  std::atomic<std::uint64_t> entry_transitions_{0U};
   std::atomic<std::uint64_t> in_flight_{0U};
   std::atomic<std::uint64_t> recording_in_flight_{0U};
 };

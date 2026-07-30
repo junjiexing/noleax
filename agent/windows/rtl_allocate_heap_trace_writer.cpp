@@ -442,8 +442,31 @@ class RtlAllocateHeapTraceWriter::Implementation final {
     if (hook_not_stopped(hook_) || hook_not_stopped(reallocate_hook_) ||
         hook_not_stopped(free_hook_) || hook_not_stopped(create_hook_) ||
         hook_not_stopped(destroy_hook_) || hook_not_stopped(nt_memory_hooks_)) {
-      throw std::logic_error{
-          "all selected memory hooks must be logically stopped or fully uninstalled before finish"};
+      std::string detail;
+      const auto append_state = [&detail, &hook_not_stopped](const char* name, const auto* hook) {
+        if (hook_not_stopped(hook)) {
+          if (!detail.empty()) {
+            detail.append(", ");
+          }
+          detail.append(name)
+              .append("(pending=")
+              .append(hook->has_pending_teardown() ? "1" : "0")
+              .append(" installed=")
+              .append(hook->is_installed() ? "1" : "0")
+              .append(" recording=")
+              .append(hook->is_recording() ? "1" : "0")
+              .append(" in-flight=")
+              .append(std::to_string(hook->recording_in_flight_count()))
+              .append(")");
+        }
+      };
+      append_state("allocate", hook_);
+      append_state("reallocate", reallocate_hook_);
+      append_state("free", free_hook_);
+      append_state("create", create_hook_);
+      append_state("destroy", destroy_hook_);
+      append_state("virtual-memory", nt_memory_hooks_);
+      throw std::logic_error{"memory hooks are not logically stopped before finish: " + detail};
     }
     request_stop();
     if (worker_.joinable()) {

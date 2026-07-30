@@ -4,9 +4,9 @@
 > 文档版本：0.1
 > 更新日期：2026-07-30
 > 确认日期：2026-07-29
-> 当前阶段：P6.4 runtime attach 完成（`feat/windows-controller-injection`）
-> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8、P4.9、P5.1、P5.2、P5.3、P5.4、P5.5、P5.6、P5.7、P6.1、P6.2、P6.3、P6.4
-> 下一工作项：P6.5 start/stop/status 生命周期
+> 当前阶段：P6.5 start/stop/status 生命周期完成（`feat/windows-controller-injection`）
+> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8、P4.9、P5.1、P5.2、P5.3、P5.4、P5.5、P5.6、P5.7、P6.1、P6.2、P6.3、P6.4、P6.5
+> 下一工作项：P6.6 架构和权限诊断
 
 ## 1. 文档目的
 
@@ -1476,6 +1476,12 @@ P6.3 状态：remote-thread bootstrap 使用完整 64-bit module handle 计算 e
 P6.4 状态：新增运行中进程 attach 集成路径。测试目标在注入前保留一笔既有分配，controller attach
 后捕获持续 workload 并完成 drain/finalize；正式 analyzer 回读的 CaptureScope 必须为
 `started_at_process_start=false`、`preexisting_allocations_unknown=true`，避免把 attach 盲区误报为完整结论。
+
+P6.5 状态：controller 暴露 capturing 状态查询、两阶段 stop 和幂等 finalized 结果。八线程目标在
+持续 alloc/realloc/free 压力下触发 stop，验证状态计数单调、停止时目标仍活跃、统计守恒、重复 stop
+结果一致、finalized 后拒绝 status，并由 trace 尾记录证明 writer drain 已完成。统一 finalize gate
+会停放新的最外层 replacement，同时允许已进入 hook 的嵌套调用退出；writer drain 后再次关门，目标
+线程才由 controller 暂停并执行物理 revert，避免把线程冻结在 trampoline 或 replacement 内。
 
 人工验证：
 

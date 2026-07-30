@@ -22,6 +22,7 @@
 #include <utility>
 
 #include "noleax/agent/hook_backend.hpp"
+#include "noleax/agent/replacement_lifecycle.hpp"
 #include "noleax/agent/windows/rtl_allocate_heap_trace_writer.hpp"
 #include "noleax/agent/windows/windows_memory_hooks.hpp"
 #include "noleax/ipc/protocol.hpp"
@@ -41,6 +42,19 @@ using noleax::agent::windows::WindowsMemoryHooks;
 
 std::atomic<bool> bootstrap_started{false};
 std::atomic<bool> capture_ready{false};
+
+class HookGuardRuntimeLease final {
+ public:
+  HookGuardRuntimeLease() {
+    if (!noleax::agent::acquire_hook_guard_runtime()) {
+      throw std::runtime_error{"hook guard runtime is unavailable"};
+    }
+  }
+  ~HookGuardRuntimeLease() { noleax::agent::release_hook_guard_runtime(); }
+
+  HookGuardRuntimeLease(const HookGuardRuntimeLease&) = delete;
+  HookGuardRuntimeLease& operator=(const HookGuardRuntimeLease&) = delete;
+};
 
 [[nodiscard]] std::filesystem::path utf8_path(const std::string& value) {
   if (value.empty() || value.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
@@ -146,6 +160,7 @@ void add_saturating(std::uint64_t& destination, std::uint64_t value) noexcept {
 class CaptureRuntime final {
  public:
   explicit CaptureRuntime(std::array<std::byte, 16U> token) : session_token_{token} {}
+  ~CaptureRuntime() { release_finalize_gate(); }
 
   void start(const noleax::ipc::StartCaptureRequest& request) {
     if (state_ != noleax::ipc::AgentState::kIdle) {
@@ -192,16 +207,37 @@ class CaptureRuntime final {
     if (state_ != noleax::ipc::AgentState::kCapturing) {
       throw std::logic_error{"capture session is not recording"};
     }
-    if (!hooks_->stop_recording(1'000'000U)) {
-      throw std::runtime_error{"recording callbacks did not become quiescent"};
+    if (!noleax::agent::ReplacementQuiescenceGate::close_and_wait(10'000U)) {
+      const std::uint64_t active = noleax::agent::ReplacementQuiescenceGate::active_call_count();
+      const std::uint64_t transitions =
+          noleax::agent::ReplacementQuiescenceGate::transition_count();
+      noleax::agent::ReplacementQuiescenceGate::open();
+      throw std::runtime_error{"replacement callbacks did not reach the finalize gate: active=" +
+                               std::to_string(active) +
+                               " transitions=" + std::to_string(transitions)};
     }
-    capture_ready.store(false, std::memory_order_release);
-    result_ = writer_->finish();
-    writer_.reset();
-    output_->flush();
-    output_->close();
-    if (!*output_) {
-      throw std::runtime_error{"trace output could not be closed cleanly"};
+    finalize_gate_closed_ = true;
+    try {
+      if (!hooks_->stop_recording(1'000'000U)) {
+        throw std::runtime_error{"recording callbacks did not become quiescent"};
+      }
+      capture_ready.store(false, std::memory_order_release);
+      release_finalize_gate();
+      result_ = writer_->finish();
+      writer_.reset();
+      output_->flush();
+      output_->close();
+      if (!*output_) {
+        throw std::runtime_error{"trace output could not be closed cleanly"};
+      }
+      if (!noleax::agent::ReplacementQuiescenceGate::close_and_wait(1'000'000U)) {
+        noleax::agent::ReplacementQuiescenceGate::open();
+        throw std::runtime_error{"logically stopped callbacks did not reach the finalize gate"};
+      }
+      finalize_gate_closed_ = true;
+    } catch (...) {
+      release_finalize_gate();
+      throw;
     }
     state_ = noleax::ipc::AgentState::kDrained;
   }
@@ -210,16 +246,32 @@ class CaptureRuntime final {
     if (state_ != noleax::ipc::AgentState::kDrained) {
       throw std::logic_error{"capture session has not been drained"};
     }
-    if (!hooks_->uninstall(1'000'000U)) {
-      throw std::runtime_error{"physical hook teardown did not become quiescent"};
+    if (!finalize_gate_closed_) {
+      throw std::logic_error{"replacement finalize gate is not closed"};
     }
-    if (!backend_->shutdown()) {
-      throw std::runtime_error{"hook backend shutdown failed"};
+    try {
+      if (!hooks_->uninstall(1'000'000U)) {
+        throw std::runtime_error{"physical hook teardown did not become quiescent"};
+      }
+      if (!backend_->shutdown()) {
+        throw std::runtime_error{"hook backend shutdown failed"};
+      }
+      hooks_.reset();
+      backend_.reset();
+      output_.reset();
+    } catch (...) {
+      release_finalize_gate();
+      throw;
     }
-    hooks_.reset();
-    backend_.reset();
-    output_.reset();
+    release_finalize_gate();
     state_ = noleax::ipc::AgentState::kFinalized;
+  }
+
+  void release_finalize_gate() noexcept {
+    if (finalize_gate_closed_) {
+      noleax::agent::ReplacementQuiescenceGate::open();
+      finalize_gate_closed_ = false;
+    }
   }
 
   [[nodiscard]] noleax::ipc::CaptureStatus status() const noexcept {
@@ -274,6 +326,7 @@ class CaptureRuntime final {
   std::unique_ptr<WindowsMemoryHooks> hooks_;
   std::unique_ptr<RtlAllocateHeapTraceWriter> writer_;
   std::optional<RtlAllocateHeapTraceWriterResult> result_;
+  bool finalize_gate_closed_{false};
 };
 
 [[nodiscard]] noleax::ipc::Architecture current_architecture() noexcept {
@@ -315,6 +368,8 @@ DWORD WINAPI agent_worker(void* parameter) noexcept {
     if (start_message.type != noleax::ipc::MessageType::kStartCapture) {
       throw std::runtime_error{"controller did not send StartCapture after AgentHello"};
     }
+    const HookGuardRuntimeLease hook_guard_runtime;
+    const noleax::agent::ReplacementGateCoordinatorScope finalize_coordinator;
     runtime = std::make_unique<CaptureRuntime>(bootstrap->session_token);
     runtime->start(noleax::ipc::decode_start_capture(start_message.payload));
     send_status(channel, noleax::ipc::MessageType::kCaptureReady, start_message.request_id,
@@ -322,24 +377,32 @@ DWORD WINAPI agent_worker(void* parameter) noexcept {
 
     for (;;) {
       const noleax::ipc::Message request = channel.receive(std::chrono::hours{24});
-      if (request.type == noleax::ipc::MessageType::kQueryStatus && request.payload.empty()) {
-        send_status(channel, noleax::ipc::MessageType::kCaptureStatus, request.request_id, *runtime,
-                    timeout);
-        continue;
+      try {
+        if (request.type == noleax::ipc::MessageType::kQueryStatus && request.payload.empty()) {
+          send_status(channel, noleax::ipc::MessageType::kCaptureStatus, request.request_id,
+                      *runtime, timeout);
+          continue;
+        }
+        if (request.type == noleax::ipc::MessageType::kStopCapture && request.payload.empty()) {
+          runtime->drain();
+          send_status(channel, noleax::ipc::MessageType::kCaptureDrained, request.request_id,
+                      *runtime, timeout);
+          continue;
+        }
+        if (request.type == noleax::ipc::MessageType::kFinalizeHooks && request.payload.empty()) {
+          runtime->finalize();
+          send_status(channel, noleax::ipc::MessageType::kCaptureFinalized, request.request_id,
+                      *runtime, timeout);
+          return 0U;
+        }
+        throw std::runtime_error{"controller sent a message invalid for the agent state"};
+      } catch (const std::exception& error) {
+        const noleax::ipc::ErrorResponse response{1U, 0U, error.what()};
+        channel.send({noleax::ipc::MessageType::kError, request.request_id,
+                      noleax::ipc::encode_error_response(response)},
+                     timeout);
+        throw;
       }
-      if (request.type == noleax::ipc::MessageType::kStopCapture && request.payload.empty()) {
-        runtime->drain();
-        send_status(channel, noleax::ipc::MessageType::kCaptureDrained, request.request_id,
-                    *runtime, timeout);
-        continue;
-      }
-      if (request.type == noleax::ipc::MessageType::kFinalizeHooks && request.payload.empty()) {
-        runtime->finalize();
-        send_status(channel, noleax::ipc::MessageType::kCaptureFinalized, request.request_id,
-                    *runtime, timeout);
-        return 0U;
-      }
-      throw std::runtime_error{"controller sent a message invalid for the agent state"};
     }
   } catch (const std::exception&) {
     if (runtime != nullptr && runtime->state() == noleax::ipc::AgentState::kCapturing) {
@@ -349,14 +412,17 @@ DWORD WINAPI agent_worker(void* parameter) noexcept {
       }
       // Physical revert is unsafe without controller thread suspension. Preserve the logically
       // stopped hook state for process lifetime if the control channel disappeared.
+      runtime->release_finalize_gate();
       static_cast<void>(runtime.release());
     } else if (runtime != nullptr && runtime->state() == noleax::ipc::AgentState::kDrained) {
+      runtime->release_finalize_gate();
       static_cast<void>(runtime.release());
     }
     return 1U;
   } catch (...) {
     if (runtime != nullptr && (runtime->state() == noleax::ipc::AgentState::kCapturing ||
                                runtime->state() == noleax::ipc::AgentState::kDrained)) {
+      runtime->release_finalize_gate();
       static_cast<void>(runtime.release());
     }
     return 2U;

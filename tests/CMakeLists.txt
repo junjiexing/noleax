@@ -92,6 +92,11 @@ if(WIN32)
   )
   noleax_set_project_warnings(noleax-controller-target)
 
+  add_executable(noleax-controller-lifecycle-target
+    targets/controller_lifecycle_target.cpp
+  )
+  noleax_set_project_warnings(noleax-controller-lifecycle-target)
+
   add_library(noleax-injector-no-bootstrap SHARED
     integration/injector_no_bootstrap.cpp
   )
@@ -141,6 +146,30 @@ if(WIN32)
     LABELS "controller;agent;ipc;injection;remote-thread;attach;trace;windows"
     PASS_REGULAR_EXPRESSION
       "^status=ok kind=attach preexisting-unknown=1 state=finalized events=[1-9][0-9]*"
+    RUN_SERIAL TRUE
+    TIMEOUT 60
+  )
+
+  add_executable(noleax-controller-lifecycle-test
+    integration/controller_lifecycle_test.cpp
+  )
+  target_link_libraries(noleax-controller-lifecycle-test PRIVATE
+    noleax::analyzer
+    noleax::controller
+  )
+  noleax_set_project_warnings(noleax-controller-lifecycle-test)
+
+  add_test(NAME controller.capture-lifecycle
+    COMMAND noleax-controller-lifecycle-test
+      "$<TARGET_FILE:noleax-agent>"
+      "$<TARGET_FILE:noleax-controller-lifecycle-target>"
+      "$<TARGET_FILE_DIR:noleax-controller-lifecycle-test>/controller-lifecycle.nlx"
+      "$<TARGET_FILE_DIR:noleax-controller-lifecycle-test>/controller-lifecycle.ready"
+  )
+  set_tests_properties(controller.capture-lifecycle PROPERTIES
+    LABELS "controller;agent;ipc;lifecycle;in-flight;stress;trace;windows"
+    PASS_REGULAR_EXPRESSION
+      "^status=ok lifecycle=finalized queries=[2-9][0-9]* active-stop=1 idempotent=1 conserved=1 events=[1-9][0-9]*"
     RUN_SERIAL TRUE
     TIMEOUT 60
   )

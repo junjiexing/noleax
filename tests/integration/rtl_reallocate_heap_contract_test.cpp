@@ -46,6 +46,24 @@ struct Observation {
   bool result_equals_old{false};
 };
 
+class TestHeap final {
+ public:
+  TestHeap() noexcept : handle_{HeapCreate(0U, 0U, 0U)} {}
+  ~TestHeap() {
+    if (handle_ != nullptr) {
+      static_cast<void>(HeapDestroy(handle_));
+    }
+  }
+
+  TestHeap(const TestHeap&) = delete;
+  TestHeap& operator=(const TestHeap&) = delete;
+
+  [[nodiscard]] PVOID get() const noexcept { return handle_; }
+
+ private:
+  HANDLE handle_{nullptr};
+};
+
 [[nodiscard]] LONG capture_exception(EXCEPTION_POINTERS* pointers, DWORD* status) noexcept {
   if (pointers != nullptr && pointers->ExceptionRecord != nullptr && status != nullptr) {
     *status = pointers->ExceptionRecord->ExceptionCode;
@@ -180,7 +198,8 @@ void print_observation(const char* phase, std::size_t index,
 
 int main() {
   const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
-  const PVOID process_heap = GetProcessHeap();
+  const TestHeap test_heap;
+  const PVOID process_heap = test_heap.get();
   const auto allocate =
       ntdll == nullptr
           ? nullptr

@@ -557,6 +557,8 @@ NTSTATUS NTAPI replacement_nt_allocate_virtual_memory(HANDLE process, PVOID* bas
         }
         original = load_allocate_function(hook_state->allocate.original_trampoline);
         if (route == ReplacementRoute::kOriginal) {
+          entry_kind = enter_hook_invocation_unscoped();
+          guard_entered = true;
           result =
               original(process, base_address, zero_bits, region_size, allocation_type, protect);
           original_completed = true;
@@ -654,6 +656,8 @@ NTSTATUS NTAPI replacement_nt_free_virtual_memory(HANDLE process, PVOID* base_ad
         }
         original = load_free_function(hook_state->free.original_trampoline);
         if (route == ReplacementRoute::kOriginal) {
+          entry_kind = enter_hook_invocation_unscoped();
+          guard_entered = true;
           result = original(process, base_address, region_size, free_type);
           original_completed = true;
         } else {
@@ -747,6 +751,8 @@ NTSTATUS NTAPI replacement_nt_map_view_of_section(HANDLE section, HANDLE process
         }
         original = load_map_function(hook_state->map.original_trampoline);
         if (route == ReplacementRoute::kOriginal) {
+          entry_kind = enter_hook_invocation_unscoped();
+          guard_entered = true;
           result = original(section, process, base_address, zero_bits, commit_size, section_offset,
                             view_size, inherit_disposition, allocation_type, protect);
           original_completed = true;
@@ -845,6 +851,8 @@ NTSTATUS NTAPI replacement_nt_unmap_view_of_section(HANDLE process, PVOID base_a
         }
         original = load_unmap_function(hook_state->unmap.original_trampoline);
         if (route == ReplacementRoute::kOriginal) {
+          entry_kind = enter_hook_invocation_unscoped();
+          guard_entered = true;
           result = original(process, base_address);
           original_completed = true;
         } else {
@@ -922,6 +930,8 @@ NTSTATUS NTAPI replacement_nt_unmap_view_of_section_ex(HANDLE process, PVOID bas
         }
         original = load_unmap_ex_function(hook_state->unmap_ex_original_trampoline);
         if (route == ReplacementRoute::kOriginal) {
+          entry_kind = enter_hook_invocation_unscoped();
+          guard_entered = true;
           result = original(process, base_address, flags);
           original_completed = true;
         } else {

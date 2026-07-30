@@ -179,6 +179,8 @@ PVOID NTAPI replacement_rtl_destroy_heap(PVOID heap) noexcept {
         }
         original = reinterpret_cast<RtlDestroyHeapFunction>(original_address);
         if (route == ReplacementRoute::kOriginal) {
+          entry_kind = enter_hook_invocation_unscoped();
+          guard_entered = true;
           result = original(heap);
           original_completed = true;
         } else {
