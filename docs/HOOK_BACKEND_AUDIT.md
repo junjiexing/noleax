@@ -257,7 +257,7 @@ Windows 版本矩阵。
 | system allocator 可能与被 hook API递归 | 使用 replace_fast 和无分配 replacement |
 | 真实 Windows build 间 ntdll prologue 可能变化 | 支持矩阵按 OS build 验收 |
 | CFG/CET 仅覆盖当前 OS/CPU | P4.9 hardened 门禁已通过，CI/支持矩阵继续扩展 |
-| Page Heap/Application Verifier 需要管理员设置 | P4.9 回滚脚本已完成，提权验收待执行 |
+| Page Heap/Application Verifier 需要管理员设置 | P4.9 提权门禁 3/3 通过，回滚后 IFEO 无残留 |
 | v0.1.1 deinit 遗留 Windows FLS callback | overlay 生命周期补丁及 agent unload/exit 回归 |
 | 安全卸载需要 flush 及自有 in-flight 计数 | HookBackend wrapper 统一实现 |
 

@@ -300,7 +300,7 @@ NTSTATUS NTAPI NtUnmapViewOfSection(
 |---|---:|---:|---:|---:|---:|---:|---:|
 | RtlCreateHeap | pending | pending | pending | pending | pending | pending | no |
 | RtlDestroyHeap | pending | pending | pending | pending | pending | pending | no |
-| RtlAllocateHeap | P4.9 hardened prototype | guard/queue/stack/SEH pass | ABI/LastError/exception/overflow/stack pass | 8x20k + TLS/unwind/quiescence pass | PE + runtime pass | elevated run pending | no |
+| RtlAllocateHeap | P4.9 hardened prototype | guard/queue/stack/SEH pass | ABI/LastError/exception/overflow/stack pass | 8x20k + TLS/unwind/quiescence pass | PE + runtime pass | AppVerifier Full 3/3 pass | no |
 | RtlReAllocateHeap | pending | pending | pending | pending | pending | pending | no |
 | RtlFreeHeap | pending | pending | pending | pending | pending | pending | no |
 | NtAllocateVirtualMemory | pending | pending | pending | pending | pending | pending | no |
@@ -309,8 +309,9 @@ NTSTATUS NTAPI NtUnmapViewOfSection(
 | NtUnmapViewOfSection | pending | pending | pending | pending | pending | pending | no |
 
 P4.9 prototype 已通过真实 hook contract 差分、guard 探针、新线程 TLS 启动、强制 queue overflow、
-双策略 unwind、writer、SEH finally 和 CFG/CET quiescence 压力。Application Verifier/Full Page Heap
-自动脚本已完成，但本机当前会话非管理员，提权运行仍待人工验收，所以默认 profile 保持 disabled。
+双策略 unwind、writer、SEH finally、CFG/CET quiescence 及 Application Verifier/Full Page Heap 三轮
+提权压力；24 份 verifier 日志为零记录，IFEO 设置全部回滚。默认 profile 仍保持 disabled，因为 P5
+尚未补齐 free/realloc 等配套生命周期 API，不能把单一 allocation prototype 当作产品 profile。
 workload 与 hardening 证据见
 [RTL_HEAP_BASELINE.md](RTL_HEAP_BASELINE.md) 和
 [RTL_ALLOCATE_HEAP_HOOK.md](RTL_ALLOCATE_HEAP_HOOK.md)，guard 设计与崩溃根因见

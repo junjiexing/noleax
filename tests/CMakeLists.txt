@@ -192,6 +192,7 @@ if(WIN32)
     add_executable(${target}
       targets/rtl_heap_baseline.cpp
     )
+    target_link_libraries(${target} PRIVATE Advapi32)
     noleax_set_project_warnings(${target})
     if(MSVC)
       set_property(TARGET ${target} PROPERTY MSVC_RUNTIME_LIBRARY "${runtime}")

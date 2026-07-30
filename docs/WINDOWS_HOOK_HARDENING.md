@@ -1,6 +1,6 @@
 # Windows Hook Hardening Gate
 
-> 状态：P4.9 自动化部分完成；Application Verifier/Full Page Heap 提权验收待执行
+> 状态：P4.9 Windows x64 完成
 > 范围：Windows x64 `RtlAllocateHeap` prototype 的 CFG、CET、SEH、Page Heap 和长压力
 
 ## 1. Hardened 构建
@@ -52,14 +52,19 @@ replacement in-flight 都为零，异常事件可出队，下一次普通 alloca
 
 1. 拒绝覆盖任一同名 image 已存在的 IFEO 设置；
 2. 分别启用 MD、MT、quiescence 和 normal writer 目标；
-3. 检查 `GlobalFlag` 包含 `0x02000000`，证明 Full Page Heap 已启用；
-4. workload 自身要求 `verifier.dll`/`vrfcore.dll` 已加载，并再次检查进程 global flags；
+3. 检查 `GlobalFlag & 0x100`，证明 Application Verifier 已启用；再检查
+   `PageHeapFlags & 0x1`，证明 `Heaps.Full=true` 已落实为 Full Page Heap；
+4. workload 自身要求 `verifier.dll`/`vrfcore.dll` 已加载、进程 `NtGlobalFlag` 包含 `0x100`，并从自身
+   64-bit IFEO 配置再次核对 `PageHeapFlags`；
 5. 比较 MD/MT 的 baseline/hooked 摘要，重复 quiescence 和 normal writer；
 6. 无论成功或失败都在 `finally` 中先完成全部 AppVerifier 删除，再统一检查 IFEO；若当前版本留下
    零值、零子键的空容器，则只删除已确认由本轮新建的空 key；
 7. 同时保留并报告 phase 原始错误和 cleanup 错误，避免清理问题遮蔽根因。
 
 脚本不会覆盖或删除预先存在的 AppVerifier 设置。AppVerifier 日志保留在其系统默认目录，供人工检查。
+Windows 11 上的 Application Verifier 10.0.26100 以 `GlobalFlag=0x100`、`PageHeapFlags=0x3` 表示该组合，
+不会把 Full 属性编码为 `NtGlobalFlag` 的 `0x02000000`；后者是 GFlags page-heap 配置的表示，不能用于
+判定 AppVerifier `Heaps.Full`。
 
 ## 4. 当前自动结果
 
@@ -74,7 +79,9 @@ replacement in-flight 都为零，异常事件可出队，下一次普通 alloca
 | Hardened MD/MT 8×20,000×2 ABI 差分 | 3/3 repetitions |
 | SEH baseline/hooked/event/finally cleanup | pass |
 | Exception trace/EventStream | pass |
-| Application Verifier/Full Page Heap | 待管理员终端执行 |
+| Application Verifier/Full Page Heap | 3/3 repetitions pass |
+| AppVerifier XML log audit | 24 logs, 0 verifier records |
+| IFEO cleanup | 4/4 target keys absent |
 
 长差分每轮摘要与 P4.8 Release 基线一致：
 
@@ -96,7 +103,7 @@ checksum=0x7caf2ccfa0606232
   -RequireCetRuntime
 ~~~
 
-最终 Page Heap 验收必须在 64-bit 管理员 PowerShell 中运行：
+完整 Page Heap 门禁必须在 64-bit 管理员 PowerShell 中运行：
 
 ~~~powershell
 .\scripts\Test-WindowsHookHardening.ps1 -RequireCetRuntime
@@ -105,5 +112,8 @@ checksum=0x7caf2ccfa0606232
 若机器不支持 CET runtime enforcement，省略 `-RequireCetRuntime`；PE 的 CFG/CET 标记和 CFG runtime
 仍会强制验证，脚本会明确打印 CET 未启用的 warning，不能把该机器计为 CET runtime 覆盖。
 
-在管理员验收通过并 review AppVerifier 日志前，P4.9 不标记完成，`RtlAllocateHeap` profile 继续保持
-disabled。
+2026-07-30 的管理员验收已按默认强度通过：hardened 183/183、quiescence race 100/100、长差分
+3/3、AppVerifier Full Page Heap 3/3。修正后的两次正向验收中，MD/MT baseline/hooked、quiescence
+和 writer 累计 24 份日志，导出为 XML 后均为零 verifier record；清理后四个目标 IFEO key 全部
+不存在。`RtlAllocateHeap` profile 仍保持 disabled，等待 P5 补齐 free/realloc 等生命周期 API，
+而不是等待额外的 P4.9 门禁。

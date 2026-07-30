@@ -1,6 +1,6 @@
 # Windows RtlAllocateHeap Background Trace Writer
 
-> 状态：P4.9 Windows x64 自动门禁完成
+> 状态：P4.9 Windows x64 门禁完成
 > 范围：单一 `RtlAllocateHeap` API 的进程内 trace path、安全停止与 SEH failure event
 
 ## 1. 目标与边界

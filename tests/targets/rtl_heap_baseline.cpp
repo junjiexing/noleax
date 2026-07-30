@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <string_view>
 #include <system_error>
@@ -532,6 +533,103 @@ void add_summary(Summary& aggregate, const Summary& worker, std::uint32_t worker
   return functions.allocate != nullptr && functions.free != nullptr;
 }
 
+[[nodiscard]] bool parse_registry_integer(const wchar_t* text, std::uint32_t& value) noexcept {
+  if (text == nullptr || *text == L'\0') {
+    return false;
+  }
+  std::uint32_t base = 10U;
+  if (text[0] == L'0' && (text[1] == L'x' || text[1] == L'X')) {
+    base = 16U;
+    text += 2;
+  }
+  if (*text == L'\0') {
+    return false;
+  }
+
+  std::uint32_t parsed = 0U;
+  for (; *text != L'\0'; ++text) {
+    std::uint32_t digit = 0U;
+    if (*text >= L'0' && *text <= L'9') {
+      digit = static_cast<std::uint32_t>(*text - L'0');
+    } else if (*text >= L'a' && *text <= L'f') {
+      digit = static_cast<std::uint32_t>(*text - L'a') + 10U;
+    } else if (*text >= L'A' && *text <= L'F') {
+      digit = static_cast<std::uint32_t>(*text - L'A') + 10U;
+    } else {
+      return false;
+    }
+    if (digit >= base || parsed > ((std::numeric_limits<std::uint32_t>::max)() - digit) / base) {
+      return false;
+    }
+    parsed = parsed * base + digit;
+  }
+  value = parsed;
+  return true;
+}
+
+[[nodiscard]] bool read_registry_integer(HKEY key, const wchar_t* value_name,
+                                         std::uint32_t& value) noexcept {
+  std::array<wchar_t, 32U> storage{};
+  DWORD type = REG_NONE;
+  DWORD size = static_cast<DWORD>(sizeof(storage));
+  const LSTATUS status = RegQueryValueExW(key, value_name, nullptr, &type,
+                                          reinterpret_cast<BYTE*>(storage.data()), &size);
+  if (status != ERROR_SUCCESS) {
+    return false;
+  }
+  if (type == REG_DWORD && size == sizeof(DWORD)) {
+    DWORD result = 0U;
+    std::memcpy(&result, storage.data(), sizeof(result));
+    value = result;
+    return true;
+  }
+  if ((type != REG_SZ && type != REG_EXPAND_SZ) || size < sizeof(wchar_t) ||
+      size > sizeof(storage) || size % sizeof(wchar_t) != 0U ||
+      storage[size / sizeof(wchar_t) - 1U] != L'\0') {
+    return false;
+  }
+  return parse_registry_integer(storage.data(), value);
+}
+
+[[nodiscard]] bool current_image_has_full_page_heap() noexcept {
+  std::array<wchar_t, 1024U> image_path{};
+  const DWORD path_length =
+      GetModuleFileNameW(nullptr, image_path.data(), static_cast<DWORD>(image_path.size()));
+  if (path_length == 0U || path_length >= image_path.size()) {
+    return false;
+  }
+
+  std::size_t file_name_offset = path_length;
+  while (file_name_offset != 0U && image_path[file_name_offset - 1U] != L'\\' &&
+         image_path[file_name_offset - 1U] != L'/') {
+    --file_name_offset;
+  }
+  constexpr std::wstring_view prefix =
+      L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\";
+  const std::size_t file_name_size = path_length - file_name_offset;
+  std::array<wchar_t, 512U> key_path{};
+  if (prefix.size() + file_name_size + 1U > key_path.size()) {
+    return false;
+  }
+  for (std::size_t index = 0U; index < prefix.size(); ++index) {
+    key_path[index] = prefix[index];
+  }
+  for (std::size_t index = 0U; index < file_name_size; ++index) {
+    key_path[prefix.size() + index] = image_path[file_name_offset + index];
+  }
+
+  HKEY key = nullptr;
+  if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, key_path.data(), 0U, KEY_QUERY_VALUE | KEY_WOW64_64KEY,
+                    &key) != ERROR_SUCCESS) {
+    return false;
+  }
+  std::uint32_t page_heap_flags = 0U;
+  const bool full_page_heap = read_registry_integer(key, L"PageHeapFlags", page_heap_flags) &&
+                              (page_heap_flags & 0x00000001U) != 0U;
+  static_cast<void>(RegCloseKey(key));
+  return full_page_heap;
+}
+
 [[nodiscard]] bool verifier_environment_satisfies(const Options& options) noexcept {
   if (!options.require_app_verifier) {
     return true;
@@ -541,10 +639,6 @@ void add_summary(Summary& aggregate, const Summary& worker, std::uint32_t worker
   if (!verifier_loaded) {
     return false;
   }
-  if (!options.require_page_heap) {
-    return true;
-  }
-
   const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
   if (ntdll == nullptr) {
     return false;
@@ -552,8 +646,11 @@ void add_summary(Summary& aggregate, const Summary& worker, std::uint32_t worker
   using RtlGetNtGlobalFlagsFunction = ULONG(NTAPI*)();
   const auto get_global_flags =
       reinterpret_cast<RtlGetNtGlobalFlagsFunction>(GetProcAddress(ntdll, "RtlGetNtGlobalFlags"));
-  constexpr ULONG kPageHeapEnabled = 0x02000000U;
-  return get_global_flags != nullptr && (get_global_flags() & kPageHeapEnabled) != 0U;
+  constexpr ULONG kApplicationVerifierEnabled = 0x00000100U;
+  if (get_global_flags == nullptr || (get_global_flags() & kApplicationVerifierEnabled) == 0U) {
+    return false;
+  }
+  return !options.require_page_heap || current_image_has_full_page_heap();
 }
 
 [[nodiscard]] std::uint32_t run_round(const NativeFunctions& functions, const Options& options,

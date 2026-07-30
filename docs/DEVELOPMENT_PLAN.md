@@ -2,11 +2,11 @@
 
 > 状态：已确认
 > 文档版本：0.1
-> 更新日期：2026-07-29
+> 更新日期：2026-07-30
 > 确认日期：2026-07-29
-> 当前阶段：P4 Windows Rtl hook 安全原型（`feat/windows-hook-agent`）
-> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8
-> 下一工作项：P4.9 Page Heap/Verifier/CFG/CET 压力
+> 当前阶段：P4 Windows Rtl hook 安全原型已完成（`feat/windows-hook-agent`，待阶段 review/合并）
+> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8、P4.9
+> 下一工作项：P4 阶段 review/合并门禁；P5 开始前需人工确认
 
 ## 1. 文档目的
 
@@ -1308,12 +1308,14 @@ Debug 含 thread churn 和 Release race 均连续 100 次、双配置全量均 1
 一次，DLL 驻留到进程退出。Release 热路径反汇编和 MD/MT 8×20,000×2 ABI 长差分也已复核通过。
 详见 [HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)。
 
-P4.9 自动化实现已完成，最终提权门禁待人工执行。独立 hardened preset 对 Noleax 目标启用
+P4.9 已通过。独立 hardened preset 对 Noleax 目标启用
 `/guard:cf` 和 `/CETCOMPAT`；五个真实 PE 的标记检查、运行时 CFG/CET、hardened 183/183、并发
 quiescence 100 次和 MD/MT 8×20,000×2 三轮差分均通过。`HEAP_GENERATE_EXCEPTIONS` 现由 SEH
 filter 记录 NTSTATUS 失败事件，并由 `__finally` 保证 guard/in-flight 清理；基线与 hooked 的
-`0xc0000017`、exception parameters 和 `LastError=8` 完全一致。Application Verifier/Full Page Heap
-脚本会拒绝覆盖既有 IFEO 设置并在 finally 中回滚，但本机当前会话非管理员，尚未执行最后一项。
+`0xc0000017`、exception parameters 和 `LastError=8` 完全一致。64-bit 管理员门禁在 Application
+Verifier 10.0.26100 的 `Heaps.Full=true` 下完成三轮 baseline/hooked 差分、quiescence 和 writer；
+修正后的两次正向验收累计 24 份日志，合计零 verifier record，四个 IFEO key 均已清理。脚本拒绝覆盖
+既有设置并在 finally 中回滚。
 详见 [WINDOWS_HOOK_HARDENING.md](WINDOWS_HOOK_HARDENING.md)。
 
 阶段门禁：

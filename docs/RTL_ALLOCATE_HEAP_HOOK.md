@@ -1,6 +1,6 @@
 # RtlAllocateHeap Hook Prototype
 
-> 状态：P4.9 自动化完成，Application Verifier/Page Heap 提权验收待执行
+> 状态：P4.9 Windows x64 完成；单 API prototype 保持 disabled
 > 范围：guarded raw-stack event queue 与后台 trace writer，不进入任何产品 profile
 
 ## 1. 目的
@@ -115,8 +115,7 @@ ctest --preset windows-x64-release -L passthrough --repeat until-fail:20
 
 ## 5. 未完成边界
 
-- P4.9 最后一项：在 64-bit 管理员 PowerShell 中执行 Application Verifier/Full Page Heap 脚本并
-  review 日志。
-
-因此 `RtlAllocateHeap` 继续保持 disabled；trace path、SEH 和 CFG/CET 已完成自动门禁，P4.8 生命周期
-见 [HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)，但 Page Heap 人工验收前仍不是产品级捕获能力。
+P4.9 的 Application Verifier/Full Page Heap 三轮压力、日志 review 和 IFEO 回滚均已通过。
+`RtlAllocateHeap` 仍保持 disabled，不是因为本 API 留有 P4 门禁，而是 P5 尚未实现 `RtlFreeHeap`、
+`RtlReAllocateHeap` 等配套生命周期 API；单独启用 allocation 事件不能形成产品级泄漏结论。P4.8
+生命周期见 [HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)。

@@ -57,7 +57,7 @@ function Test-Administrator {
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-function Convert-GlobalFlag {
+function Convert-RegistryInteger {
     param([Parameter(Mandatory)]$Value)
 
     if ($Value -is [string]) {
@@ -204,9 +204,15 @@ try {
                 throw "Application Verifier did not create settings for $targetName."
             }
             $settings = Get-ItemProperty -LiteralPath $keyPath
-            $globalFlag = Convert-GlobalFlag $settings.GlobalFlag
-            if (($globalFlag -band 0x02000000L) -eq 0) {
-                throw "Full Page Heap is not enabled for $targetName (GlobalFlag=$globalFlag)."
+            $globalFlag = Convert-RegistryInteger $settings.GlobalFlag
+            $pageHeapFlags = Convert-RegistryInteger $settings.PageHeapFlags
+            if (($globalFlag -band 0x00000100L) -eq 0) {
+                throw "Application Verifier is not enabled for $targetName " +
+                    "(GlobalFlag=$globalFlag)."
+            }
+            if (($pageHeapFlags -band 0x00000001L) -eq 0) {
+                throw "Full Page Heap is not enabled for $targetName " +
+                    "(PageHeapFlags=$pageHeapFlags)."
             }
         }
 
