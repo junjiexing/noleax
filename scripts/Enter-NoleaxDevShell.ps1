@@ -39,8 +39,13 @@ if ($null -eq $toolset) {
 }
 
 $devShellModule = Join-Path $VisualStudioPath "Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
-Import-Module $devShellModule
-Enter-VsDevShell -VsInstallPath $VisualStudioPath -SkipAutomaticLocation -DevCmdArguments "-arch=x64 -host_arch=x64 -vcvars_ver=$($toolset.Name)"
+$shellSignature = "$VisualStudioPath|$($toolset.Name)|x64|x64"
+if ($env:NOLEAX_DEV_SHELL_SIGNATURE -ne $shellSignature) {
+    Import-Module $devShellModule
+    Enter-VsDevShell -VsInstallPath $VisualStudioPath -SkipAutomaticLocation `
+        -DevCmdArguments "-arch=x64 -host_arch=x64 -vcvars_ver=$($toolset.Name)"
+    $env:NOLEAX_DEV_SHELL_SIGNATURE = $shellSignature
+}
 $env:VCPKG_ROOT = $requestedVcpkgRoot
 
 Write-Host "Noleax developer environment:"
