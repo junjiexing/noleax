@@ -4,9 +4,9 @@
 > 文档版本：0.1
 > 更新日期：2026-07-30
 > 确认日期：2026-07-29
-> 当前阶段：P7 高级注入与 PE patch 三个分支实现完成（等待人工 review 合并）
-> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8、P4.9、P5.1、P5.2、P5.3、P5.4、P5.5、P5.6、P5.7、P6.1、P6.2、P6.3、P6.4、P6.5、P6.6、P6.7、P7A、P7B、P7C
-> 下一工作项：P7 各分支人工 review 与合并，然后进入 P8 V1 硬化与发布候选
+> 当前阶段：P8 V1 硬化与发布候选（`feat/v1-release-candidate`）
+> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8、P4.9、P5.1、P5.2、P5.3、P5.4、P5.5、P5.6、P5.7、P6.1、P6.2、P6.3、P6.4、P6.5、P6.6、P6.7、P7A、P7B、P7C、P8.1
+> 下一工作项：P8.2 性能基线和默认值复核
 
 ## 1. 文档目的
 
@@ -1592,6 +1592,10 @@ CFG 位图未命中导致 0xC0000409，已改为当前设计并列为回归门�
 | P8.5 | 用户文档和示例 | docs | 可独立按文档操作 |
 | P8.6 | 第三方声明和打包 | release archive | clean machine 可运行 |
 | P8.7 | Release Candidate | tag candidate | 人工最终验收 |
+
+P8.1 于 2026-07-30 完成。release preset 上的可重复门禁连续 10 轮执行 run、attach、capture
+lifecycle 守恒、九 API native profile 和完整 CLI analyze 流程，共 50/50 检查通过，用时
+121.804 秒；原始机器报告由 `scripts/Test-NoleaxSoak.ps1` 写入被 Git 忽略的 `_temp/reports`。
 
 未经人工明确批准，不创建正式 release tag、不发布二进制。
 
