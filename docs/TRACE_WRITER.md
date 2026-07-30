@@ -1,6 +1,6 @@
 # Windows Memory Background Trace Writer
 
-> 状态：P5.5 Windows x64 NT Heap、NT VM 与 section-view 门禁完成
+> 状态：P5.6 Windows x64 模块 generation 与相对栈帧完成
 > 范围：进程内 trace、heap/allocation/mapping generation 配对和安全停止
 
 ## 1. 目标与边界
@@ -24,8 +24,8 @@
 
 `RtlHeapTraceWriter` 是组合模式的公开别名；原有 `RtlAllocateHeapTraceWriter` 单 hook 构造方式仍兼容，
 只写 `api_id=1`；alloc/free 和 alloc/realloc/free 构造方式也继续兼容。`NtVirtualMemoryTraceWriter`
-是 VM-only 构造方式的公开别名。P5.6 前
-StackDefinition 仍只保存绝对地址，`module_id` 和 `module_offset` 为零。
+是 VM-only 构造方式的公开别名。writer 现在同时记录初始模块与 loader load/unload 通知；已知模块
+帧保存 `module_id`、相对 offset 和绝对地址，未知/JIT 帧保留绝对地址回退。
 
 ## 2. 共享队列与跨 API 顺序
 
@@ -94,7 +94,9 @@ worker 要求原始事件 sequence 连续、thread 非零、operation/status/res
 排序时 QPC 可能轻微倒退；writer 保留 sequence 顺序，把倒退 tick 提升到上一事件并累计
 `timestamp_adjustments`。
 
-成功或截断的原始栈使用 FNV-1a 定位，再对状态、帧数和每一帧完整比较，hash 碰撞不会误合并。
+成功或截断的原始栈先按事件时间对应的 module generation 规范化，再使用 FNV-1a 定位并对状态、
+帧数和每一帧完整比较，hash 碰撞不会误合并。相同绝对地址在 DLL unload/reload 后因 ModuleId 不同
+不会复用旧 stack_id。
 同一 writer 的 API 共用一个 stack dictionary，相同栈可以跨 API 复用同一 stack_id。dictionary 容量固定，
 满后重置当前索引 segment，但 stack_id 继续单调递增；definition 总在引用它的 Event chunk 之前落盘。
 
@@ -105,15 +107,16 @@ failure event 仍参与统计守恒。
 
 ## 5. Loss 与计数守恒
 
-writer 生成三类 Loss：
+writer 生成以下 Loss：
 
 | 原因 | 位置 | count | sequence/tick range |
 |---|---|---:|---|
 | stack_capture_failed | agent_queue | 1 | 对应事件的精确范围 |
 | queue_full | agent_queue | 所选 hook dropped 的和 | 无；被拒绝事件没有 sequence |
+| queue_full | agent_queue | module notification dropped 的和 | 无；模块通知使用独立 queue |
 | trace_full | writer | 未落盘事件数 | 首末丢失事件的精确范围 |
 
-Statistics 同时保存 aggregate 与所选模式下的 `api_id=1..7`。每个 API 及 aggregate 都必须
+Statistics 同时保存 aggregate 与所选模式下的 `api_id=1..9`。每个内存 API 及 aggregate 都必须
 满足：
 
 ~~~text
@@ -131,10 +134,9 @@ TraceWriter 强制保留至少 1 KiB 文件尾。普通 metadata/stack/event chu
 `max_file_size - reserve`；任何完整 chunk 放不下时不写半块，并把当前及后续已观察事件计为
 trace-full。
 
-最终 drain 后释放 reserve。七 API 上限下的最坏尾部包含两个 56-byte Loss record、一个含七个 API 的
-424-byte Statistics record、一个 48-byte EndOfTrace record 及三个 56-byte chunk header，共 752
-bytes。终止 chunk 固定使用 none codec，因此 1 KiB reserve 不依赖 LZ4/Zstd compression bound，且
-实际文件不会超过配置上限。
+最终 drain 后释放 reserve。九 API 上限下的终止 Statistics、Loss 与 EndOfTrace 仍小于预留的 1 KiB；
+终止 chunk 固定使用 none codec，因此 reserve 不依赖 LZ4/Zstd compression bound，且实际文件不会
+超过配置上限。
 
 ## 7. 自动验证
 
@@ -158,6 +160,10 @@ outstanding generation、MappingId 复用、两组 ApiStatistics 以及正式 Ev
 P5.5 增加两组逻辑 ApiStatistics。local map 创建独立 MappingId，view 内地址 unmap 规范化为基址；
 remote 不创建 ID，未知成功 unmap 按 CaptureScope 归类为 preexisting/unmatched。pagefile/file-backed、
 多 view、wrapper、remote 与 outstanding 均经正式 EventStream/GenerationTracker 回读。
+
+P5.6 增加初始模块快照、固定 loader-notification queue、PE/CodeView identity、ModuleLoad/Unload codec
+和 generation-aware stack dictionary。真实 fixture 覆盖 unload/reload、同基址复用、相同绝对 PC 的
+不同 StackId，以及模块卸载后的离线符号化。详见 [MODULE_TRACKING.md](MODULE_TRACKING.md)。
 
 `RtlFreeHeap` 与 `RtlReAllocateHeap` 合同、fail-fast、quiescence、CFG/CET 和 Full Page Heap 证据见
 [RTL_FREE_HEAP_HOOK.md](RTL_FREE_HEAP_HOOK.md) 与

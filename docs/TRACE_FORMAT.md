@@ -175,22 +175,40 @@ started_at_process_start uint8、preexisting_allocations_unknown uint8、reserve
 
 ## 8. Module records
 
-ModuleLoad：
+Module chunk V1 包含 ModuleLoad 和 ModuleUnload。chunk descriptor 不使用内存事件 sequence range；
+record 使用与事件相同的 monotonic clock，且按 tick 非递减。相同路径和基址重新加载仍产生新
+module_id。
 
-- sequence/time。
-- module_id。
-- base address。
-- image size。
-- UTF-8 path。
-- PE timestamp/checksum。
-- CodeView GUID/age/PDB path，可用时。
+ModuleLoad 的固定 payload 为 80 bytes，随后是不含 NUL 的 UTF-8 image path 和 PDB path；完整
+`record_size = 88 + image_path_size + pdb_path_size`：
 
-ModuleUnload：
+| payload offset | 字段 | 类型 | V1 编码/含义 |
+|---:|---|---|---|
+| 0 | module_id | uint64 | 非零且 session 内唯一 |
+| 8 | monotonic_ticks | uint64 | 不早于 FileHeader origin |
+| 16 | base_address | uint64 | 非零 |
+| 24 | image_size | uint64 | 非零，范围不得溢出 |
+| 32 | flags | uint32 | bit0=image path truncated，bit1=PDB path truncated |
+| 36 | presence | uint8 | bit0=PE identity，bit1=PDB identity |
+| 37 | reserved | byte[3] | 必须为零 |
+| 40 | PE timestamp | uint32 | identity 不存在时为零 |
+| 44 | PE checksum | uint32 | identity 不存在时为零 |
+| 48 | PE image size | uint32 | identity 不存在时为零；存在时等于 image_size |
+| 52 | PDB age | uint32 | identity 不存在时为零 |
+| 56 | image_path_size | uint32 | 后缀第一段长度 |
+| 60 | pdb_path_size | uint32 | 后缀第二段长度 |
+| 64 | CodeView GUID | byte[16] | identity 不存在时全零 |
+| 80 | paths | byte[] | image path 后紧跟 PDB path |
 
-- sequence/time。
-- module_id。
+ModuleUnload payload 为 16 bytes，完整 record 为 24 bytes：
 
-相同路径和基址重新加载仍产生新 module_id。
+| payload offset | 字段 | 类型 | V1 编码/含义 |
+|---:|---|---|---|
+| 0 | module_id | uint64 | 必须引用当前 live generation |
+| 8 | monotonic_ticks | uint64 | 不早于对应 load |
+
+P5.6 Windows writer 在 hook 安装前记录初始模块并用 loader 通知追加代次；详细安全边界见
+[MODULE_TRACKING.md](MODULE_TRACKING.md)。
 
 ## 9. Stack records
 
@@ -228,8 +246,9 @@ V1 StackDefinition 的固定 payload 为 16 bytes，随后每帧 32 bytes；完�
 | 24 | flags | uint32 | V1 必须为 0 |
 | 28 | reserved | uint32 | 必须为 0 |
 
-complete/truncated 必须至少有一帧；unwind_failed/unavailable 必须为零帧。P4.7 Windows 原型尚未
-接入 P5.6 的模块 generation 跟踪，因此写 `module_id=0`、`module_offset=0` 并保留绝对地址。
+complete/truncated 必须至少有一帧；unwind_failed/unavailable 必须为零帧。P5.6 Windows writer
+命中已知 module range 时写 generation 和相对 offset；未知/JIT frame 仍写 `module_id=0`、
+`module_offset=0` 并保留绝对地址。
 writer 总是在引用某个新 stack_id 的 Event chunk 之前写出相应 StackDefinition chunk。
 
 capture status：

@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -14,6 +15,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <thread>
 #include <unordered_map>
@@ -21,9 +23,11 @@
 #include <vector>
 
 #include "noleax/agent/hook_guard.hpp"
+#include "noleax/agent/windows/module_tracker.hpp"
 #include "noleax/agent/windows/stack_dictionary.hpp"
 #include "noleax/trace/completeness.hpp"
 #include "noleax/trace/event.hpp"
+#include "noleax/trace/module.hpp"
 #include "noleax/trace/record_codec.hpp"
 #include "noleax/trace/stack.hpp"
 #include "noleax/trace/trace_writer.hpp"
@@ -35,10 +39,11 @@ namespace {
 constexpr std::size_t kMaximumStackDefinitionRecordSize =
     noleax::trace::kRecordHeaderSize + 16U +
     static_cast<std::size_t>(kMaximumCapturedStackDepth) * 32U;
+constexpr std::size_t kMaximumModuleLoadRecordSize = 8U * 1024U;
 constexpr std::size_t kMaximumEventAdditionSize = 152U + 56U;
 constexpr std::uint64_t kMinimumTerminalReserveSize = 1024U;
 constexpr std::uint64_t kMaximumTerminalTailSize =
-    (noleax::trace::kChunkHeaderSize + 2U * 56U) +
+    (noleax::trace::kChunkHeaderSize + 3U * 56U) +
     (noleax::trace::kChunkHeaderSize + 8U + 80U + 9U * 48U) +
     (noleax::trace::kChunkHeaderSize + 8U + 40U);
 constexpr auto kEmptyPollInterval = std::chrono::milliseconds{1};
@@ -142,6 +147,70 @@ struct VirtualMapping {
   std::uint64_t size{0U};
 };
 
+struct LiveModule {
+  noleax::trace::ModuleId module_id;
+  std::uint64_t base{0U};
+  std::uint64_t size{0U};
+  bool initial_notification_pending{false};
+};
+
+[[nodiscard]] bool has_raw_module_flag(const RawModuleEvent& event,
+                                       RawModuleEventFlag flag) noexcept {
+  return (event.flags & static_cast<std::uint32_t>(flag)) != 0U;
+}
+
+[[nodiscard]] std::string unknown_module_path(std::uint64_t base_address) {
+  std::string result{"<unknown-module-0x"};
+  char digits[16]{};
+  const auto conversion = std::to_chars(std::begin(digits), std::end(digits), base_address, 16);
+  if (conversion.ec != std::errc{}) {
+    throw std::runtime_error{"cannot format an unknown module address"};
+  }
+  result.append(digits, conversion.ptr);
+  result.push_back('>');
+  return result;
+}
+
+[[nodiscard]] std::string wide_to_utf8(std::span<const wchar_t> input) {
+  if (input.empty()) {
+    return {};
+  }
+  const int input_size = static_cast<int>(input.size());
+  const int size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, input.data(), input_size,
+                                       nullptr, 0, nullptr, nullptr);
+  if (size <= 0) {
+    return {};
+  }
+  std::string result(static_cast<std::size_t>(size), '\0');
+  if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, input.data(), input_size, result.data(),
+                          size, nullptr, nullptr) != size) {
+    return {};
+  }
+  return result;
+}
+
+[[nodiscard]] std::string pdb_path_to_utf8(std::span<const char> input) {
+  if (input.empty()) {
+    return {};
+  }
+  const int input_size = static_cast<int>(input.size());
+  if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, input.data(), input_size, nullptr, 0) >
+      0) {
+    return std::string{input.begin(), input.end()};
+  }
+  const int wide_size =
+      MultiByteToWideChar(CP_ACP, MB_ERR_INVALID_CHARS, input.data(), input_size, nullptr, 0);
+  if (wide_size <= 0) {
+    return {};
+  }
+  std::wstring wide(static_cast<std::size_t>(wide_size), L'\0');
+  if (MultiByteToWideChar(CP_ACP, MB_ERR_INVALID_CHARS, input.data(), input_size, wide.data(),
+                          wide_size) != wide_size) {
+    return {};
+  }
+  return wide_to_utf8(wide);
+}
+
 [[nodiscard]] noleax::trace::ProcessTarget classify_process_target(
     std::uint64_t raw_handle, std::uint64_t process_id) noexcept {
   noleax::trace::ProcessTarget target;
@@ -183,8 +252,14 @@ struct VirtualMapping {
   if (options.stack_dictionary_capacity == 0U) {
     throw std::invalid_argument{"trace writer stack dictionary must not be empty"};
   }
+  if (options.module_queue_capacity < 2U ||
+      (options.module_queue_capacity & (options.module_queue_capacity - 1U)) != 0U) {
+    throw std::invalid_argument{"trace writer module queue capacity must be a power of two"};
+  }
   if (options.maximum_record_size < kMaximumStackDefinitionRecordSize ||
+      options.maximum_record_size < kMaximumModuleLoadRecordSize ||
       options.trace.max_uncompressed_chunk_size < kMaximumStackDefinitionRecordSize ||
+      options.trace.max_uncompressed_chunk_size < kMaximumModuleLoadRecordSize ||
       options.trace.max_uncompressed_chunk_size < kMaximumEventAdditionSize) {
     throw std::invalid_argument{"trace writer limits cannot hold the largest raw stack event"};
   }
@@ -236,6 +311,9 @@ class RtlAllocateHeapTraceWriter::Implementation final {
         writer_{output, file_header, options_.trace},
         completeness_{options_.capture_scope},
         monotonic_origin_{file_header.monotonic_origin} {
+    module_tracker_ =
+        std::make_unique<WindowsModuleTracker>(monotonic_origin_, options_.module_queue_capacity);
+    module_payload_.reserve(options_.chunk_target_size);
     stack_payload_.reserve(options_.chunk_target_size);
     event_payload_.reserve(options_.chunk_target_size);
     write_metadata();
@@ -259,6 +337,9 @@ class RtlAllocateHeapTraceWriter::Implementation final {
         writer_{output, file_header, options_.trace},
         completeness_{options_.capture_scope},
         monotonic_origin_{file_header.monotonic_origin} {
+    module_tracker_ =
+        std::make_unique<WindowsModuleTracker>(monotonic_origin_, options_.module_queue_capacity);
+    module_payload_.reserve(options_.chunk_target_size);
     stack_payload_.reserve(options_.chunk_target_size);
     event_payload_.reserve(options_.chunk_target_size);
     write_metadata();
@@ -368,6 +449,9 @@ class RtlAllocateHeapTraceWriter::Implementation final {
       result_.timestamp_adjustments = timestamp_adjustments_;
       result_.bytes_written = writer_.bytes_written();
       result_.stack_dictionary_segments = dictionary_.segment_count();
+      result_.module_load_records = written_module_loads_;
+      result_.module_unload_records = written_module_unloads_;
+      result_.module_notification_drops = module_notification_drops_;
       try {
         writer_.flush();
       } catch (...) {
@@ -381,6 +465,9 @@ class RtlAllocateHeapTraceWriter::Implementation final {
       result_.timestamp_adjustments = timestamp_adjustments_;
       result_.bytes_written = writer_.bytes_written();
       result_.stack_dictionary_segments = dictionary_.segment_count();
+      result_.module_load_records = written_module_loads_;
+      result_.module_unload_records = written_module_unloads_;
+      result_.module_notification_drops = module_notification_drops_;
       try {
         writer_.flush();
       } catch (...) {
@@ -390,15 +477,22 @@ class RtlAllocateHeapTraceWriter::Implementation final {
   }
 
   void capture_loop() {
+    for (const RawModuleEvent& initial : module_tracker_->initial_modules()) {
+      process_module_event(initial);
+    }
+    collect_module_drops();
     auto next_flush = std::chrono::steady_clock::now() + options_.flush_interval;
     for (;;) {
       bool drained_event = false;
       RtlAllocateHeapEvent raw_event;
       while (event_queue_.try_pop(raw_event)) {
         drained_event = true;
+        drain_modules_through(raw_event.monotonic_ticks);
         process_event(raw_event);
       }
+      drain_modules_through(std::numeric_limits<std::uint64_t>::max());
       collect_queue_drops();
+      collect_module_drops();
 
       if (stop_requested_.load(std::memory_order_acquire)) {
         break;
@@ -419,11 +513,145 @@ class RtlAllocateHeapTraceWriter::Implementation final {
     // replacement in-flight barrier for this final drain boundary.
     RtlAllocateHeapEvent raw_event;
     while (event_queue_.try_pop(raw_event)) {
+      drain_modules_through(raw_event.monotonic_ticks);
       process_event(raw_event);
     }
+    drain_modules_through(std::numeric_limits<std::uint64_t>::max());
     collect_queue_drops();
+    collect_module_drops();
     flush_pending();
     finalize_trace();
+  }
+
+  void drain_modules_through(std::uint64_t maximum_ticks) {
+    for (;;) {
+      if (!pending_module_event_.has_value()) {
+        RawModuleEvent event;
+        if (!module_tracker_->try_dequeue(event)) {
+          return;
+        }
+        pending_module_event_ = event;
+      }
+      if (pending_module_event_->monotonic_ticks > maximum_ticks) {
+        return;
+      }
+      process_module_event(*pending_module_event_);
+      pending_module_event_.reset();
+    }
+  }
+
+  void collect_module_drops() {
+    checked_add(module_notification_drops_, module_tracker_->take_dropped_event_count(),
+                "module notification drop count overflow");
+  }
+
+  void process_module_event(const RawModuleEvent& raw_event) {
+    if (raw_event.base_address == 0U || raw_event.monotonic_ticks < monotonic_origin_) {
+      throw std::invalid_argument{"raw module event is invalid"};
+    }
+    std::uint64_t ticks = raw_event.monotonic_ticks;
+    if (ticks < last_module_ticks_) {
+      ticks = last_module_ticks_;
+    }
+
+    if (raw_event.type == RawModuleEventType::kLoad) {
+      if (raw_event.image_size == 0U) {
+        throw std::invalid_argument{"raw module load has an empty image range"};
+      }
+      const auto existing = live_modules_.find(raw_event.base_address);
+      if (existing != live_modules_.end()) {
+        if (existing->second.initial_notification_pending &&
+            !has_raw_module_flag(raw_event, RawModuleEventFlag::kInitialSnapshot) &&
+            existing->second.size == raw_event.image_size) {
+          existing->second.initial_notification_pending = false;
+          last_module_ticks_ = ticks;
+          return;
+        }
+        throw std::runtime_error{"module load overlaps a live module generation"};
+      }
+      if (next_module_id_ == std::numeric_limits<std::uint64_t>::max()) {
+        throw std::overflow_error{"module ID space is exhausted"};
+      }
+      if (pending_event_count_ != 0U) {
+        flush_pending();
+      }
+
+      noleax::trace::ModuleLoad load;
+      load.module_id = noleax::trace::ModuleId{next_module_id_++};
+      load.monotonic_ticks = ticks;
+      load.base_address = raw_event.base_address;
+      load.image_size = raw_event.image_size;
+      load.image_path = wide_to_utf8(
+          std::span{raw_event.path.data(), static_cast<std::size_t>(raw_event.path_length)});
+      if (load.image_path.empty()) {
+        load.image_path = unknown_module_path(raw_event.base_address);
+        load.flags |= static_cast<std::uint32_t>(noleax::trace::ModuleLoadFlag::kPathTruncated);
+      } else if (has_raw_module_flag(raw_event, RawModuleEventFlag::kPathTruncated)) {
+        load.flags |= static_cast<std::uint32_t>(noleax::trace::ModuleLoadFlag::kPathTruncated);
+      }
+      if (has_raw_module_flag(raw_event, RawModuleEventFlag::kHasImageIdentity) &&
+          raw_event.image_size <= std::numeric_limits<std::uint32_t>::max()) {
+        load.image_identity =
+            noleax::trace::PeImageIdentity{raw_event.pe_timestamp, raw_event.pe_checksum,
+                                           static_cast<std::uint32_t>(raw_event.image_size)};
+      }
+      if (has_raw_module_flag(raw_event, RawModuleEventFlag::kHasPdbIdentity)) {
+        load.pdb_identity = noleax::trace::PdbIdentity{raw_event.pdb_guid, raw_event.pdb_age};
+        load.pdb_path = pdb_path_to_utf8(std::span{
+            raw_event.pdb_path.data(), static_cast<std::size_t>(raw_event.pdb_path_length)});
+        if (has_raw_module_flag(raw_event, RawModuleEventFlag::kPdbPathTruncated)) {
+          load.flags |=
+              static_cast<std::uint32_t>(noleax::trace::ModuleLoadFlag::kPdbPathTruncated);
+        }
+      }
+      noleax::trace::append_module_load_record(module_payload_, load, options_.maximum_record_size);
+      live_modules_.emplace(
+          raw_event.base_address,
+          LiveModule{load.module_id, raw_event.base_address, raw_event.image_size,
+                     has_raw_module_flag(raw_event, RawModuleEventFlag::kInitialSnapshot)});
+      checked_add(pending_module_loads_, 1U, "pending module load count overflow");
+    } else if (raw_event.type == RawModuleEventType::kUnload) {
+      const auto existing = live_modules_.find(raw_event.base_address);
+      if (existing == live_modules_.end()) {
+        last_module_ticks_ = ticks;
+        return;
+      }
+      if (pending_event_count_ != 0U) {
+        flush_pending();
+      }
+      noleax::trace::append_module_unload_record(
+          module_payload_, noleax::trace::ModuleUnload{existing->second.module_id, ticks},
+          options_.maximum_record_size);
+      live_modules_.erase(existing);
+      checked_add(pending_module_unloads_, 1U, "pending module unload count overflow");
+    } else {
+      throw std::invalid_argument{"raw module event type is not supported"};
+    }
+    last_module_ticks_ = ticks;
+    if (module_payload_.size() >= options_.chunk_target_size) {
+      flush_module_payload();
+    }
+  }
+
+  [[nodiscard]] NormalizedStack normalize_stack(const CapturedStack& raw_stack) const {
+    NormalizedStack normalized;
+    normalized.status = trace_stack_status(raw_stack.status);
+    normalized.frame_count = raw_stack.frame_count;
+    for (std::uint16_t index = 0U; index < raw_stack.frame_count; ++index) {
+      const std::uint64_t address = raw_stack.frames[index];
+      noleax::trace::StackFrame frame{{}, 0U, address, 0U};
+      auto module = live_modules_.upper_bound(address);
+      if (module != live_modules_.begin()) {
+        --module;
+        const LiveModule& candidate = module->second;
+        if (address >= candidate.base && address - candidate.base < candidate.size) {
+          frame.module_id = candidate.module_id;
+          frame.module_offset = address - candidate.base;
+        }
+      }
+      normalized.frames[index] = frame;
+    }
+    return normalized;
   }
 
   void validate_raw_event(const RtlAllocateHeapEvent& raw_event) const {
@@ -710,11 +938,12 @@ class RtlAllocateHeapTraceWriter::Implementation final {
     std::uint64_t event_unique_stacks = 0U;
     std::uint64_t event_reused_stacks = 0U;
     if (stack_capture_succeeded(raw_event.stack)) {
+      const NormalizedStack normalized_stack = normalize_stack(raw_event.stack);
       const RawStackInternResult interned =
-          dictionary_.intern(raw_event.stack, hash_captured_stack(raw_event.stack));
+          dictionary_.intern(normalized_stack, hash_normalized_stack(normalized_stack));
       event.header.stack_id = interned.stack_id;
       if (interned.inserted) {
-        append_stack_definition(interned.stack_id, raw_event.stack);
+        append_stack_definition(interned.stack_id, normalized_stack);
         event_unique_stacks = 1U;
       } else {
         event_reused_stacks = 1U;
@@ -1006,13 +1235,13 @@ class RtlAllocateHeapTraceWriter::Implementation final {
     }
   }
 
-  void append_stack_definition(noleax::trace::StackId stack_id, const CapturedStack& stack) {
+  void append_stack_definition(noleax::trace::StackId stack_id, const NormalizedStack& stack) {
     noleax::trace::StackDefinition definition;
     definition.stack_id = stack_id;
-    definition.status = trace_stack_status(stack.status);
+    definition.status = stack.status;
     definition.frames.reserve(stack.frame_count);
     for (std::uint16_t index = 0U; index < stack.frame_count; ++index) {
-      definition.frames.push_back({{}, 0U, stack.frames[index], 0U});
+      definition.frames.push_back(stack.frames[index]);
     }
     noleax::trace::append_stack_definition_record(stack_payload_, definition,
                                                   options_.maximum_record_size);
@@ -1110,10 +1339,33 @@ class RtlAllocateHeapTraceWriter::Implementation final {
                        sequence_end);
   }
 
-  void flush_pending() {
-    if (pending_event_count_ == 0U) {
+  void flush_module_payload() {
+    if (module_payload_.empty()) {
       return;
     }
+    if (!file_limit_reached_ &&
+        write_data_chunk(noleax::trace::ChunkType::kModule, module_payload_)) {
+      checked_add(written_module_loads_, pending_module_loads_,
+                  "written module load count overflow");
+      checked_add(written_module_unloads_, pending_module_unloads_,
+                  "written module unload count overflow");
+    }
+    module_payload_.clear();
+    pending_module_loads_ = 0U;
+    pending_module_unloads_ = 0U;
+  }
+
+  void flush_pending() {
+    if (pending_event_count_ == 0U) {
+      flush_module_payload();
+      return;
+    }
+    if (file_limit_reached_) {
+      flush_module_payload();
+      drop_pending_events();
+      return;
+    }
+    flush_module_payload();
     if (file_limit_reached_) {
       drop_pending_events();
       return;
@@ -1278,6 +1530,13 @@ class RtlAllocateHeapTraceWriter::Implementation final {
 
   void finalize_trace() {
     writer_.release_file_reserve();
+    noleax::trace::LossRecord module_loss;
+    if (module_notification_drops_ != 0U) {
+      module_loss.reason = noleax::trace::LossReason::kQueueFull;
+      module_loss.location = noleax::trace::LossLocation::kAgentQueue;
+      module_loss.estimated_event_count = module_notification_drops_;
+      completeness_.observe_loss(module_loss);
+    }
     noleax::trace::LossRecord queue_loss;
     if (queue_dropped_events_ != 0U) {
       queue_loss.reason = noleax::trace::LossReason::kQueueFull;
@@ -1299,8 +1558,12 @@ class RtlAllocateHeapTraceWriter::Implementation final {
       completeness_.observe_loss(trace_loss);
     }
 
-    if (queue_dropped_events_ != 0U || trace_dropped_events_ != 0U) {
+    if (module_notification_drops_ != 0U || queue_dropped_events_ != 0U ||
+        trace_dropped_events_ != 0U) {
       std::vector<std::byte> loss_payload;
+      if (module_notification_drops_ != 0U) {
+        noleax::trace::append_loss_record(loss_payload, module_loss, options_.maximum_record_size);
+      }
       if (queue_dropped_events_ != 0U) {
         noleax::trace::append_loss_record(loss_payload, queue_loss, options_.maximum_record_size);
       }
@@ -1550,7 +1813,8 @@ class RtlAllocateHeapTraceWriter::Implementation final {
 
     noleax::trace::EndOfTrace end;
     end.final_sequence = noleax::trace::Sequence{last_sequence_};
-    end.final_monotonic_ticks = (std::max)(last_ticks_, monotonic_origin_);
+    end.final_monotonic_ticks =
+        (std::max)((std::max)(last_ticks_, last_module_ticks_), monotonic_origin_);
     end.normal_stop = true;
     end.aggregate_completeness = completeness_.report();
     end.aggregate_completeness.remove(noleax::trace::CompletenessIssue::kMissingEndOfTrace);
@@ -1567,6 +1831,9 @@ class RtlAllocateHeapTraceWriter::Implementation final {
     result_.trace_dropped_events = trace_dropped_events_;
     result_.timestamp_adjustments = timestamp_adjustments_;
     result_.stack_dictionary_segments = dictionary_.segment_count();
+    result_.module_load_records = written_module_loads_;
+    result_.module_unload_records = written_module_unloads_;
+    result_.module_notification_drops = module_notification_drops_;
     result_.bytes_written = writer_.bytes_written();
   }
 
@@ -1578,11 +1845,14 @@ class RtlAllocateHeapTraceWriter::Implementation final {
   NtMemoryHooks* const nt_memory_hooks_;
   RtlHeapEventQueue& event_queue_;
   const RtlAllocateHeapTraceWriterOptions options_;
-  RawStackDictionary dictionary_;
+  NormalizedStackDictionary dictionary_;
   noleax::trace::TraceWriter writer_;
   noleax::trace::CompletenessTracker completeness_;
   const std::uint64_t monotonic_origin_;
 
+  std::unique_ptr<WindowsModuleTracker> module_tracker_;
+  std::optional<RawModuleEvent> pending_module_event_;
+  std::vector<std::byte> module_payload_;
   std::vector<std::byte> stack_payload_;
   std::vector<std::byte> event_payload_;
   std::unordered_map<AllocationKey, noleax::trace::AllocationId, AllocationKeyHash>
@@ -1590,6 +1860,7 @@ class RtlAllocateHeapTraceWriter::Implementation final {
   std::unordered_map<std::uint64_t, noleax::trace::HeapId> live_heaps_;
   std::map<std::uint64_t, VirtualMapping> live_virtual_mappings_;
   std::map<std::uint64_t, VirtualMapping> live_section_mappings_;
+  std::map<std::uint64_t, LiveModule> live_modules_;
   std::thread worker_;
   mutable std::mutex state_mutex_;
   std::condition_variable state_changed_;
@@ -1603,8 +1874,12 @@ class RtlAllocateHeapTraceWriter::Implementation final {
   std::uint64_t next_allocation_id_{1U};
   std::uint64_t next_heap_id_{1U};
   std::uint64_t next_mapping_id_{1U};
+  std::uint64_t next_module_id_{1U};
   std::uint64_t last_sequence_{0U};
   std::uint64_t last_ticks_{0U};
+  std::uint64_t last_module_ticks_{0U};
+  std::uint64_t pending_module_loads_{0U};
+  std::uint64_t pending_module_unloads_{0U};
   std::uint64_t pending_event_count_{0U};
   std::uint64_t pending_create_events_{0U};
   std::uint64_t pending_allocate_events_{0U};
@@ -1631,6 +1906,9 @@ class RtlAllocateHeapTraceWriter::Implementation final {
   std::uint64_t written_vm_free_events_{0U};
   std::uint64_t written_map_events_{0U};
   std::uint64_t written_unmap_events_{0U};
+  std::uint64_t written_module_loads_{0U};
+  std::uint64_t written_module_unloads_{0U};
+  std::uint64_t module_notification_drops_{0U};
   std::uint64_t queue_dropped_events_{0U};
   std::uint64_t queue_create_dropped_events_{0U};
   std::uint64_t queue_allocate_dropped_events_{0U};

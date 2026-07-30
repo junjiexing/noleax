@@ -4,9 +4,9 @@
 > 文档版本：0.1
 > 更新日期：2026-07-30
 > 确认日期：2026-07-29
-> 当前阶段：P5.5 section-view generation 实现及完整自动门禁完成（`feat/windows-agent-full-api`）
-> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8、P4.9、P5.1、P5.2、P5.3、P5.4、P5.5
-> 下一工作项：P5.6 模块加载/卸载 generation 与相对栈帧
+> 当前阶段：P5.6 module generation 与相对栈帧实现完成（`feat/windows-agent-full-api`）
+> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8、P4.9、P5.1、P5.2、P5.3、P5.4、P5.5、P5.6
+> 下一工作项：P5.7 profile、过滤和统计收口
 
 ## 1. 文档目的
 
@@ -1403,6 +1403,14 @@ NTSTATUS/LastError、wrapper、preexisting/unmatched、remote child、EventStrea
 legacy/Ex quiescence。统一 raw event 为 664 bytes。详见
 [NT_SECTION_VIEW_HOOK.md](NT_SECTION_VIEW_HOOK.md)。产品 profile 仍等待 P5.6 module generation 与
 P5.7 registry/filter/statistics 收口。
+
+P5.6 状态：新增初始模块快照与 `LdrRegisterDllNotification` 固定 queue。loader callback 只复制
+base/size/path、PE identity 和可选 CodeView identity；writer 分配不复用的 ModuleId，编码
+ModuleLoad/Unload，并在事件时间对应的 live generation 上生成相对栈帧。normalized dictionary 的
+hash 与完整比较包含 ModuleId、offset 和绝对地址，因此 unload/reload 后复用同一 PC 不会错误复用
+StackId。正式 EventStream 校验 generation、live range 和相对地址一致性；真实 DLL fixture 已覆盖
+同基址 reload、不同 ModuleId/StackId 及卸载后的离线符号化。详见
+[MODULE_TRACKING.md](MODULE_TRACKING.md)。
 
 每增加一个 API：
 

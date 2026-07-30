@@ -1,6 +1,6 @@
 # Windows V1 Hook API Matrix
 
-> 状态：P5.5；NT Heap、NT virtual-memory 与 section-view adapter 已完成，profile 尚未启用
+> 状态：P5.6；九个逻辑 API、模块 generation 与相对栈帧已完成，profile 等待 P5.7 启用
 > backend：Hoox v0.1.1 replace_fast
 > target：Windows x64
 
@@ -359,3 +359,8 @@ preexisting/unmatched 和正式 trace generation 回读均由自动测试覆盖�
 P5.5 完整门禁为 Debug/Release 195/195、hardened 216/216、21 个 PE 的 CFG/CET 检查、五组
 quiescence race 各 100/100、长 ABI 差分 3/3，以及 Application Verifier/Full Page Heap 三轮；本轮
 16 个目标 IFEO key 全部清理。
+
+P5.6 增加 `LdrRegisterDllNotification` 模块跟踪。loader callback 只复制固定数据并写入预分配 queue；
+writer 分配 ModuleId、编码 ModuleLoad/Unload，并用 generation-aware 相对帧去重。真实 DLL fixture
+覆盖 load/unload/reload、同一基址和绝对 PC 复用、不同 StackId，以及卸载后的离线符号化。设计与
+门禁见 [MODULE_TRACKING.md](MODULE_TRACKING.md)。

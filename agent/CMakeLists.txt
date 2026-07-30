@@ -5,6 +5,7 @@ add_library(noleax-hook-backend STATIC
 
 if(WIN32)
   target_sources(noleax-hook-backend PRIVATE
+    windows/module_tracker.cpp
     windows/nt_memory_hooks.cpp
     windows/rtl_allocate_heap_hook.cpp
     windows/rtl_allocate_heap_trace_writer.cpp
@@ -31,6 +32,10 @@ target_link_libraries(noleax-hook-backend
     hoox::hoox
     noleax::trace
 )
+
+if(WIN32)
+  target_link_libraries(noleax-hook-backend PRIVATE Psapi)
+endif()
 
 noleax_set_project_warnings(noleax-hook-backend)
 

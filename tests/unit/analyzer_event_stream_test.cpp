@@ -13,6 +13,7 @@
 #include "noleax/analyzer/event_stream.hpp"
 #include "noleax/trace/completeness.hpp"
 #include "noleax/trace/event.hpp"
+#include "noleax/trace/module.hpp"
 #include "noleax/trace/record_codec.hpp"
 #include "noleax/trace/trace_writer.hpp"
 #include "noleax/trace/wire_format.hpp"
@@ -146,6 +147,20 @@ struct ChunkInput {
   return payload;
 }
 
+[[nodiscard]] std::vector<std::byte> module_payload(
+    const std::vector<noleax::trace::ModuleRecord>& records) {
+  std::vector<std::byte> payload;
+  for (const auto& record : records) {
+    if (const auto* load = std::get_if<noleax::trace::ModuleLoad>(&record)) {
+      noleax::trace::append_module_load_record(payload, *load);
+    } else {
+      noleax::trace::append_module_unload_record(payload,
+                                                 std::get<noleax::trace::ModuleUnload>(record));
+    }
+  }
+  return payload;
+}
+
 [[nodiscard]] std::vector<std::byte> statistics_payload(
     const noleax::trace::CaptureStatistics& statistics) {
   std::vector<std::byte> payload;
@@ -178,6 +193,8 @@ struct ChunkInput {
 enum class CallbackKind : std::uint8_t {
   kFileHeader,
   kCaptureScope,
+  kModuleLoad,
+  kModuleUnload,
   kEvent,
   kLoss,
   kStatistics,
@@ -185,6 +202,64 @@ enum class CallbackKind : std::uint8_t {
 };
 
 }  // namespace
+
+TEST_CASE("event stream preserves module generations across unload and base reuse",
+          "[analyzer][events][module][stack]") {
+  using namespace noleax::trace;
+  ModuleLoad first;
+  first.module_id = ModuleId{1U};
+  first.monotonic_ticks = 1U;
+  first.base_address = 0x100000U;
+  first.image_size = 0x4000U;
+  first.image_path = "C:/fixture/first.dll";
+  const ModuleUnload unload{first.module_id, 3U};
+  ModuleLoad second = first;
+  second.module_id = ModuleId{2U};
+  second.monotonic_ticks = 4U;
+  second.image_path = "C:/fixture/second.dll";
+
+  StackDefinition first_stack = stack_definition(201U);
+  first_stack.frames[0] = {first.module_id, 0x123U, first.base_address + 0x123U, 0U};
+  StackDefinition second_stack = stack_definition(202U);
+  second_stack.frames[0] = {second.module_id, 0x123U, second.base_address + 0x123U, 0U};
+  const auto encoded = write_trace({
+      {descriptor(ChunkType::kMetadata), metadata_payload()},
+      {descriptor(ChunkType::kModule), module_payload({ModuleRecord{first}})},
+      {descriptor(ChunkType::kStack), stack_payload({first_stack})},
+      {descriptor(ChunkType::kModule),
+       module_payload({ModuleRecord{unload}, ModuleRecord{second}})},
+      {descriptor(ChunkType::kStack), stack_payload({second_stack})},
+      {descriptor(ChunkType::kEnd), end_payload(normal_end(0U, 4U))},
+  });
+
+  std::vector<ModuleLoad> loads;
+  std::vector<ModuleUnload> unloads;
+  noleax::analyzer::EventStreamCallbacks callbacks;
+  callbacks.on_module_load = [&loads](const ModuleLoad& load) { loads.push_back(load); };
+  callbacks.on_module_unload = [&unloads](const ModuleUnload& value) { unloads.push_back(value); };
+  const auto result = analyze(encoded, callbacks);
+  CHECK(loads == std::vector{first, second});
+  CHECK(unloads == std::vector{unload});
+  CHECK(result.module_load_count == 2U);
+  CHECK(result.module_unload_count == 1U);
+  CHECK(result.stack_definition_count == 2U);
+  CHECK(result.known_monotonic_end == 4U);
+  CHECK_FALSE(result.partially_understood);
+
+  first_stack.frames[0].module_offset = first.image_size;
+  const auto invalid_stack = write_trace({
+      {descriptor(ChunkType::kMetadata), metadata_payload()},
+      {descriptor(ChunkType::kModule), module_payload({ModuleRecord{first}})},
+      {descriptor(ChunkType::kStack), stack_payload({first_stack})},
+  });
+  CHECK_THROWS_AS(analyze(invalid_stack), noleax::analyzer::TraceAnalysisError);
+
+  const auto duplicate_id = write_trace({
+      {descriptor(ChunkType::kMetadata), metadata_payload()},
+      {descriptor(ChunkType::kModule), module_payload({ModuleRecord{first}, ModuleRecord{first}})},
+  });
+  CHECK_THROWS_AS(analyze(duplicate_id), noleax::analyzer::TraceAnalysisError);
+}
 
 TEST_CASE("event stream decodes stack definitions before referenced events",
           "[analyzer][events][stack]") {

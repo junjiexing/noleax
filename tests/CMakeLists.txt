@@ -128,6 +128,55 @@ if(WIN32)
   )
   noleax_set_project_warnings(noleax-nt-virtual-memory-trace-writer-test)
 
+  add_library(noleax-module-generation-fixture SHARED
+    integration/module_generation_fixture.cpp
+  )
+  noleax_set_project_warnings(noleax-module-generation-fixture)
+  if(MSVC)
+    target_compile_options(noleax-module-generation-fixture PRIVATE /Od /Zi)
+    target_link_options(noleax-module-generation-fixture PRIVATE /DEBUG:FULL /OPT:NOREF /OPT:NOICF)
+  endif()
+
+  add_executable(noleax-module-generation-trace-test
+    integration/module_generation_trace_test.cpp
+  )
+  target_link_libraries(noleax-module-generation-trace-test PRIVATE
+    noleax::hook-backend
+    noleax::analyzer
+  )
+  noleax_set_project_warnings(noleax-module-generation-trace-test)
+  add_dependencies(noleax-module-generation-trace-test noleax-module-generation-fixture)
+
+  add_test(NAME hook.module-generation-trace
+    COMMAND noleax-module-generation-trace-test
+      "$<TARGET_FILE:noleax-module-generation-fixture>"
+      "$<TARGET_FILE_DIR:noleax-module-generation-trace-test>/module-generation.nlx"
+  )
+  set_tests_properties(hook.module-generation-trace PROPERTIES
+    LABELS "hook;trace;writer;windows;module;generation;unload;reload;symbolizer"
+    PASS_REGULAR_EXPRESSION
+      "^status=ok loads=2 unload=1 base-reuse=1 relative-stack=1 symbolized=1 events=[0-9]+"
+    RUN_SERIAL TRUE
+    TIMEOUT 120
+  )
+
+  add_executable(noleax-module-tracker-test
+    integration/module_tracker_test.cpp
+  )
+  target_link_libraries(noleax-module-tracker-test PRIVATE noleax::hook-backend)
+  noleax_set_project_warnings(noleax-module-tracker-test)
+  add_dependencies(noleax-module-tracker-test noleax-module-generation-fixture)
+  add_test(NAME hook.module-tracker-bounded-queue
+    COMMAND noleax-module-tracker-test "$<TARGET_FILE:noleax-module-generation-fixture>"
+  )
+  set_tests_properties(hook.module-tracker-bounded-queue PROPERTIES
+    LABELS "hook;windows;module;loader;queue;overflow"
+    PASS_REGULAR_EXPRESSION
+      "^status=ok initial=[0-9]+ queued=2 dropped=4 load=1 unload=1"
+    RUN_SERIAL TRUE
+    TIMEOUT 60
+  )
+
   add_test(NAME hook.nt-virtual-memory-trace-writer
     COMMAND noleax-nt-virtual-memory-trace-writer-test
       "$<TARGET_FILE_DIR:noleax-nt-virtual-memory-trace-writer-test>/nt-virtual-memory.nlx"
@@ -602,6 +651,9 @@ if(WIN32)
         noleax-nt-virtual-memory-contract-test
         noleax-nt-section-view-contract-test
         noleax-nt-virtual-memory-trace-writer-test
+        noleax-module-generation-fixture
+        noleax-module-generation-trace-test
+        noleax-module-tracker-test
         noleax-rtl-allocate-heap-exception-test
         noleax-rtl-reallocate-heap-exception-test)
       add_test(NAME hook.windows-mitigations.${mitigation_target}
