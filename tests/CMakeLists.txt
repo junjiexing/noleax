@@ -92,6 +92,11 @@ if(WIN32)
   )
   noleax_set_project_warnings(noleax-controller-target)
 
+  add_library(noleax-injector-no-bootstrap SHARED
+    integration/injector_no_bootstrap.cpp
+  )
+  noleax_set_project_warnings(noleax-injector-no-bootstrap)
+
   add_executable(noleax-controller-launch-test
     integration/controller_launch_test.cpp
   )
@@ -114,6 +119,29 @@ if(WIN32)
       "^status=ok kind=launch ready-before-main=1 state=finalized events=[1-9][0-9]*"
     RUN_SERIAL TRUE
     TIMEOUT 60
+  )
+
+  add_executable(noleax-injector-rollback-test
+    integration/injector_rollback_test.cpp
+  )
+  target_link_libraries(noleax-injector-rollback-test PRIVATE
+    noleax::controller
+    Psapi
+  )
+  noleax_set_project_warnings(noleax-injector-rollback-test)
+
+  add_test(NAME controller.remote-thread-rollback
+    COMMAND noleax-injector-rollback-test
+      "$<TARGET_FILE:noleax-injector-no-bootstrap>"
+      "$<TARGET_FILE:noleax-controller-target>"
+      "$<TARGET_FILE_DIR:noleax-injector-rollback-test>/injector-rollback.ready"
+  )
+  set_tests_properties(controller.remote-thread-rollback PROPERTIES
+    LABELS "controller;injection;remote-thread;rollback;windows"
+    PASS_REGULAR_EXPRESSION
+      "^status=ok rollback=1 module-unloaded=1 main-suspended=1 attempts=8 handles-stable=1"
+    RUN_SERIAL TRUE
+    TIMEOUT 30
   )
 
   add_library(noleax-hook-backend-fixture SHARED

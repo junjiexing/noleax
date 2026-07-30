@@ -4,9 +4,9 @@
 > 文档版本：0.1
 > 更新日期：2026-07-30
 > 确认日期：2026-07-29
-> 当前阶段：P6.2 suspended launch 完成（`feat/windows-controller-injection`）
-> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8、P4.9、P5.1、P5.2、P5.3、P5.4、P5.5、P5.6、P5.7、P6.1、P6.2
-> 下一工作项：P6.3 remote-thread bootstrap rollback
+> 当前阶段：P6.3 remote-thread bootstrap 完成（`feat/windows-controller-injection`）
+> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8、P4.9、P5.1、P5.2、P5.3、P5.4、P5.5、P5.6、P5.7、P6.1、P6.2、P6.3
+> 下一工作项：P6.4 runtime attach
 
 ## 1. 文档目的
 
@@ -1468,6 +1468,10 @@ P6.2 状态：新增 Windows x64 controller、显式 agent bootstrap 和 suspend
 `CREATE_SUSPENDED` 创建目标，在初始 loader 阶段通过 `ntdll!LdrLoadDll` 的固定 ABI stub 加载 agent，
 完成 pipe 身份校验、hook 安装和 `CaptureReady` 后才恢复主线程。集成测试同时验证目标 `main` 观察到
 ready、trace 可由正式 analyzer 回读，以及 stop 后进入 finalized 状态。
+
+P6.3 状态：remote-thread bootstrap 使用完整 64-bit module handle 计算 export RVA；任意 bootstrap
+拒绝都会调用 `LdrUnloadDll` 回滚，不恢复 suspended 目标。失败注入测试连续执行八轮，验证 fixture
+每轮均已卸载、目标入口未运行，并检查 controller 进程 handle 数不增长。
 
 人工验证：
 
