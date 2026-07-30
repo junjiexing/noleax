@@ -7,7 +7,9 @@ param(
     [string]$AgentPath,
 
     [Parameter(Mandatory = $true)]
-    [string]$TargetPath
+    [string]$TargetPath,
+
+    [string]$ExamplesDirectory
 )
 
 Set-StrictMode -Version Latest
@@ -59,7 +61,15 @@ $noleax = Resolve-RequiredFile -Path $NoleaxPath -Description "noleax executable
 $agent = Resolve-RequiredFile -Path $AgentPath -Description "noleax agent"
 $target = Resolve-RequiredFile -Path $TargetPath -Description "documentation test target"
 
-$examplesDirectory = Join-Path $repositoryRoot "examples"
+if ([string]::IsNullOrWhiteSpace($ExamplesDirectory)) {
+    $examplesDirectory = Join-Path $repositoryRoot "examples"
+}
+else {
+    if (-not (Test-Path -LiteralPath $ExamplesDirectory -PathType Container)) {
+        throw "examples directory does not exist: $ExamplesDirectory"
+    }
+    $examplesDirectory = (Resolve-Path -LiteralPath $ExamplesDirectory).Path
+}
 $exampleFiles = @(
     "run-nt-heap.toml",
     "analyze-events.toml",

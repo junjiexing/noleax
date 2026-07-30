@@ -14,7 +14,7 @@
       "cacheVariables": {
         "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
         "VCPKG_OVERLAY_PORTS": "${sourceDir}/ports",
-        "VCPKG_TARGET_TRIPLET": "x64-windows-static-md",
+        "VCPKG_TARGET_TRIPLET": "x64-windows-static",
         "CMAKE_EXPORT_COMPILE_COMMANDS": true,
         "NOLEAX_BUILD_TESTS": true,
         "NOLEAX_WARNINGS_AS_ERRORS": true

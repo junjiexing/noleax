@@ -172,6 +172,23 @@ if(WIN32)
     TIMEOUT 60
   )
 
+  if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    add_test(NAME package.windows-x64-smoke
+      COMMAND "${NOLEAX_PWSH_EXECUTABLE}" -NoProfile
+        -File "${PROJECT_SOURCE_DIR}/scripts/Test-NoleaxPackage.ps1"
+        -BuildDirectory "${CMAKE_BINARY_DIR}"
+        -TargetPath "$<TARGET_FILE:noleax-cli-e2e-target>"
+        -SkipBuild
+    )
+    set_tests_properties(package.windows-x64-smoke PROPERTIES
+      LABELS "package;install;cpack;licenses;cli;run;trace;analyzer;windows"
+      PASS_REGULAR_EXPRESSION
+        "^status=ok stage=1 archive=1 workflows=2 images=[0-9]+/[0-9]+ licenses=6 sha256=1"
+      RUN_SERIAL TRUE
+      TIMEOUT 180
+    )
+  endif()
+
   add_test(NAME cli.trace-untrusted-corpus
     COMMAND "${NOLEAX_PWSH_EXECUTABLE}" -NoProfile
       -File "${PROJECT_SOURCE_DIR}/scripts/Test-UntrustedTraces.ps1"

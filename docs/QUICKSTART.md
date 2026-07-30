@@ -5,8 +5,8 @@
 
 ## 1. 准备
 
-使用发布目录时，请保持 `noleax.exe` 与 `noleax-agent.dll` 在同一目录。源码构建方式见
-[../BUILDING.md](../BUILDING.md)。在 PowerShell 中进入该目录，然后先运行只读检查：
+解压本地 RC ZIP 后进入 `bin`，并保持 `noleax.exe` 与 `noleax-agent.dll` 在同一目录。源码构建方式
+见 [../BUILDING.md](../BUILDING.md)。在 PowerShell 中先运行只读检查：
 
 ~~~powershell
 .\noleax.exe doctor
@@ -120,4 +120,3 @@ CLI 可以覆盖配置。例如以下命令保留 TOML 中的其他字段，但�
 
 不要把退出码 2 当作无输出；先读取输出中的 completeness 原因。遇到问题见
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md)。
-

@@ -45,6 +45,7 @@ P7 的延期 TODO，不应写入 V1 自动化流程。
 - docs/SECURITY_AUDIT.md
 - docs/QUICKSTART.md
 - docs/TROUBLESHOOTING.md
+- docs/PACKAGING.md
 
 ## Build
 
@@ -54,4 +55,5 @@ P7 的延期 TODO，不应写入 V1 自动化流程。
 
 Noleax 自身许可证尚未确定。在许可证明确及正式发布获批前，不应对外分发。
 
-第三方依赖使用各自许可证；Hoox 的 COPYING 和 NOTICE 将随发布包提供。
+第三方依赖、版本、Hoox 修改及完整版权文本清单见
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)；六份原始文本会随本地 RC 包提供。

@@ -11,6 +11,19 @@
 
 The vcpkg executable and package cache are local tools and must not be committed to this repository.
 
+## Local release-candidate package
+
+After a Release build, generate and validate the self-contained Windows x64 ZIP with:
+
+~~~powershell
+cpack --config .\build\windows-x64-release\CPackConfig.cmake -G ZIP
+pwsh -NoProfile -File .\scripts\Test-NoleaxPackage.ps1 -SkipBuild
+~~~
+
+The archive and its SHA-256 companion are written below the ignored `build` directory. They are
+local test artifacts, not approved releases. Packaging details and redistribution blockers are in
+[docs/PACKAGING.md](docs/PACKAGING.md).
+
 ## Prepare vcpkg
 
 Example local setup:

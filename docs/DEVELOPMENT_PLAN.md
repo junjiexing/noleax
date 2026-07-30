@@ -5,8 +5,8 @@
 > 更新日期：2026-07-30
 > 确认日期：2026-07-29
 > 当前阶段：P8 V1 硬化与发布候选（`feat/v1-release-candidate`）
-> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8、P4.9、P5.1、P5.2、P5.3、P5.4、P5.5、P5.6、P5.7、P6.1、P6.2、P6.3、P6.4、P6.5、P6.6、P6.7、P7A、P7B、P7C、P8.1、P8.2、P8.3、P8.4、P8.5
-> 下一工作项：P8.6 第三方声明和打包
+> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8、P4.9、P5.1、P5.2、P5.3、P5.4、P5.5、P5.6、P5.7、P6.1、P6.2、P6.3、P6.4、P6.5、P6.6、P6.7、P7A、P7B、P7C、P8.1、P8.2、P8.3、P8.4、P8.5、P8.6
+> 下一工作项：P8.7 Release Candidate
 
 ## 1. 文档目的
 
@@ -1614,6 +1614,13 @@ P8.5 于 2026-07-30 完成。Quickstart、故障排查和 run/events/outstanding
 边界，删除静态 patch 已可用及 thread hijack 示例等矛盾。`docs.windows-x64-examples` 会真实生成
 NT Heap trace，校验三份配置，执行 events/outstanding 分析，并验证延期的 patch/thread hijack 均
 稳定返回 5 且 patch 不创建文件；Release 定向门禁 1/1 通过。
+
+P8.6 于 2026-07-30 完成。RC 切换到 `/MT` 与 `x64-windows-static`，避免远程加载 agent 时依赖目标
+进程无法从 controller 目录解析的动态 runtime。CMake install/CPack 生成带单一顶层目录和 SHA-256
+companion 的 Windows x64 ZIP；包包含 controller、agent、用户文档、示例和六份锁定版权文本。
+`package.windows-x64-smoke` 对 staging 与解压 ZIP 分别验证布局、x64 PE、递归 DLL 依赖闭包、版权
+文本哈希，以及 version/doctor/真实 capture/events/outstanding 工作流；所有动态依赖必须是 Windows
+系统 DLL。Release 定向门禁 1/1 通过。测试归档只在 `_temp` 中短暂存在并已删除；未发布二进制。
 
 未经人工明确批准，不创建正式 release tag、不发布二进制。
 
