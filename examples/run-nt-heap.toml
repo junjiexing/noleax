@@ -1,0 +1,27 @@
+schema_version = 1
+operation = "run"
+
+[target]
+path = "application.exe"
+args = []
+
+[injection]
+method = "remote-thread"
+timeout = "10s"
+
+[capture]
+hook_profile = "windows-nt-heap"
+max_stack_depth = 64
+min_size = "0B"
+duration = "30s"
+
+[trace]
+path = "capture.nlx"
+buffer_size = "16MiB"
+max_file_size = "256MiB"
+max_files = 1
+on_full = "stop"
+flush_interval = "250ms"
+compression = "lz4"
+compression_level = 0
+

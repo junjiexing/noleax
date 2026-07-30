@@ -157,6 +157,21 @@ if(WIN32)
   )
 
   find_program(NOLEAX_PWSH_EXECUTABLE NAMES pwsh REQUIRED)
+  add_test(NAME docs.windows-x64-examples
+    COMMAND "${NOLEAX_PWSH_EXECUTABLE}" -NoProfile
+      -File "${PROJECT_SOURCE_DIR}/scripts/Test-DocumentationExamples.ps1"
+      -NoleaxPath "$<TARGET_FILE:noleax>"
+      -AgentPath "$<TARGET_FILE:noleax-agent>"
+      -TargetPath "$<TARGET_FILE:noleax-cli-e2e-target>"
+  )
+  set_tests_properties(docs.windows-x64-examples PROPERTIES
+    LABELS "docs;examples;cli;run;trace;analyzer;windows"
+    PASS_REGULAR_EXPRESSION
+      "^status=ok configs=3 capture=1 events=1 outstanding=1 deferred=2"
+    RUN_SERIAL TRUE
+    TIMEOUT 60
+  )
+
   add_test(NAME cli.trace-untrusted-corpus
     COMMAND "${NOLEAX_PWSH_EXECUTABLE}" -NoProfile
       -File "${PROJECT_SOURCE_DIR}/scripts/Test-UntrustedTraces.ps1"

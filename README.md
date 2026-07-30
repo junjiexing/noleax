@@ -9,12 +9,17 @@ Noleax（读音 “no leaks”）是一个基于 hook 的跨平台内存事件�
 
 当前与计划能力：
 
-- 启动目标、attach 和静态 patch 注入。
+- 使用 `remote-thread` 启动目标或 attach 到运行中的目标。
 - 使用 Hoox v0.1.1 hook 规范化内存 API。
 - 捕获 alloc、realloc、free、heap lifecycle 和 virtual memory 事件。
 - 将原始调用栈写入有界、可恢复的 trace。
 - 输出 console、JSON 或 CSV。
 - 分析指定 a/b/c 时间窗口内仍未释放的分配。
+
+Windows x64 快速上手见 [docs/QUICKSTART.md](docs/QUICKSTART.md)，常见失败的定位方法见
+[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)，可直接修改的 TOML 位于 [examples](examples)。
+`patch`、`thread-hijack` 和 `entrypoint-code` 仅保留 CLI/配置 schema，执行时返回退出码 5；它们是
+P7 的延期 TODO，不应写入 V1 自动化流程。
 
 开发计划和已冻结的设计位于：
 
@@ -38,6 +43,8 @@ Noleax（读音 “no leaks”）是一个基于 hook 的跨平台内存事件�
 - docs/TRACE_RECOVERY.md
 - SECURITY.md
 - docs/SECURITY_AUDIT.md
+- docs/QUICKSTART.md
+- docs/TROUBLESHOOTING.md
 
 ## Build
 

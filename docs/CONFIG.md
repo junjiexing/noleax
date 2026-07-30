@@ -1,6 +1,6 @@
 # Noleax 配置规范
 
-> 状态：P6.7 Windows x64 生效配置
+> 状态：P8.5 Windows x64 V1 release candidate
 > 格式：TOML
 > schema_version：1
 
@@ -101,6 +101,10 @@ color = "auto"
 `remote-thread` 和 `thread-hijack`（其余组合由配置校验以退出码 1 拒绝）。配置值不会被
 静默忽略。
 
+`operation = "patch"` 以及 `[patch]` 表只为后续 schema 兼容保留。P7C 已延期，V1 在完成配置和路径
+校验后仍返回退出码 5，且不创建输出。`thread-hijack` 与 `entrypoint-code` 同样是延期能力，不应出现在
+V1 配置中。
+
 `capture.min_size` 与 `--capture-min-size` 语义相同。Windows V1 只在入队前过滤严格小于阈值的
 `RtlAllocateHeap`、`NtAllocateVirtualMemory` 和 `NtMapViewOfSection`；realloc、free/unmap 与 heap
 生命周期事件不被过滤。命令行指定该值时覆盖配置文件。完整规则见
@@ -182,6 +186,7 @@ patch：
 - patch.input 和 patch.output 必须设置且不同。
 - output 默认不得已存在。
 - capture 和 trace 设置不得非默认。
+- 上述规则只验证保留 schema；V1 不执行 patch，并在校验通过后返回 5。
 
 analyze：
 

@@ -1,6 +1,6 @@
 # Noleax CLI 规范
 
-> 状态：P6.7 Windows x64 公开工作流完成
+> 状态：P8.5 Windows x64 V1 release candidate
 > schema version：1
 
 ## 1. 命令结构
@@ -145,7 +145,7 @@ compression：
 compression-level 只在 codec 支持时有效；不支持的组合报错。
 V1 中 none、lz4 只接受 0；zstd 接受 0（codec 默认，即 level 1）或显式的 1。
 
-## 7. patch
+## 7. patch（延期，不受 V1 支持）
 
 ~~~
 noleax patch --input INPUT --output OUTPUT [options]
@@ -160,7 +160,10 @@ noleax patch --input INPUT --output OUTPUT [options]
 | --allow-break-signature / --no-allow-break-signature | patch.allow_break_signature | false |
 | --verify / --no-verify | patch.verify | true |
 
-规则：
+以下选项仅为后续兼容保留 schema。配置解析和输入校验仍会执行，但 P7C 已延期，因此任何通过校验的
+`patch` 调用都会明确报告未实现并返回退出码 5，不会创建或修改输出文件。
+
+未来实现必须满足的规则：
 
 - input 与 output 必须不同。
 - output 已存在时失败，不提供隐式覆盖。
@@ -298,10 +301,10 @@ run 正常完成时优先返回目标进程退出码会与工具退出码冲突�
 noleax run --hook-profile windows-nt-heap --trace app.nlx -- app.exe
 ~~~
 
-attach 并使用 RIP/thread context 劫持：
+attach 到已运行的进程：
 
 ~~~powershell
-noleax attach --pid 1234 --inject-method thread-hijack --trace app.nlx
+noleax attach --pid 1234 --inject-method remote-thread --trace app.nlx
 ~~~
 
 输出所有事件：
@@ -315,3 +318,6 @@ noleax analyze --mode events --format console app.nlx
 ~~~powershell
 noleax analyze --mode outstanding --a 5s --b 20s --c 60s --min-size 1KiB --max-size 1MiB --format json --output leaks.json app.nlx
 ~~~
+
+等价 TOML 和从捕获到分析的完整流程见 [QUICKSTART.md](QUICKSTART.md) 与
+[../examples/README.md](../examples/README.md)。

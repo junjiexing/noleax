@@ -1,0 +1,20 @@
+schema_version = 1
+operation = "analyze"
+
+[analysis]
+inputs = ["capture.nlx"]
+mode = "outstanding"
+format = "json"
+output = "outstanding.json"
+a = "0s"
+b = "900ms"
+c = ""
+
+[filters]
+min_size = "1KiB"
+max_size = "1MiB"
+statuses = ["success"]
+
+[symbols]
+mode = "auto"
+

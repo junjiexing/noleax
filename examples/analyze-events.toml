@@ -1,0 +1,16 @@
+schema_version = 1
+operation = "analyze"
+
+[analysis]
+inputs = ["capture.nlx"]
+mode = "events"
+format = "json"
+output = "events.json"
+
+[filters]
+events = ["alloc", "realloc", "free"]
+statuses = ["success"]
+
+[symbols]
+mode = "auto"
+
