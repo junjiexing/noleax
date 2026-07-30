@@ -147,6 +147,8 @@ try {
         Join-Path $binaryDirectory "noleax-rtl-destroy-heap-isolation-test.exe"
     $ntVirtualMemoryContractExecutable =
         Join-Path $binaryDirectory "noleax-nt-virtual-memory-contract-test.exe"
+    $ntSectionViewContractExecutable =
+        Join-Path $binaryDirectory "noleax-nt-section-view-contract-test.exe"
     $ntVirtualMemoryTraceWriterExecutable =
         Join-Path $binaryDirectory "noleax-nt-virtual-memory-trace-writer-test.exe"
     foreach ($path in @($mdExecutable, $mtExecutable, $hookHarness,
@@ -157,7 +159,7 @@ try {
             $freeContractExecutable, $reallocateContractExecutable,
             $reallocateExceptionExecutable, $heapLifecycleContractExecutable,
             $destroyIsolationExecutable, $ntVirtualMemoryContractExecutable,
-            $ntVirtualMemoryTraceWriterExecutable)) {
+            $ntSectionViewContractExecutable, $ntVirtualMemoryTraceWriterExecutable)) {
         if (-not (Test-Path -LiteralPath $path)) {
             throw "Required hardened artifact is missing: $path"
         }
@@ -227,6 +229,7 @@ try {
         [IO.Path]::GetFileName($reallocateExceptionExecutable),
         [IO.Path]::GetFileName($heapLifecycleContractExecutable),
         [IO.Path]::GetFileName($ntVirtualMemoryContractExecutable),
+        [IO.Path]::GetFileName($ntSectionViewContractExecutable),
         [IO.Path]::GetFileName($ntVirtualMemoryTraceWriterExecutable)
     )
     $ifeoRoot = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options"
@@ -279,7 +282,7 @@ try {
             -R "hook.(rtl-((allocate|reallocate|free)-heap|heap-lifecycle)|nt-virtual-memory)-quiescence-race" `
             --repeat "until-fail:$VerifierRepeats" --output-on-failure
         Invoke-CheckedCommand ctest --preset $Preset `
-            -R "hook.rtl-allocate-heap-trace-writer-normal|hook.rtl-heap-trace-writer-lifecycle|hook.rtl-(free|reallocate)-heap-contract|hook.rtl-reallocate-heap-seh-contract|hook.rtl-heap-lifecycle-contract|hook.nt-virtual-memory-(contract|trace-writer)" `
+            -R "hook.rtl-allocate-heap-trace-writer-normal|hook.rtl-heap-trace-writer-lifecycle|hook.rtl-(free|reallocate)-heap-contract|hook.rtl-reallocate-heap-seh-contract|hook.rtl-heap-lifecycle-contract|hook.nt-virtual-memory-(contract|trace-writer)|hook.nt-section-view-(contract|unmatched-trace)" `
             --repeat "until-fail:$VerifierRepeats" --output-on-failure
     } catch {
         $phaseFailure = $_

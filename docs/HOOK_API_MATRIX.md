@@ -1,6 +1,6 @@
 # Windows V1 Hook API Matrix
 
-> 状态：P5.4；NT Heap 与 NT virtual-memory allocate/free adapter 已完成，profile 尚未启用
+> 状态：P5.5；NT Heap、NT virtual-memory 与 section-view adapter 已完成，profile 尚未启用
 > backend：Hoox v0.1.1 replace_fast
 > target：Windows x64
 
@@ -9,7 +9,7 @@
 | Profile | API |
 |---|---|
 | windows-nt-heap | RtlCreateHeap、RtlDestroyHeap、RtlAllocateHeap、RtlReAllocateHeap、RtlFreeHeap |
-| windows-virtual-memory | NtAllocateVirtualMemory、NtFreeVirtualMemory、NtMapViewOfSection、NtUnmapViewOfSection |
+| windows-virtual-memory | NtAllocateVirtualMemory、NtFreeVirtualMemory、NtMapViewOfSection、NtUnmapViewOfSection（含 Ex 兼容入口） |
 | windows-native | 两组并集 |
 
 ## 2. 通用合同
@@ -279,6 +279,9 @@ NTSTATUS NTAPI NtUnmapViewOfSection(
 - 重复 unmap。
 - UnmapViewOfFile 包装路径。
 
+新版 Windows 的 `UnmapViewOfFile` 实际进入三参数 `NtUnmapViewOfSectionEx`。P5.5 同时安装精确
+Ex adapter；它与 legacy 入口共享逻辑 API ID、统计和 generation，但保留独立 trampoline/lease。
+
 ## 5. 间接覆盖但不直接 hook
 
 默认 profile 不直接 hook：
@@ -307,8 +310,8 @@ NTSTATUS NTAPI NtUnmapViewOfSection(
 | RtlFreeHeap | P5.3 combined candidate | guard/shared-queue/stack/SEH pass | return/LastError/exception/fail-fast/trace pass | cross-thread + 8x20k + quiescence pass | PE + runtime pass | AppVerifier Full 3/3 pass | no |
 | NtAllocateVirtualMemory | P5.4 combined candidate | guard/shared-queue/stack/SEH pass | ABI/LastError/reserve/commit/failure/remote/trace pass | thread-churn quiescence 100/100 pass | PE + runtime pass | AppVerifier Full 3/3 pass | no |
 | NtFreeVirtualMemory | P5.4 combined candidate | guard/shared-queue/stack/SEH pass | ABI/LastError/decommit/release/failure/remote/trace pass | thread-churn quiescence 100/100 pass | PE + runtime pass | AppVerifier Full 3/3 pass | no |
-| NtMapViewOfSection | pending | pending | pending | pending | pending | pending | no |
-| NtUnmapViewOfSection | pending | pending | pending | pending | pending | pending | no |
+| NtMapViewOfSection | P5.5 combined candidate | guard/shared-queue/stack/SEH pass | pagefile/file/offset/multi-view/failure/remote pass | five-target quiescence 100/100 pass | PE + runtime pass | combined Full Page Heap 3/3 pass | no |
+| NtUnmapViewOfSection/Ex | P5.5 combined candidate | guard/shared-queue/stack/SEH pass | interior/repeat/wrapper/preexisting/unmatched pass | legacy+Ex quiescence 100/100 pass | PE + runtime pass | combined Full Page Heap 3/3 pass | no |
 
 P5.1 在 P4.9 allocate prototype 上增加 `RtlFreeHeap`，并把两种事件放入同一个预分配 MPSC queue，
 形成跨 API 的唯一 sequence。组合 writer 按 `(heap,address)` 关联 allocation_id，覆盖 matched、
@@ -347,3 +350,12 @@ MappingId，commit 复用或补建 reservation generation，decommit 不结束 g
 状态。Debug/Release 各 193/193、hardened 213/213，20 个 PE 通过 CFG/CET；NT VM quiescence
 100/100、Full Page Heap 三轮及 15 个 IFEO key 清理均通过。设计与证据见
 [NT_VIRTUAL_MEMORY_HOOK.md](NT_VIRTUAL_MEMORY_HOOK.md)。
+
+P5.5 增加 section map/unmap，并将 `NtUnmapViewOfSectionEx` 作为 legacy unmap 的兼容物理入口。
+`MapViewOfFile`/`UnmapViewOfFile`、pagefile/file-backed、offset、multi-view、内部地址 unmap、remote、
+preexisting/unmatched 和正式 trace generation 回读均由自动测试覆盖。设计与证据见
+[NT_SECTION_VIEW_HOOK.md](NT_SECTION_VIEW_HOOK.md)。
+
+P5.5 完整门禁为 Debug/Release 195/195、hardened 216/216、21 个 PE 的 CFG/CET 检查、五组
+quiescence race 各 100/100、长 ABI 差分 3/3，以及 Application Verifier/Full Page Heap 三轮；本轮
+16 个目标 IFEO key 全部清理。

@@ -1,6 +1,6 @@
 # Windows replacement quiescence
 
-> 状态：P4.8 Windows x64 完成；P5.4 已对五个 NT Heap 与两个 NT VM adapter 复用
+> 状态：P4.8 Windows x64 完成；P5.5 已对五个 NT Heap 与五个 NT memory 物理入口复用
 > 范围：Windows memory adapter 的停止记录、并发 revert、trampoline 回收和代码生命周期
 
 ## 1. 要解决的窗口
@@ -57,7 +57,7 @@ replacement 未在有界等待内退出，lease 不释放，Hoox 不 flush。若
 original trampoline、event queue、guard runtime 引用和 backend lease 都转为进程级保留，不能为了
 避免泄漏而释放仍可能被线程使用的状态。
 
-P5.3 heap 组合对象与 P5.4 `NtMemoryHooks` 的 event queue 都由独立所有权持有。若协调安装的 hook
+P5.3 heap 组合对象与 P5.5 `NtMemoryHooks` 的 event queue 都由独立所有权持有。若协调安装的 hook
 任一无法 quiesce，协调器会
 连同 hook state 一起保留共享 queue，避免只保留单 hook state、却随后析构其外部 queue 的
 use-after-free。
@@ -74,7 +74,7 @@ replacement 的模块固定到进程退出。即使线程已取到旧跳转但�
 因此当前 adapter 有两个刻意限制：
 
 - `FreeLibrary` 可以释放调用方引用，但包含 replacement 的 DLL 仍驻留到进程退出；
-- 七个 adapter 各自每进程只允许一次成功安装，避免旧跳转被误归入下一捕获 generation。
+- adapter 集合各自每进程只允许一次成功安装，避免旧跳转被误归入下一捕获 generation。
 
 真正可重复安装并可解除模块 pin 的方案需要可证明覆盖所有线程 PC 的 patch rendezvous，留给后续
 注入生命周期设计。当前接口不会把“停止记录”误报为“DLL 已可解除映射”。
@@ -98,7 +98,7 @@ Windows 代码更新临界区：
 
 - held entry、路由快照和有界 quiescence 的确定性单测；
 - lifetime lease 阻止 uninstall flush 和 shutdown deinit；
-- allocate/reallocate/free 各自用 8 个持续 worker；五 hook heap 组合及双 hook NT VM 组合另用持续
+- allocate/reallocate/free 各自用 8 个持续 worker；五 hook heap 组合及五入口 NT memory 组合另用持续
   memory lifecycle 循环和线程 churn，同时执行 `uninstall(0)` 与后续 flush；
 - 停止完成后继续执行至少 20,000 次分配，确认记录计数不再变化；
 - queue 的 `recordable = dequeued + dropped` 守恒；
@@ -110,6 +110,11 @@ allocate/reallocate/free、五 hook heap lifecycle 和双 hook NT VM 并发 race
 100 次通过；overlay
 前原 allocate Debug 测试在第 17 次出现崩溃。Release module-retention、passthrough、writer 与组合
 生命周期测试也全部通过。
+
+P5.5 将 NT memory 组合扩展到 allocate/free/map/legacy unmap/Ex unmap 五个物理入口。Debug/Release
+各 195/195、hardened 216/216；五组 race 各 100/100，其中 NT memory workload 同时执行 direct
+section map/legacy unmap 与 `MapViewOfFile`/Ex unmap。停止后四种逻辑 operation 的计数均保持稳定，
+共享 queue 的 `recordable = dequeued + dropped` 守恒。
 
 Release x64 object 的 replacement 反汇编复核确认，正常路径只调用 original/恢复后的 target、
 固定 TEB 槽 guard、`GetLastError`/`SetLastError`、`QueryPerformanceCounter`、

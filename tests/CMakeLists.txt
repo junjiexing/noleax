@@ -139,6 +139,17 @@ if(WIN32)
     TIMEOUT 120
   )
 
+  add_test(NAME hook.nt-section-view-unmatched-trace
+    COMMAND noleax-nt-virtual-memory-trace-writer-test --unmatched
+      "$<TARGET_FILE_DIR:noleax-nt-virtual-memory-trace-writer-test>/nt-section-unmatched.nlx"
+  )
+  set_tests_properties(hook.nt-section-view-unmatched-trace PROPERTIES
+    LABELS "hook;trace;writer;windows;nt-vm;generation;unmap;unmatched"
+    PASS_REGULAR_EXPRESSION "^status=ok unmatched=1 events=[0-9]+"
+    RUN_SERIAL TRUE
+    TIMEOUT 120
+  )
+
   add_test(NAME hook.rtl-heap-trace-writer-lifecycle
     COMMAND noleax-rtl-heap-trace-writer-test
       "$<TARGET_FILE_DIR:noleax-rtl-heap-trace-writer-test>/rtl-heap-lifecycle.nlx"
@@ -300,6 +311,24 @@ if(WIN32)
       PASS_REGULAR_EXPRESSION "^status=ok reserve=1 commit=1 decommit=1 release=1 "
       RUN_SERIAL TRUE
       TIMEOUT 120
+    )
+
+    add_executable(noleax-nt-section-view-contract-test
+      integration/nt_section_view_contract_test.cpp
+    )
+    target_link_libraries(noleax-nt-section-view-contract-test PRIVATE
+      noleax::hook-backend
+    )
+    noleax_set_project_warnings(noleax-nt-section-view-contract-test)
+
+    add_test(NAME hook.nt-section-view-contract
+      COMMAND noleax-nt-section-view-contract-test
+    )
+    set_tests_properties(hook.nt-section-view-contract PROPERTIES
+      LABELS "hook;windows;nt-vm;map;unmap;contract;generation;remote;recursion"
+      PASS_REGULAR_EXPRESSION "^status=ok pagefile=1 file=1 offset=1 multi-view=1 wrapper=1 remote=1 "
+      RUN_SERIAL TRUE
+      TIMEOUT 180
     )
 
     add_executable(noleax-rtl-destroy-heap-isolation-test
@@ -571,6 +600,7 @@ if(WIN32)
         noleax-rtl-heap-lifecycle-contract-test
         noleax-rtl-destroy-heap-isolation-test
         noleax-nt-virtual-memory-contract-test
+        noleax-nt-section-view-contract-test
         noleax-nt-virtual-memory-trace-writer-test
         noleax-rtl-allocate-heap-exception-test
         noleax-rtl-reallocate-heap-exception-test)

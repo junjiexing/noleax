@@ -39,7 +39,7 @@ constexpr std::size_t kMaximumEventAdditionSize = 152U + 56U;
 constexpr std::uint64_t kMinimumTerminalReserveSize = 1024U;
 constexpr std::uint64_t kMaximumTerminalTailSize =
     (noleax::trace::kChunkHeaderSize + 2U * 56U) +
-    (noleax::trace::kChunkHeaderSize + 8U + 80U + 7U * 48U) +
+    (noleax::trace::kChunkHeaderSize + 8U + 80U + 9U * 48U) +
     (noleax::trace::kChunkHeaderSize + 8U + 40U);
 constexpr auto kEmptyPollInterval = std::chrono::milliseconds{1};
 
@@ -433,16 +433,20 @@ class RtlAllocateHeapTraceWriter::Implementation final {
     }
     const bool succeeded = raw_event.status == RtlAllocateHeapEventStatus::kSuccess;
     const bool exceptional = raw_event.status == RtlAllocateHeapEventStatus::kException;
-    const bool virtual_memory_event = raw_event.operation == RtlHeapEventOperation::kVmAllocate ||
-                                      raw_event.operation == RtlHeapEventOperation::kVmFree;
+    const bool nt_memory_event = raw_event.operation == RtlHeapEventOperation::kVmAllocate ||
+                                 raw_event.operation == RtlHeapEventOperation::kVmFree ||
+                                 raw_event.operation == RtlHeapEventOperation::kSectionMap ||
+                                 raw_event.operation == RtlHeapEventOperation::kSectionUnmap;
     if ((raw_event.status != RtlAllocateHeapEventStatus::kSuccess &&
          raw_event.status != RtlAllocateHeapEventStatus::kFailure && !exceptional) ||
         exceptional != (raw_event.exception_status != 0U)) {
       throw std::invalid_argument{"raw Rtl heap event result is inconsistent"};
     }
-    if (!virtual_memory_event && (raw_event.target_process_id != 0U ||
-                                  raw_event.mapping_base != 0U || raw_event.mapping_size != 0U)) {
-      throw std::invalid_argument{"raw Rtl heap event contains virtual memory fields"};
+    if (!nt_memory_event && (raw_event.target_process_id != 0U || raw_event.mapping_base != 0U ||
+                             raw_event.mapping_size != 0U || raw_event.section_handle != 0U ||
+                             raw_event.section_offset != 0U || raw_event.commit_size != 0U ||
+                             raw_event.tertiary_flags != 0U)) {
+      throw std::invalid_argument{"raw Rtl heap event contains NT memory fields"};
     }
     switch (raw_event.operation) {
       case RtlHeapEventOperation::kCreate:
@@ -487,7 +491,9 @@ class RtlAllocateHeapTraceWriter::Implementation final {
         }
         break;
       case RtlHeapEventOperation::kVmAllocate:
-        if (nt_memory_hooks_ == nullptr ||
+        if (nt_memory_hooks_ == nullptr || raw_event.section_handle != 0U ||
+            raw_event.section_offset != 0U || raw_event.commit_size != 0U ||
+            raw_event.tertiary_flags != 0U ||
             (!exceptional &&
              succeeded != (static_cast<std::int32_t>(raw_event.operation_result) >= 0))) {
           throw std::invalid_argument{"raw NtAllocateVirtualMemory event is inconsistent"};
@@ -496,10 +502,31 @@ class RtlAllocateHeapTraceWriter::Implementation final {
       case RtlHeapEventOperation::kVmFree:
         if (nt_memory_hooks_ == nullptr || raw_event.auxiliary_address != 0U ||
             raw_event.secondary_flags != 0U || raw_event.mapping_base != 0U ||
-            raw_event.mapping_size != 0U ||
+            raw_event.mapping_size != 0U || raw_event.section_handle != 0U ||
+            raw_event.section_offset != 0U || raw_event.commit_size != 0U ||
+            raw_event.tertiary_flags != 0U ||
             (!exceptional &&
              succeeded != (static_cast<std::int32_t>(raw_event.operation_result) >= 0))) {
           throw std::invalid_argument{"raw NtFreeVirtualMemory event is inconsistent"};
+        }
+        break;
+      case RtlHeapEventOperation::kSectionMap:
+        if (nt_memory_hooks_ == nullptr ||
+            (!exceptional &&
+             succeeded != (static_cast<std::int32_t>(raw_event.operation_result) >= 0))) {
+          throw std::invalid_argument{"raw NtMapViewOfSection event is inconsistent"};
+        }
+        break;
+      case RtlHeapEventOperation::kSectionUnmap:
+        if (nt_memory_hooks_ == nullptr || raw_event.requested_size != 0U ||
+            raw_event.raw_result != 0U || raw_event.auxiliary_address != 0U ||
+            raw_event.mapping_base != 0U || raw_event.mapping_size != 0U ||
+            raw_event.section_handle != 0U || raw_event.section_offset != 0U ||
+            raw_event.commit_size != 0U || raw_event.secondary_flags != 0U ||
+            raw_event.tertiary_flags != 0U ||
+            (!exceptional &&
+             succeeded != (static_cast<std::int32_t>(raw_event.operation_result) >= 0))) {
+          throw std::invalid_argument{"raw NtUnmapViewOfSection event is inconsistent"};
         }
         break;
       default:
@@ -573,6 +600,36 @@ class RtlAllocateHeapTraceWriter::Implementation final {
     return id;
   }
 
+  [[nodiscard]] auto find_section_mapping(std::uint64_t address) {
+    if (address == 0U) {
+      return live_section_mappings_.end();
+    }
+    auto candidate = live_section_mappings_.upper_bound(address);
+    if (candidate == live_section_mappings_.begin()) {
+      return live_section_mappings_.end();
+    }
+    --candidate;
+    const VirtualMapping& mapping = candidate->second;
+    const std::uint64_t offset = address - mapping.base;
+    if (offset >= mapping.size) {
+      return live_section_mappings_.end();
+    }
+    return candidate;
+  }
+
+  [[nodiscard]] noleax::trace::MappingId create_section_mapping(std::uint64_t base,
+                                                                std::uint64_t size) {
+    if (next_mapping_id_ == std::numeric_limits<std::uint64_t>::max()) {
+      throw std::overflow_error{"mapping ID space is exhausted"};
+    }
+    if (base == 0U || size == 0U || live_section_mappings_.contains(base)) {
+      throw std::runtime_error{"section mapping creation is inconsistent"};
+    }
+    const noleax::trace::MappingId id{next_mapping_id_++};
+    live_section_mappings_.emplace(base, VirtualMapping{id, base, size});
+    return id;
+  }
+
   void process_event(const RtlAllocateHeapEvent& raw_event) {
     validate_raw_event(raw_event);
     validate_raw_stack(raw_event.stack);
@@ -627,6 +684,13 @@ class RtlAllocateHeapTraceWriter::Implementation final {
       case RtlHeapEventOperation::kVmFree:
         event.header.api_id = kNtFreeVirtualMemoryApiId;
         break;
+      case RtlHeapEventOperation::kSectionMap:
+        event.header.api_id = kNtMapViewOfSectionApiId;
+        break;
+      case RtlHeapEventOperation::kSectionUnmap:
+        event.header.api_id = kNtUnmapViewOfSectionApiId;
+        event.header.flags = raw_event.flags;
+        break;
     }
     event.header.status = raw_event.status == RtlAllocateHeapEventStatus::kSuccess
                               ? noleax::trace::EventStatus::kSuccess
@@ -635,7 +699,9 @@ class RtlAllocateHeapTraceWriter::Implementation final {
       event.header.system_error = {noleax::trace::SystemErrorDomain::kNtStatus,
                                    raw_event.exception_status};
     } else if ((raw_event.operation == RtlHeapEventOperation::kVmAllocate ||
-                raw_event.operation == RtlHeapEventOperation::kVmFree) &&
+                raw_event.operation == RtlHeapEventOperation::kVmFree ||
+                raw_event.operation == RtlHeapEventOperation::kSectionMap ||
+                raw_event.operation == RtlHeapEventOperation::kSectionUnmap) &&
                raw_event.status == RtlAllocateHeapEventStatus::kFailure) {
       event.header.system_error = {noleax::trace::SystemErrorDomain::kNtStatus,
                                    raw_event.operation_result};
@@ -824,7 +890,7 @@ class RtlAllocateHeapTraceWriter::Implementation final {
         }
       }
       event.payload = allocation;
-    } else {
+    } else if (raw_event.operation == RtlHeapEventOperation::kVmFree) {
       noleax::trace::VmFreeEvent free_event;
       free_event.target =
           classify_process_target(raw_event.heap_handle, raw_event.target_process_id);
@@ -848,6 +914,40 @@ class RtlAllocateHeapTraceWriter::Implementation final {
         }
       }
       event.payload = free_event;
+    } else if (raw_event.operation == RtlHeapEventOperation::kSectionMap) {
+      noleax::trace::MapEvent mapping_event;
+      mapping_event.section_handle = raw_event.section_handle;
+      mapping_event.target =
+          classify_process_target(raw_event.heap_handle, raw_event.target_process_id);
+      mapping_event.result_base = raw_event.result_address;
+      mapping_event.view_size = raw_event.raw_result;
+      mapping_event.section_offset = raw_event.section_offset;
+      mapping_event.protection = raw_event.secondary_flags;
+      if (raw_event.status == RtlHeapEventStatus::kSuccess &&
+          mapping_event.target.scope == noleax::trace::ProcessMemoryScope::kCurrentProcess) {
+        mapping_event.mapping_id =
+            create_section_mapping(raw_event.result_address, raw_event.raw_result);
+      }
+      event.payload = mapping_event;
+    } else {
+      noleax::trace::UnmapEvent unmap_event;
+      unmap_event.target =
+          classify_process_target(raw_event.heap_handle, raw_event.target_process_id);
+      unmap_event.base = raw_event.address;
+      if (raw_event.status == RtlHeapEventStatus::kSuccess &&
+          unmap_event.target.scope == noleax::trace::ProcessMemoryScope::kCurrentProcess) {
+        const auto mapping = find_section_mapping(raw_event.address);
+        if (mapping != live_section_mappings_.end()) {
+          unmap_event.mapping_id = mapping->second.mapping_id;
+          unmap_event.base = mapping->second.base;
+          live_section_mappings_.erase(mapping);
+        } else {
+          event.header.status = options_.capture_scope.preexisting_allocations_unknown
+                                    ? noleax::trace::EventStatus::kPreexisting
+                                    : noleax::trace::EventStatus::kUnmatched;
+        }
+      }
+      event.payload = unmap_event;
     }
     noleax::trace::append_event_record(event_payload_, event, options_.maximum_record_size);
 
@@ -871,8 +971,12 @@ class RtlAllocateHeapTraceWriter::Implementation final {
     } else if (raw_event.operation == RtlHeapEventOperation::kVmAllocate) {
       checked_add(pending_vm_allocate_events_, 1U,
                   "pending virtual allocation event count overflow");
-    } else {
+    } else if (raw_event.operation == RtlHeapEventOperation::kVmFree) {
       checked_add(pending_vm_free_events_, 1U, "pending virtual free event count overflow");
+    } else if (raw_event.operation == RtlHeapEventOperation::kSectionMap) {
+      checked_add(pending_map_events_, 1U, "pending section map event count overflow");
+    } else {
+      checked_add(pending_unmap_events_, 1U, "pending section unmap event count overflow");
     }
     checked_add(pending_unique_stacks_, event_unique_stacks, "pending unique stack count overflow");
     checked_add(pending_reused_stacks_, event_reused_stacks, "pending reused stack count overflow");
@@ -959,12 +1063,19 @@ class RtlAllocateHeapTraceWriter::Implementation final {
     if (nt_memory_hooks_ != nullptr) {
       const std::uint64_t allocate_dropped = nt_memory_hooks_->take_allocate_dropped_event_count();
       const std::uint64_t free_dropped = nt_memory_hooks_->take_free_dropped_event_count();
+      const std::uint64_t map_dropped = nt_memory_hooks_->take_map_dropped_event_count();
+      const std::uint64_t unmap_dropped = nt_memory_hooks_->take_unmap_dropped_event_count();
       checked_add(queue_vm_allocate_dropped_events_, allocate_dropped,
                   "virtual allocation queue drop count overflow");
       checked_add(queue_vm_free_dropped_events_, free_dropped,
                   "virtual free queue drop count overflow");
+      checked_add(queue_map_dropped_events_, map_dropped, "section map queue drop count overflow");
+      checked_add(queue_unmap_dropped_events_, unmap_dropped,
+                  "section unmap queue drop count overflow");
       checked_add(queue_dropped_events_, allocate_dropped, "queue drop count overflow");
       checked_add(queue_dropped_events_, free_dropped, "queue drop count overflow");
+      checked_add(queue_dropped_events_, map_dropped, "queue drop count overflow");
+      checked_add(queue_dropped_events_, unmap_dropped, "queue drop count overflow");
     }
   }
 
@@ -1032,6 +1143,10 @@ class RtlAllocateHeapTraceWriter::Implementation final {
                 "written virtual allocation event count overflow");
     checked_add(written_vm_free_events_, pending_vm_free_events_,
                 "written virtual free event count overflow");
+    checked_add(written_map_events_, pending_map_events_,
+                "written section map event count overflow");
+    checked_add(written_unmap_events_, pending_unmap_events_,
+                "written section unmap event count overflow");
     checked_add(unique_stacks_, pending_unique_stacks_, "unique stack count overflow");
     checked_add(reused_stacks_, pending_reused_stacks_, "reused stack count overflow");
     clear_pending();
@@ -1039,11 +1154,12 @@ class RtlAllocateHeapTraceWriter::Implementation final {
 
   void drop_pending_events() {
     if (pending_event_count_ != 0U) {
-      note_trace_drop_range(
-          pending_event_count_, pending_allocate_events_, pending_reallocate_events_,
-          pending_free_events_, pending_create_events_, pending_destroy_events_,
-          pending_vm_allocate_events_, pending_vm_free_events_, pending_sequence_begin_,
-          pending_sequence_end_, pending_tick_begin_, pending_tick_end_);
+      note_trace_drop_range(pending_event_count_, pending_allocate_events_,
+                            pending_reallocate_events_, pending_free_events_,
+                            pending_create_events_, pending_destroy_events_,
+                            pending_vm_allocate_events_, pending_vm_free_events_,
+                            pending_map_events_, pending_unmap_events_, pending_sequence_begin_,
+                            pending_sequence_end_, pending_tick_begin_, pending_tick_end_);
     }
     clear_pending();
   }
@@ -1059,6 +1175,8 @@ class RtlAllocateHeapTraceWriter::Implementation final {
     pending_destroy_events_ = 0U;
     pending_vm_allocate_events_ = 0U;
     pending_vm_free_events_ = 0U;
+    pending_map_events_ = 0U;
+    pending_unmap_events_ = 0U;
     pending_unique_stacks_ = 0U;
     pending_reused_stacks_ = 0U;
     pending_sequence_begin_ = 0U;
@@ -1078,15 +1196,18 @@ class RtlAllocateHeapTraceWriter::Implementation final {
     const std::uint64_t vm_allocate_count =
         operation == RtlHeapEventOperation::kVmAllocate ? 1U : 0U;
     const std::uint64_t vm_free_count = operation == RtlHeapEventOperation::kVmFree ? 1U : 0U;
+    const std::uint64_t map_count = operation == RtlHeapEventOperation::kSectionMap ? 1U : 0U;
+    const std::uint64_t unmap_count = operation == RtlHeapEventOperation::kSectionUnmap ? 1U : 0U;
     note_trace_drop_range(1U, allocate_count, reallocate_count, free_count, create_count,
-                          destroy_count, vm_allocate_count, vm_free_count, sequence, sequence,
-                          ticks, ticks);
+                          destroy_count, vm_allocate_count, vm_free_count, map_count, unmap_count,
+                          sequence, sequence, ticks, ticks);
   }
 
   void note_trace_drop_range(std::uint64_t count, std::uint64_t allocate_count,
                              std::uint64_t reallocate_count, std::uint64_t free_count,
                              std::uint64_t create_count, std::uint64_t destroy_count,
                              std::uint64_t vm_allocate_count, std::uint64_t vm_free_count,
+                             std::uint64_t map_count, std::uint64_t unmap_count,
                              std::uint64_t sequence_begin, std::uint64_t sequence_end,
                              std::uint64_t tick_begin, std::uint64_t tick_end) {
     if (allocate_count > count || reallocate_count > count - allocate_count ||
@@ -1095,8 +1216,12 @@ class RtlAllocateHeapTraceWriter::Implementation final {
         destroy_count > count - allocate_count - reallocate_count - free_count - create_count ||
         vm_allocate_count >
             count - allocate_count - reallocate_count - free_count - create_count - destroy_count ||
-        vm_free_count != count - allocate_count - reallocate_count - free_count - create_count -
-                             destroy_count - vm_allocate_count) {
+        vm_free_count > count - allocate_count - reallocate_count - free_count - create_count -
+                            destroy_count - vm_allocate_count ||
+        map_count > count - allocate_count - reallocate_count - free_count - create_count -
+                        destroy_count - vm_allocate_count - vm_free_count ||
+        unmap_count != count - allocate_count - reallocate_count - free_count - create_count -
+                           destroy_count - vm_allocate_count - vm_free_count - map_count) {
       throw std::logic_error{"trace drop API accounting is inconsistent"};
     }
     if (trace_dropped_events_ == 0U) {
@@ -1119,6 +1244,9 @@ class RtlAllocateHeapTraceWriter::Implementation final {
                 "virtual allocation trace drop count overflow");
     checked_add(trace_vm_free_dropped_events_, vm_free_count,
                 "virtual free trace drop count overflow");
+    checked_add(trace_map_dropped_events_, map_count, "section map trace drop count overflow");
+    checked_add(trace_unmap_dropped_events_, unmap_count,
+                "section unmap trace drop count overflow");
   }
 
   void finalize_empty_trace() {
@@ -1142,6 +1270,8 @@ class RtlAllocateHeapTraceWriter::Implementation final {
     if (nt_memory_hooks_ != nullptr) {
       statistics.per_api.push_back({kNtAllocateVirtualMemoryApiId, 0U, 0U, 0U, 0U, 0U});
       statistics.per_api.push_back({kNtFreeVirtualMemoryApiId, 0U, 0U, 0U, 0U, 0U});
+      statistics.per_api.push_back({kNtMapViewOfSectionApiId, 0U, 0U, 0U, 0U, 0U});
+      statistics.per_api.push_back({kNtUnmapViewOfSectionApiId, 0U, 0U, 0U, 0U, 0U});
     }
     write_terminal_records(statistics);
   }
@@ -1260,15 +1390,25 @@ class RtlAllocateHeapTraceWriter::Implementation final {
     }
     std::optional<noleax::trace::ApiStatistics> vm_allocate_statistics;
     std::optional<noleax::trace::ApiStatistics> vm_free_statistics;
+    std::optional<noleax::trace::ApiStatistics> map_statistics;
+    std::optional<noleax::trace::ApiStatistics> unmap_statistics;
     if (nt_memory_hooks_ != nullptr) {
       const NtMemoryHookStatistics allocate = nt_memory_hooks_->allocate_statistics();
       const NtMemoryHookStatistics free = nt_memory_hooks_->free_statistics();
+      const NtMemoryHookStatistics map = nt_memory_hooks_->map_statistics();
+      const NtMemoryHookStatistics unmap = nt_memory_hooks_->unmap_statistics();
       const std::uint64_t allocate_dropped =
           total_dropped(queue_vm_allocate_dropped_events_, trace_vm_allocate_dropped_events_,
                         "virtual allocation dropped event count overflow");
       const std::uint64_t free_dropped =
           total_dropped(queue_vm_free_dropped_events_, trace_vm_free_dropped_events_,
                         "virtual free dropped event count overflow");
+      const std::uint64_t map_dropped =
+          total_dropped(queue_map_dropped_events_, trace_map_dropped_events_,
+                        "section map dropped event count overflow");
+      const std::uint64_t unmap_dropped =
+          total_dropped(queue_unmap_dropped_events_, trace_unmap_dropped_events_,
+                        "section unmap dropped event count overflow");
       vm_allocate_statistics = noleax::trace::ApiStatistics{kNtAllocateVirtualMemoryApiId,
                                                             allocate.recordable_calls,
                                                             allocate.successful_calls,
@@ -1281,8 +1421,22 @@ class RtlAllocateHeapTraceWriter::Implementation final {
                                                         free.failed_calls,
                                                         0U,
                                                         free_dropped};
+      map_statistics = noleax::trace::ApiStatistics{kNtMapViewOfSectionApiId,
+                                                    map.recordable_calls,
+                                                    map.successful_calls,
+                                                    map.failed_calls,
+                                                    0U,
+                                                    map_dropped};
+      unmap_statistics = noleax::trace::ApiStatistics{kNtUnmapViewOfSectionApiId,
+                                                      unmap.recordable_calls,
+                                                      unmap.successful_calls,
+                                                      unmap.failed_calls,
+                                                      0U,
+                                                      unmap_dropped};
       statistics.per_api.push_back(*vm_allocate_statistics);
       statistics.per_api.push_back(*vm_free_statistics);
+      statistics.per_api.push_back(*map_statistics);
+      statistics.per_api.push_back(*unmap_statistics);
     }
     for (const noleax::trace::ApiStatistics& api : statistics.per_api) {
       checked_add(statistics.observed_calls, api.observed_calls,
@@ -1364,6 +1518,23 @@ class RtlAllocateHeapTraceWriter::Implementation final {
         throw std::runtime_error{"NtFreeVirtualMemory counters do not reconcile with trace events"};
       }
     }
+    if (map_statistics.has_value()) {
+      std::uint64_t accounted_maps = written_map_events_;
+      checked_add(accounted_maps, map_statistics->dropped_events,
+                  "accounted section map event count overflow");
+      if (accounted_maps != map_statistics->observed_calls) {
+        throw std::runtime_error{"NtMapViewOfSection counters do not reconcile with trace events"};
+      }
+    }
+    if (unmap_statistics.has_value()) {
+      std::uint64_t accounted_unmaps = written_unmap_events_;
+      checked_add(accounted_unmaps, unmap_statistics->dropped_events,
+                  "accounted section unmap event count overflow");
+      if (accounted_unmaps != unmap_statistics->observed_calls) {
+        throw std::runtime_error{
+            "NtUnmapViewOfSection counters do not reconcile with trace events"};
+      }
+    }
     write_terminal_records(statistics);
   }
 
@@ -1418,6 +1589,7 @@ class RtlAllocateHeapTraceWriter::Implementation final {
       live_allocations_;
   std::unordered_map<std::uint64_t, noleax::trace::HeapId> live_heaps_;
   std::map<std::uint64_t, VirtualMapping> live_virtual_mappings_;
+  std::map<std::uint64_t, VirtualMapping> live_section_mappings_;
   std::thread worker_;
   mutable std::mutex state_mutex_;
   std::condition_variable state_changed_;
@@ -1441,6 +1613,8 @@ class RtlAllocateHeapTraceWriter::Implementation final {
   std::uint64_t pending_destroy_events_{0U};
   std::uint64_t pending_vm_allocate_events_{0U};
   std::uint64_t pending_vm_free_events_{0U};
+  std::uint64_t pending_map_events_{0U};
+  std::uint64_t pending_unmap_events_{0U};
   std::uint64_t pending_unique_stacks_{0U};
   std::uint64_t pending_reused_stacks_{0U};
   std::uint64_t pending_sequence_begin_{0U};
@@ -1455,6 +1629,8 @@ class RtlAllocateHeapTraceWriter::Implementation final {
   std::uint64_t written_destroy_events_{0U};
   std::uint64_t written_vm_allocate_events_{0U};
   std::uint64_t written_vm_free_events_{0U};
+  std::uint64_t written_map_events_{0U};
+  std::uint64_t written_unmap_events_{0U};
   std::uint64_t queue_dropped_events_{0U};
   std::uint64_t queue_create_dropped_events_{0U};
   std::uint64_t queue_allocate_dropped_events_{0U};
@@ -1463,6 +1639,8 @@ class RtlAllocateHeapTraceWriter::Implementation final {
   std::uint64_t queue_destroy_dropped_events_{0U};
   std::uint64_t queue_vm_allocate_dropped_events_{0U};
   std::uint64_t queue_vm_free_dropped_events_{0U};
+  std::uint64_t queue_map_dropped_events_{0U};
+  std::uint64_t queue_unmap_dropped_events_{0U};
   std::uint64_t trace_dropped_events_{0U};
   std::uint64_t trace_create_dropped_events_{0U};
   std::uint64_t trace_allocate_dropped_events_{0U};
@@ -1471,6 +1649,8 @@ class RtlAllocateHeapTraceWriter::Implementation final {
   std::uint64_t trace_destroy_dropped_events_{0U};
   std::uint64_t trace_vm_allocate_dropped_events_{0U};
   std::uint64_t trace_vm_free_dropped_events_{0U};
+  std::uint64_t trace_map_dropped_events_{0U};
+  std::uint64_t trace_unmap_dropped_events_{0U};
   std::uint64_t trace_drop_sequence_begin_{0U};
   std::uint64_t trace_drop_sequence_end_{0U};
   std::uint64_t trace_drop_tick_begin_{0U};

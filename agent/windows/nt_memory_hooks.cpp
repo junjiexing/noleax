@@ -52,12 +52,26 @@ using NtAllocateVirtualMemoryFunction = NTSTATUS(NTAPI*)(HANDLE process, PVOID* 
                                                          ULONG allocation_type, ULONG protect);
 using NtFreeVirtualMemoryFunction = NTSTATUS(NTAPI*)(HANDLE process, PVOID* base_address,
                                                      PSIZE_T region_size, ULONG free_type);
+using NtMapViewOfSectionFunction = NTSTATUS(NTAPI*)(HANDLE section, HANDLE process,
+                                                    PVOID* base_address, ULONG_PTR zero_bits,
+                                                    SIZE_T commit_size,
+                                                    PLARGE_INTEGER section_offset,
+                                                    PSIZE_T view_size, ULONG inherit_disposition,
+                                                    ULONG allocation_type, ULONG protect);
+using NtUnmapViewOfSectionFunction = NTSTATUS(NTAPI*)(HANDLE process, PVOID base_address);
+using NtUnmapViewOfSectionExFunction = NTSTATUS(NTAPI*)(HANDLE process, PVOID base_address,
+                                                        ULONG flags);
 
 ReplacementLifecycle allocate_replacement_lifecycle;
 ReplacementLifecycle free_replacement_lifecycle;
+ReplacementLifecycle map_replacement_lifecycle;
+ReplacementLifecycle unmap_replacement_lifecycle;
 std::atomic<NtMemoryHookState*> active_hook_state{nullptr};
 std::atomic<void*> restored_allocate_target{nullptr};
 std::atomic<void*> restored_free_target{nullptr};
+std::atomic<void*> restored_map_target{nullptr};
+std::atomic<void*> restored_unmap_target{nullptr};
+std::atomic<void*> restored_unmap_ex_target{nullptr};
 std::atomic<NtMemoryHooks*> active_owner{nullptr};
 std::atomic<bool> installation_retired{false};
 std::atomic<bool> replacement_module_pinned{false};
@@ -118,6 +132,31 @@ template <typename T>
     fail_broken_replacement_route();
   }
   return reinterpret_cast<NtFreeVirtualMemoryFunction>(address);
+}
+
+[[nodiscard]] NtMapViewOfSectionFunction load_map_function(std::atomic<void*>& slot) noexcept {
+  void* const address = slot.load(std::memory_order_acquire);
+  if (address == nullptr) {
+    fail_broken_replacement_route();
+  }
+  return reinterpret_cast<NtMapViewOfSectionFunction>(address);
+}
+
+[[nodiscard]] NtUnmapViewOfSectionFunction load_unmap_function(std::atomic<void*>& slot) noexcept {
+  void* const address = slot.load(std::memory_order_acquire);
+  if (address == nullptr) {
+    fail_broken_replacement_route();
+  }
+  return reinterpret_cast<NtUnmapViewOfSectionFunction>(address);
+}
+
+[[nodiscard]] NtUnmapViewOfSectionExFunction load_unmap_ex_function(
+    std::atomic<void*>& slot) noexcept {
+  void* const address = slot.load(std::memory_order_acquire);
+  if (address == nullptr) {
+    fail_broken_replacement_route();
+  }
+  return reinterpret_cast<NtUnmapViewOfSectionExFunction>(address);
 }
 
 void classify_entry(ApiHookState& api, HookEntryKind entry_kind) noexcept {
@@ -194,6 +233,29 @@ void fill_vm_event(NtVirtualMemoryEvent& event, std::uint64_t queue_sequence,
   }
 }
 
+void fill_section_event(NtVirtualMemoryEvent& event, std::uint64_t queue_sequence,
+                        RtlHeapEventOperation operation, HANDLE section, HANDLE process,
+                        PVOID requested_base, PVOID result_base, SIZE_T requested_view_size,
+                        SIZE_T result_view_size, ULONG_PTR zero_bits, SIZE_T commit_size,
+                        std::uint64_t section_offset, ULONG inherit_disposition,
+                        ULONG allocation_type, ULONG protect, NTSTATUS result,
+                        NtVirtualMemoryEventStatus status, std::uint32_t exception_status,
+                        std::uint16_t maximum_stack_depth) noexcept {
+  fill_vm_event(event, queue_sequence, operation, process, requested_base, result_base,
+                requested_view_size, result_view_size, zero_bits, allocation_type, protect, result,
+                status, exception_status, maximum_stack_depth);
+  event.section_handle = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(section));
+  event.section_offset = section_offset;
+  event.commit_size = static_cast<std::uint64_t>(commit_size);
+  event.tertiary_flags = static_cast<std::uint32_t>(inherit_disposition);
+  if (operation == RtlHeapEventOperation::kSectionMap &&
+      status == NtVirtualMemoryEventStatus::kSuccess && result_base != nullptr &&
+      event.target_process_id == static_cast<std::uint64_t>(GetCurrentProcessId())) {
+    event.mapping_base = event.result_address;
+    event.mapping_size = event.raw_result;
+  }
+}
+
 #if defined(_MSC_VER)
 
 [[nodiscard]] LONG record_allocate_exception_filter(
@@ -209,6 +271,20 @@ void fill_vm_event(NtVirtualMemoryEvent& event, std::uint64_t queue_sequence,
                                                 HANDLE process, PVOID requested_base,
                                                 SIZE_T requested_size, ULONG free_type) noexcept;
 
+[[nodiscard]] LONG record_map_exception_filter(
+    EXCEPTION_POINTERS* exception_pointers, ReplacementRoute route, NtMemoryHookState* hook_state,
+    bool guard_entered, HookEntryKind entry_kind, bool original_completed, HANDLE section,
+    HANDLE process, PVOID requested_base, SIZE_T requested_view_size, ULONG_PTR zero_bits,
+    SIZE_T commit_size, std::uint64_t section_offset, ULONG inherit_disposition,
+    ULONG allocation_type, ULONG protect) noexcept;
+
+[[nodiscard]] LONG record_unmap_exception_filter(EXCEPTION_POINTERS* exception_pointers,
+                                                 ReplacementRoute route,
+                                                 NtMemoryHookState* hook_state, bool guard_entered,
+                                                 HookEntryKind entry_kind, bool original_completed,
+                                                 HANDLE process, PVOID base_address,
+                                                 ULONG flags) noexcept;
+
 #endif
 
 NTSTATUS NTAPI replacement_nt_allocate_virtual_memory(HANDLE process, PVOID* base_address,
@@ -217,6 +293,14 @@ NTSTATUS NTAPI replacement_nt_allocate_virtual_memory(HANDLE process, PVOID* bas
                                                       ULONG protect) noexcept;
 NTSTATUS NTAPI replacement_nt_free_virtual_memory(HANDLE process, PVOID* base_address,
                                                   PSIZE_T region_size, ULONG free_type) noexcept;
+NTSTATUS NTAPI replacement_nt_map_view_of_section(HANDLE section, HANDLE process,
+                                                  PVOID* base_address, ULONG_PTR zero_bits,
+                                                  SIZE_T commit_size, PLARGE_INTEGER section_offset,
+                                                  PSIZE_T view_size, ULONG inherit_disposition,
+                                                  ULONG allocation_type, ULONG protect) noexcept;
+NTSTATUS NTAPI replacement_nt_unmap_view_of_section(HANDLE process, PVOID base_address) noexcept;
+NTSTATUS NTAPI replacement_nt_unmap_view_of_section_ex(HANDLE process, PVOID base_address,
+                                                       ULONG flags) noexcept;
 
 [[nodiscard]] void* allocate_replacement_address() noexcept {
   return reinterpret_cast<void*>(&replacement_nt_allocate_virtual_memory);
@@ -224,6 +308,18 @@ NTSTATUS NTAPI replacement_nt_free_virtual_memory(HANDLE process, PVOID* base_ad
 
 [[nodiscard]] void* free_replacement_address() noexcept {
   return reinterpret_cast<void*>(&replacement_nt_free_virtual_memory);
+}
+
+[[nodiscard]] void* map_replacement_address() noexcept {
+  return reinterpret_cast<void*>(&replacement_nt_map_view_of_section);
+}
+
+[[nodiscard]] void* unmap_replacement_address() noexcept {
+  return reinterpret_cast<void*>(&replacement_nt_unmap_view_of_section);
+}
+
+[[nodiscard]] void* unmap_ex_replacement_address() noexcept {
+  return reinterpret_cast<void*>(&replacement_nt_unmap_view_of_section_ex);
 }
 
 [[nodiscard]] bool pin_replacement_module() noexcept {
@@ -275,6 +371,9 @@ struct NtMemoryHookState final {
   void reset_quiescent(std::uint16_t stack_depth) noexcept {
     allocate.reset_quiescent();
     free.reset_quiescent();
+    map.reset_quiescent();
+    unmap.reset_quiescent();
+    unmap_ex_original_trampoline.store(nullptr, std::memory_order_relaxed);
     maximum_stack_depth = stack_depth;
     event_queue->reset_quiescent();
   }
@@ -283,6 +382,9 @@ struct NtMemoryHookState final {
   NtVirtualMemoryEventQueue* event_queue{nullptr};
   ApiHookState allocate;
   ApiHookState free;
+  ApiHookState map;
+  ApiHookState unmap;
+  std::atomic<void*> unmap_ex_original_trampoline{nullptr};
   std::uint16_t maximum_stack_depth{kMaximumCapturedStackDepth};
 };
 
@@ -341,6 +443,64 @@ LONG record_free_exception_filter(EXCEPTION_POINTERS* exception_pointers, Replac
         });
     if (!queued) {
       increment_saturating(hook_state->free.dropped_events);
+    }
+  }
+  SetLastError(preserved_last_error);
+  return EXCEPTION_CONTINUE_SEARCH;
+}
+
+LONG record_map_exception_filter(EXCEPTION_POINTERS* exception_pointers, ReplacementRoute route,
+                                 NtMemoryHookState* hook_state, bool guard_entered,
+                                 HookEntryKind entry_kind, bool original_completed, HANDLE section,
+                                 HANDLE process, PVOID requested_base, SIZE_T requested_view_size,
+                                 ULONG_PTR zero_bits, SIZE_T commit_size,
+                                 std::uint64_t section_offset, ULONG inherit_disposition,
+                                 ULONG allocation_type, ULONG protect) noexcept {
+  const DWORD preserved_last_error = GetLastError();
+  if (route == ReplacementRoute::kRecord && hook_state != nullptr && guard_entered &&
+      entry_kind == HookEntryKind::kOutermost && !original_completed &&
+      exception_pointers != nullptr && exception_pointers->ExceptionRecord != nullptr) {
+    hook_state->map.failed_calls.fetch_add(1U, std::memory_order_relaxed);
+    hook_state->map.exceptional_calls.fetch_add(1U, std::memory_order_relaxed);
+    const std::uint32_t exception_status = exception_pointers->ExceptionRecord->ExceptionCode;
+    const std::uint16_t maximum_stack_depth = hook_state->maximum_stack_depth;
+    const bool queued = hook_state->event_queue->try_emplace(
+        [=](NtVirtualMemoryEvent& event, std::uint64_t queue_sequence) noexcept {
+          fill_section_event(event, queue_sequence, RtlHeapEventOperation::kSectionMap, section,
+                             process, requested_base, nullptr, requested_view_size, 0U, zero_bits,
+                             commit_size, section_offset, inherit_disposition, allocation_type,
+                             protect, 0, NtVirtualMemoryEventStatus::kException, exception_status,
+                             maximum_stack_depth);
+        });
+    if (!queued) {
+      increment_saturating(hook_state->map.dropped_events);
+    }
+  }
+  SetLastError(preserved_last_error);
+  return EXCEPTION_CONTINUE_SEARCH;
+}
+
+LONG record_unmap_exception_filter(EXCEPTION_POINTERS* exception_pointers, ReplacementRoute route,
+                                   NtMemoryHookState* hook_state, bool guard_entered,
+                                   HookEntryKind entry_kind, bool original_completed,
+                                   HANDLE process, PVOID base_address, ULONG flags) noexcept {
+  const DWORD preserved_last_error = GetLastError();
+  if (route == ReplacementRoute::kRecord && hook_state != nullptr && guard_entered &&
+      entry_kind == HookEntryKind::kOutermost && !original_completed &&
+      exception_pointers != nullptr && exception_pointers->ExceptionRecord != nullptr) {
+    hook_state->unmap.failed_calls.fetch_add(1U, std::memory_order_relaxed);
+    hook_state->unmap.exceptional_calls.fetch_add(1U, std::memory_order_relaxed);
+    const std::uint32_t exception_status = exception_pointers->ExceptionRecord->ExceptionCode;
+    const std::uint16_t maximum_stack_depth = hook_state->maximum_stack_depth;
+    const bool queued = hook_state->event_queue->try_emplace(
+        [=](NtVirtualMemoryEvent& event, std::uint64_t queue_sequence) noexcept {
+          fill_section_event(event, queue_sequence, RtlHeapEventOperation::kSectionUnmap, nullptr,
+                             process, base_address, nullptr, 0U, 0U, 0U, 0U, 0U, 0U, flags, 0U, 0,
+                             NtVirtualMemoryEventStatus::kException, exception_status,
+                             maximum_stack_depth);
+        });
+    if (!queued) {
+      increment_saturating(hook_state->unmap.dropped_events);
     }
   }
   SetLastError(preserved_last_error);
@@ -530,6 +690,261 @@ NTSTATUS NTAPI replacement_nt_free_virtual_memory(HANDLE process, PVOID* base_ad
   return result;
 }
 
+NTSTATUS NTAPI replacement_nt_map_view_of_section(HANDLE section, HANDLE process,
+                                                  PVOID* base_address, ULONG_PTR zero_bits,
+                                                  SIZE_T commit_size, PLARGE_INTEGER section_offset,
+                                                  PSIZE_T view_size, ULONG inherit_disposition,
+                                                  ULONG allocation_type, ULONG protect) noexcept {
+  const ReplacementRoute route = map_replacement_lifecycle.enter_unscoped();
+  NtMemoryHookState* hook_state = nullptr;
+  NtMapViewOfSectionFunction original = nullptr;
+  HookEntryKind entry_kind = HookEntryKind::kRecursive;
+  NTSTATUS result = 0;
+  DWORD original_last_error = ERROR_SUCCESS;
+  PVOID requested_base = nullptr;
+  SIZE_T requested_view_size = 0U;
+  LARGE_INTEGER requested_section_offset{};
+  PVOID result_base = nullptr;
+  SIZE_T result_view_size = 0U;
+  bool guard_entered = false;
+  bool original_completed = false;
+
+#if defined(_MSC_VER)
+  __try {
+    __try {
+#endif
+      if (route == ReplacementRoute::kTarget) {
+        result = load_map_function(restored_map_target)(
+            section, process, base_address, zero_bits, commit_size, section_offset, view_size,
+            inherit_disposition, allocation_type, protect);
+        original_completed = true;
+      } else {
+        hook_state = active_hook_state.load(std::memory_order_acquire);
+        if (hook_state == nullptr) {
+          fail_broken_replacement_route();
+        }
+        original = load_map_function(hook_state->map.original_trampoline);
+        if (route == ReplacementRoute::kOriginal) {
+          result = original(section, process, base_address, zero_bits, commit_size, section_offset,
+                            view_size, inherit_disposition, allocation_type, protect);
+          original_completed = true;
+        } else {
+          entry_kind = enter_hook_invocation_unscoped();
+          guard_entered = true;
+          classify_entry(hook_state->map, entry_kind);
+          if (entry_kind == HookEntryKind::kOutermost) {
+            static_cast<void>(safely_read(base_address, requested_base));
+            static_cast<void>(safely_read(view_size, requested_view_size));
+            static_cast<void>(safely_read(section_offset, requested_section_offset));
+          }
+
+          result = original(section, process, base_address, zero_bits, commit_size, section_offset,
+                            view_size, inherit_disposition, allocation_type, protect);
+          original_last_error = GetLastError();
+          original_completed = true;
+
+          if (entry_kind == HookEntryKind::kOutermost) {
+            static_cast<void>(safely_read(base_address, result_base));
+            static_cast<void>(safely_read(view_size, result_view_size));
+            (nt_success(result) ? hook_state->map.successful_calls : hook_state->map.failed_calls)
+                .fetch_add(1U, std::memory_order_relaxed);
+            const std::uint16_t maximum_stack_depth = hook_state->maximum_stack_depth;
+            const std::uint64_t raw_section_offset =
+                static_cast<std::uint64_t>(requested_section_offset.QuadPart);
+            const bool queued = hook_state->event_queue->try_emplace(
+                [=](NtVirtualMemoryEvent& event, std::uint64_t queue_sequence) noexcept {
+                  fill_section_event(event, queue_sequence, RtlHeapEventOperation::kSectionMap,
+                                     section, process, requested_base, result_base,
+                                     requested_view_size, result_view_size, zero_bits, commit_size,
+                                     raw_section_offset, inherit_disposition, allocation_type,
+                                     protect, result,
+                                     nt_success(result) ? NtVirtualMemoryEventStatus::kSuccess
+                                                        : NtVirtualMemoryEventStatus::kFailure,
+                                     0U, maximum_stack_depth);
+                });
+            if (!queued) {
+              increment_saturating(hook_state->map.dropped_events);
+            }
+          }
+          SetLastError(original_last_error);
+        }
+      }
+#if defined(_MSC_VER)
+    } __finally {
+      if (guard_entered) {
+        leave_hook_invocation_unscoped();
+      }
+      map_replacement_lifecycle.leave_unscoped();
+    }
+  } __except (record_map_exception_filter(
+      GetExceptionInformation(), route, hook_state, guard_entered, entry_kind, original_completed,
+      section, process, requested_base, requested_view_size, zero_bits, commit_size,
+      static_cast<std::uint64_t>(requested_section_offset.QuadPart), inherit_disposition,
+      allocation_type, protect)) {
+    fail_broken_replacement_route();
+  }
+#else
+  if (guard_entered) {
+    leave_hook_invocation_unscoped();
+  }
+  map_replacement_lifecycle.leave_unscoped();
+#endif
+  return result;
+}
+
+NTSTATUS NTAPI replacement_nt_unmap_view_of_section(HANDLE process, PVOID base_address) noexcept {
+  const ReplacementRoute route = unmap_replacement_lifecycle.enter_unscoped();
+  NtMemoryHookState* hook_state = nullptr;
+  NtUnmapViewOfSectionFunction original = nullptr;
+  HookEntryKind entry_kind = HookEntryKind::kRecursive;
+  NTSTATUS result = 0;
+  DWORD original_last_error = ERROR_SUCCESS;
+  bool guard_entered = false;
+  bool original_completed = false;
+
+#if defined(_MSC_VER)
+  __try {
+    __try {
+#endif
+      if (route == ReplacementRoute::kTarget) {
+        result = load_unmap_function(restored_unmap_target)(process, base_address);
+        original_completed = true;
+      } else {
+        hook_state = active_hook_state.load(std::memory_order_acquire);
+        if (hook_state == nullptr) {
+          fail_broken_replacement_route();
+        }
+        original = load_unmap_function(hook_state->unmap.original_trampoline);
+        if (route == ReplacementRoute::kOriginal) {
+          result = original(process, base_address);
+          original_completed = true;
+        } else {
+          entry_kind = enter_hook_invocation_unscoped();
+          guard_entered = true;
+          classify_entry(hook_state->unmap, entry_kind);
+          result = original(process, base_address);
+          original_last_error = GetLastError();
+          original_completed = true;
+
+          if (entry_kind == HookEntryKind::kOutermost) {
+            (nt_success(result) ? hook_state->unmap.successful_calls
+                                : hook_state->unmap.failed_calls)
+                .fetch_add(1U, std::memory_order_relaxed);
+            const std::uint16_t maximum_stack_depth = hook_state->maximum_stack_depth;
+            const bool queued = hook_state->event_queue->try_emplace(
+                [=](NtVirtualMemoryEvent& event, std::uint64_t queue_sequence) noexcept {
+                  fill_section_event(event, queue_sequence, RtlHeapEventOperation::kSectionUnmap,
+                                     nullptr, process, base_address, base_address, 0U, 0U, 0U, 0U,
+                                     0U, 0U, 0U, 0U, result,
+                                     nt_success(result) ? NtVirtualMemoryEventStatus::kSuccess
+                                                        : NtVirtualMemoryEventStatus::kFailure,
+                                     0U, maximum_stack_depth);
+                });
+            if (!queued) {
+              increment_saturating(hook_state->unmap.dropped_events);
+            }
+          }
+          SetLastError(original_last_error);
+        }
+      }
+#if defined(_MSC_VER)
+    } __finally {
+      if (guard_entered) {
+        leave_hook_invocation_unscoped();
+      }
+      unmap_replacement_lifecycle.leave_unscoped();
+    }
+  } __except (record_unmap_exception_filter(GetExceptionInformation(), route, hook_state,
+                                            guard_entered, entry_kind, original_completed, process,
+                                            base_address, 0U)) {
+    fail_broken_replacement_route();
+  }
+#else
+  if (guard_entered) {
+    leave_hook_invocation_unscoped();
+  }
+  unmap_replacement_lifecycle.leave_unscoped();
+#endif
+  return result;
+}
+
+NTSTATUS NTAPI replacement_nt_unmap_view_of_section_ex(HANDLE process, PVOID base_address,
+                                                       ULONG flags) noexcept {
+  const ReplacementRoute route = unmap_replacement_lifecycle.enter_unscoped();
+  NtMemoryHookState* hook_state = nullptr;
+  NtUnmapViewOfSectionExFunction original = nullptr;
+  HookEntryKind entry_kind = HookEntryKind::kRecursive;
+  NTSTATUS result = 0;
+  DWORD original_last_error = ERROR_SUCCESS;
+  bool guard_entered = false;
+  bool original_completed = false;
+
+#if defined(_MSC_VER)
+  __try {
+    __try {
+#endif
+      if (route == ReplacementRoute::kTarget) {
+        result = load_unmap_ex_function(restored_unmap_ex_target)(process, base_address, flags);
+        original_completed = true;
+      } else {
+        hook_state = active_hook_state.load(std::memory_order_acquire);
+        if (hook_state == nullptr) {
+          fail_broken_replacement_route();
+        }
+        original = load_unmap_ex_function(hook_state->unmap_ex_original_trampoline);
+        if (route == ReplacementRoute::kOriginal) {
+          result = original(process, base_address, flags);
+          original_completed = true;
+        } else {
+          entry_kind = enter_hook_invocation_unscoped();
+          guard_entered = true;
+          classify_entry(hook_state->unmap, entry_kind);
+          result = original(process, base_address, flags);
+          original_last_error = GetLastError();
+          original_completed = true;
+
+          if (entry_kind == HookEntryKind::kOutermost) {
+            (nt_success(result) ? hook_state->unmap.successful_calls
+                                : hook_state->unmap.failed_calls)
+                .fetch_add(1U, std::memory_order_relaxed);
+            const std::uint16_t maximum_stack_depth = hook_state->maximum_stack_depth;
+            const bool queued = hook_state->event_queue->try_emplace(
+                [=](NtVirtualMemoryEvent& event, std::uint64_t queue_sequence) noexcept {
+                  fill_section_event(event, queue_sequence, RtlHeapEventOperation::kSectionUnmap,
+                                     nullptr, process, base_address, base_address, 0U, 0U, 0U, 0U,
+                                     0U, 0U, flags, 0U, result,
+                                     nt_success(result) ? NtVirtualMemoryEventStatus::kSuccess
+                                                        : NtVirtualMemoryEventStatus::kFailure,
+                                     0U, maximum_stack_depth);
+                });
+            if (!queued) {
+              increment_saturating(hook_state->unmap.dropped_events);
+            }
+          }
+          SetLastError(original_last_error);
+        }
+      }
+#if defined(_MSC_VER)
+    } __finally {
+      if (guard_entered) {
+        leave_hook_invocation_unscoped();
+      }
+      unmap_replacement_lifecycle.leave_unscoped();
+    }
+  } __except (record_unmap_exception_filter(GetExceptionInformation(), route, hook_state,
+                                            guard_entered, entry_kind, original_completed, process,
+                                            base_address, flags)) {
+    fail_broken_replacement_route();
+  }
+#else
+  if (guard_entered) {
+    leave_hook_invocation_unscoped();
+  }
+  unmap_replacement_lifecycle.leave_unscoped();
+#endif
+  return result;
+}
+
 }  // namespace
 
 NtMemoryHooks::NtMemoryHooks(HookBackend& backend, std::size_t event_queue_capacity,
@@ -555,8 +970,12 @@ void NtMemoryHooks::initialize() {
   }
   allocate_target_ = reinterpret_cast<void*>(GetProcAddress(ntdll, "NtAllocateVirtualMemory"));
   free_target_ = reinterpret_cast<void*>(GetProcAddress(ntdll, "NtFreeVirtualMemory"));
-  if (allocate_target_ == nullptr || free_target_ == nullptr) {
-    throw HookBackendError{"ntdll.dll does not export the NT virtual memory API set"};
+  map_target_ = reinterpret_cast<void*>(GetProcAddress(ntdll, "NtMapViewOfSection"));
+  unmap_target_ = reinterpret_cast<void*>(GetProcAddress(ntdll, "NtUnmapViewOfSection"));
+  unmap_ex_target_ = reinterpret_cast<void*>(GetProcAddress(ntdll, "NtUnmapViewOfSectionEx"));
+  if (allocate_target_ == nullptr || free_target_ == nullptr || map_target_ == nullptr ||
+      unmap_target_ == nullptr || unmap_ex_target_ == nullptr) {
+    throw HookBackendError{"ntdll.dll does not export the NT memory API set"};
   }
   if (maximum_stack_depth_ > kMaximumCapturedStackDepth) {
     throw HookBackendError{"maximum stack depth exceeds the fixed event capacity"};
@@ -595,14 +1014,26 @@ NtMemoryHookInstallResult NtMemoryHooks::install() {
     return {{HookInstallStatus::kAlreadyInstalled,
              hook_state_->allocate.original_trampoline.load(std::memory_order_acquire)},
             {HookInstallStatus::kAlreadyInstalled,
-             hook_state_->free.original_trampoline.load(std::memory_order_acquire)}};
+             hook_state_->free.original_trampoline.load(std::memory_order_acquire)},
+            {HookInstallStatus::kAlreadyInstalled,
+             hook_state_->map.original_trampoline.load(std::memory_order_acquire)},
+            {HookInstallStatus::kAlreadyInstalled,
+             hook_state_->unmap.original_trampoline.load(std::memory_order_acquire)},
+            {HookInstallStatus::kAlreadyInstalled,
+             hook_state_->unmap_ex_original_trampoline.load(std::memory_order_acquire)}};
   }
   if (state_ == State::kTeardownPending) {
     return {{HookInstallStatus::kTeardownPending, nullptr},
+            {HookInstallStatus::kTeardownPending, nullptr},
+            {HookInstallStatus::kTeardownPending, nullptr},
+            {HookInstallStatus::kTeardownPending, nullptr},
             {HookInstallStatus::kTeardownPending, nullptr}};
   }
   if (state_ == State::kRetired || installation_retired.load(std::memory_order_acquire)) {
     return {{HookInstallStatus::kBackendStopped, nullptr},
+            {HookInstallStatus::kBackendStopped, nullptr},
+            {HookInstallStatus::kBackendStopped, nullptr},
+            {HookInstallStatus::kBackendStopped, nullptr},
             {HookInstallStatus::kBackendStopped, nullptr}};
   }
 
@@ -610,6 +1041,9 @@ NtMemoryHookInstallResult NtMemoryHooks::install() {
   if (!active_owner.compare_exchange_strong(expected, this, std::memory_order_acq_rel,
                                             std::memory_order_acquire)) {
     return {{HookInstallStatus::kAlreadyReplaced, nullptr},
+            {HookInstallStatus::kAlreadyReplaced, nullptr},
+            {HookInstallStatus::kAlreadyReplaced, nullptr},
+            {HookInstallStatus::kAlreadyReplaced, nullptr},
             {HookInstallStatus::kAlreadyReplaced, nullptr}};
   }
   if (!pin_replacement_module()) {
@@ -620,6 +1054,9 @@ NtMemoryHookInstallResult NtMemoryHooks::install() {
   hook_state_->reset_quiescent(maximum_stack_depth_);
   restored_allocate_target.store(allocate_target_, std::memory_order_release);
   restored_free_target.store(free_target_, std::memory_order_release);
+  restored_map_target.store(map_target_, std::memory_order_release);
+  restored_unmap_target.store(unmap_target_, std::memory_order_release);
+  restored_unmap_ex_target.store(unmap_ex_target_, std::memory_order_release);
   active_hook_state.store(hook_state_.get(), std::memory_order_release);
 
   NtMemoryHookInstallResult result;
@@ -628,6 +1065,9 @@ NtMemoryHookInstallResult NtMemoryHooks::install() {
   if (!backend_->acquire_trampoline_lifetime_lease()) {
     result.allocate = {HookInstallStatus::kBackendStopped, nullptr};
     result.free = {HookInstallStatus::kBackendStopped, nullptr};
+    result.map = {HookInstallStatus::kBackendStopped, nullptr};
+    result.unmap = {HookInstallStatus::kBackendStopped, nullptr};
+    result.unmap_ex = {HookInstallStatus::kBackendStopped, nullptr};
     release_failed_initial_install();
     return result;
   }
@@ -668,12 +1108,75 @@ NtMemoryHookInstallResult NtMemoryHooks::install() {
     return result;
   }
   free_hook_installed_ = true;
+
+  map_replacement_lifecycle.start_recording();
+  map_lifecycle_started_ = true;
+  if (!backend_->acquire_trampoline_lifetime_lease()) {
+    result.map = {HookInstallStatus::kBackendStopped, nullptr};
+    static_cast<void>(uninstall());
+    return result;
+  }
+  map_lease_acquired_ = true;
+  try {
+    result.map = backend_->install_fast(map_target_, map_replacement_address(),
+                                        &hook_state_->map.original_trampoline);
+  } catch (...) {
+    static_cast<void>(uninstall());
+    throw;
+  }
+  if (!result.map.installed()) {
+    static_cast<void>(uninstall());
+    return result;
+  }
+  map_hook_installed_ = true;
+
+  unmap_replacement_lifecycle.start_recording();
+  unmap_lifecycle_started_ = true;
+  if (!backend_->acquire_trampoline_lifetime_lease()) {
+    result.unmap = {HookInstallStatus::kBackendStopped, nullptr};
+    static_cast<void>(uninstall());
+    return result;
+  }
+  unmap_lease_acquired_ = true;
+  try {
+    result.unmap = backend_->install_fast(unmap_target_, unmap_replacement_address(),
+                                          &hook_state_->unmap.original_trampoline);
+  } catch (...) {
+    static_cast<void>(uninstall());
+    throw;
+  }
+  if (!result.unmap.installed()) {
+    static_cast<void>(uninstall());
+    return result;
+  }
+  unmap_hook_installed_ = true;
+
+  if (!backend_->acquire_trampoline_lifetime_lease()) {
+    result.unmap_ex = {HookInstallStatus::kBackendStopped, nullptr};
+    static_cast<void>(uninstall());
+    return result;
+  }
+  unmap_ex_lease_acquired_ = true;
+  try {
+    result.unmap_ex = backend_->install_fast(unmap_ex_target_, unmap_ex_replacement_address(),
+                                             &hook_state_->unmap_ex_original_trampoline);
+  } catch (...) {
+    static_cast<void>(uninstall());
+    throw;
+  }
+  if (!result.unmap_ex.installed()) {
+    static_cast<void>(uninstall());
+    return result;
+  }
+  unmap_ex_hook_installed_ = true;
   return result;
 }
 
 void NtMemoryHooks::release_failed_initial_install() noexcept {
   allocate_replacement_lifecycle.route_to_target();
   free_replacement_lifecycle.route_to_target();
+  map_replacement_lifecycle.route_to_target();
+  unmap_replacement_lifecycle.route_to_target();
   if (allocate_lease_acquired_) {
     backend_->release_trampoline_lifetime_lease();
     allocate_lease_acquired_ = false;
@@ -682,8 +1185,22 @@ void NtMemoryHooks::release_failed_initial_install() noexcept {
     backend_->release_trampoline_lifetime_lease();
     free_lease_acquired_ = false;
   }
+  if (map_lease_acquired_) {
+    backend_->release_trampoline_lifetime_lease();
+    map_lease_acquired_ = false;
+  }
+  if (unmap_lease_acquired_) {
+    backend_->release_trampoline_lifetime_lease();
+    unmap_lease_acquired_ = false;
+  }
+  if (unmap_ex_lease_acquired_) {
+    backend_->release_trampoline_lifetime_lease();
+    unmap_ex_lease_acquired_ = false;
+  }
   allocate_lifecycle_started_ = false;
   free_lifecycle_started_ = false;
+  map_lifecycle_started_ = false;
+  unmap_lifecycle_started_ = false;
   release_owner(this, true);
 }
 
@@ -702,23 +1219,45 @@ bool NtMemoryHooks::uninstall(std::uint32_t flush_attempts) noexcept {
   if (free_lifecycle_started_) {
     free_replacement_lifecycle.stop_recording();
   }
+  if (map_lifecycle_started_) {
+    map_replacement_lifecycle.stop_recording();
+  }
+  if (unmap_lifecycle_started_) {
+    unmap_replacement_lifecycle.stop_recording();
+  }
   state_ = State::kTeardownPending;
 
   HookUninstallStatus allocate_status = HookUninstallStatus::kNotInstalled;
   HookUninstallStatus free_status = HookUninstallStatus::kNotInstalled;
+  HookUninstallStatus map_status = HookUninstallStatus::kNotInstalled;
+  HookUninstallStatus unmap_status = HookUninstallStatus::kNotInstalled;
+  HookUninstallStatus unmap_ex_status = HookUninstallStatus::kNotInstalled;
   if (allocate_hook_installed_) {
     allocate_status = backend_->uninstall(allocate_target_, 0U);
   }
   if (free_hook_installed_) {
     free_status = backend_->uninstall(free_target_, 0U);
   }
+  if (map_hook_installed_) {
+    map_status = backend_->uninstall(map_target_, 0U);
+  }
+  if (unmap_hook_installed_) {
+    unmap_status = backend_->uninstall(unmap_target_, 0U);
+  }
+  if (unmap_ex_hook_installed_) {
+    unmap_ex_status = backend_->uninstall(unmap_ex_target_, 0U);
+  }
   allocate_replacement_lifecycle.route_to_target();
   free_replacement_lifecycle.route_to_target();
+  map_replacement_lifecycle.route_to_target();
+  unmap_replacement_lifecycle.route_to_target();
   const auto finished = [](HookUninstallStatus status) {
     return status == HookUninstallStatus::kUninstalled ||
            status == HookUninstallStatus::kNotInstalled;
   };
-  backend_teardown_complete_ = finished(allocate_status) && finished(free_status);
+  backend_teardown_complete_ = finished(allocate_status) && finished(free_status) &&
+                               finished(map_status) && finished(unmap_status) &&
+                               finished(unmap_ex_status);
   return try_finish_teardown(flush_attempts);
 }
 
@@ -754,6 +1293,31 @@ bool NtMemoryHooks::try_finish_teardown(std::uint32_t max_attempts) noexcept {
       free_lease_acquired_ = false;
     }
   }
+  if (!map_replacement_quiescent_) {
+    if (map_lifecycle_started_ && !map_replacement_lifecycle.wait_for_quiescence(max_attempts)) {
+      return false;
+    }
+    map_replacement_quiescent_ = true;
+    if (map_lease_acquired_) {
+      backend_->release_trampoline_lifetime_lease();
+      map_lease_acquired_ = false;
+    }
+  }
+  if (!unmap_replacement_quiescent_) {
+    if (unmap_lifecycle_started_ &&
+        !unmap_replacement_lifecycle.wait_for_quiescence(max_attempts)) {
+      return false;
+    }
+    unmap_replacement_quiescent_ = true;
+    if (unmap_lease_acquired_) {
+      backend_->release_trampoline_lifetime_lease();
+      unmap_lease_acquired_ = false;
+    }
+    if (unmap_ex_lease_acquired_) {
+      backend_->release_trampoline_lifetime_lease();
+      unmap_ex_lease_acquired_ = false;
+    }
+  }
   if (!backend_teardown_complete_) {
     backend_teardown_complete_ = backend_->flush(max_attempts);
   }
@@ -767,8 +1331,14 @@ bool NtMemoryHooks::try_finish_teardown(std::uint32_t max_attempts) noexcept {
 void NtMemoryHooks::finish_teardown() noexcept {
   hook_state_->allocate.original_trampoline.store(nullptr, std::memory_order_release);
   hook_state_->free.original_trampoline.store(nullptr, std::memory_order_release);
+  hook_state_->map.original_trampoline.store(nullptr, std::memory_order_release);
+  hook_state_->unmap.original_trampoline.store(nullptr, std::memory_order_release);
+  hook_state_->unmap_ex_original_trampoline.store(nullptr, std::memory_order_release);
   allocate_hook_installed_ = false;
   free_hook_installed_ = false;
+  map_hook_installed_ = false;
+  unmap_hook_installed_ = false;
+  unmap_ex_hook_installed_ = false;
   state_ = State::kRetired;
   release_owner(this, true);
 }
@@ -776,7 +1346,10 @@ void NtMemoryHooks::finish_teardown() noexcept {
 void NtMemoryHooks::abandon_pending_teardown() noexcept {
   allocate_replacement_lifecycle.route_to_target();
   free_replacement_lifecycle.route_to_target();
-  if (allocate_lease_acquired_ || free_lease_acquired_) {
+  map_replacement_lifecycle.route_to_target();
+  unmap_replacement_lifecycle.route_to_target();
+  if (allocate_lease_acquired_ || free_lease_acquired_ || map_lease_acquired_ ||
+      unmap_lease_acquired_ || unmap_ex_lease_acquired_) {
     static_cast<void>(hook_state_.release());
     guard_runtime_acquired_ = false;
     release_owner(this, false);
@@ -799,10 +1372,20 @@ bool NtMemoryHooks::replacement_module_is_pinned() const noexcept {
 std::uint64_t NtMemoryHooks::replacement_in_flight_count() const noexcept {
   const std::uint64_t allocate = allocate_replacement_lifecycle.in_flight();
   const std::uint64_t free = free_replacement_lifecycle.in_flight();
+  const std::uint64_t map = map_replacement_lifecycle.in_flight();
+  const std::uint64_t unmap = unmap_replacement_lifecycle.in_flight();
   if (free > std::numeric_limits<std::uint64_t>::max() - allocate) {
     return std::numeric_limits<std::uint64_t>::max();
   }
-  return allocate + free;
+  const std::uint64_t virtual_memory = allocate + free;
+  if (map > std::numeric_limits<std::uint64_t>::max() - virtual_memory) {
+    return std::numeric_limits<std::uint64_t>::max();
+  }
+  const std::uint64_t with_map = virtual_memory + map;
+  if (unmap > std::numeric_limits<std::uint64_t>::max() - with_map) {
+    return std::numeric_limits<std::uint64_t>::max();
+  }
+  return with_map + unmap;
 }
 
 NtMemoryHookStatistics NtMemoryHooks::allocate_statistics() const noexcept {
@@ -813,12 +1396,28 @@ NtMemoryHookStatistics NtMemoryHooks::free_statistics() const noexcept {
   return snapshot(hook_state_->free);
 }
 
+NtMemoryHookStatistics NtMemoryHooks::map_statistics() const noexcept {
+  return snapshot(hook_state_->map);
+}
+
+NtMemoryHookStatistics NtMemoryHooks::unmap_statistics() const noexcept {
+  return snapshot(hook_state_->unmap);
+}
+
 std::uint64_t NtMemoryHooks::take_allocate_dropped_event_count() noexcept {
   return hook_state_->allocate.dropped_events.exchange(0U, std::memory_order_relaxed);
 }
 
 std::uint64_t NtMemoryHooks::take_free_dropped_event_count() noexcept {
   return hook_state_->free.dropped_events.exchange(0U, std::memory_order_relaxed);
+}
+
+std::uint64_t NtMemoryHooks::take_map_dropped_event_count() noexcept {
+  return hook_state_->map.dropped_events.exchange(0U, std::memory_order_relaxed);
+}
+
+std::uint64_t NtMemoryHooks::take_unmap_dropped_event_count() noexcept {
+  return hook_state_->unmap.dropped_events.exchange(0U, std::memory_order_relaxed);
 }
 
 std::size_t NtMemoryHooks::event_queue_capacity() const noexcept {
@@ -842,5 +1441,11 @@ const NtVirtualMemoryEventQueue& NtMemoryHooks::event_queue() const noexcept {
 void* NtMemoryHooks::allocate_target_address() const noexcept { return allocate_target_; }
 
 void* NtMemoryHooks::free_target_address() const noexcept { return free_target_; }
+
+void* NtMemoryHooks::map_target_address() const noexcept { return map_target_; }
+
+void* NtMemoryHooks::unmap_target_address() const noexcept { return unmap_target_; }
+
+void* NtMemoryHooks::unmap_ex_target_address() const noexcept { return unmap_ex_target_; }
 
 }  // namespace noleax::agent::windows

@@ -4,9 +4,9 @@
 > 文档版本：0.1
 > 更新日期：2026-07-30
 > 确认日期：2026-07-29
-> 当前阶段：P5.4 NT virtual-memory generation 实现及完整自动门禁完成（`feat/windows-agent-full-api`）
-> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8、P4.9、P5.1、P5.2、P5.3、P5.4
-> 下一工作项：P5.5 `NtMapViewOfSection`/`NtUnmapViewOfSection`
+> 当前阶段：P5.5 section-view generation 实现及完整自动门禁完成（`feat/windows-agent-full-api`）
+> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8、P4.9、P5.1、P5.2、P5.3、P5.4、P5.5
+> 下一工作项：P5.6 模块加载/卸载 generation 与相对栈帧
 
 ## 1. 文档目的
 
@@ -486,7 +486,7 @@ max_size = "1MiB"
 | C++ | operator new、operator new[] 及 aligned/nothrow 变体 | 通常无独立 API | operator delete、operator delete[] 及 sized/aligned 变体 | 默认由底层捕获 |
 | COM/OLE | CoTaskMemAlloc、IMalloc::Alloc、SysAllocString 系列 | CoTaskMemRealloc、IMalloc::Realloc、SysReAllocString 系列 | CoTaskMemFree、IMalloc::Free、SysFreeString | 默认由底层捕获 |
 | Virtual Memory | VirtualAlloc、VirtualAllocEx、VirtualAlloc2 | 通常通过释放并重新分配实现 | VirtualFree、VirtualFreeEx | 默认由 NT API 捕获 |
-| NT Virtual Memory | NtAllocateVirtualMemory、NtMapViewOfSection | 无通用 realloc | NtFreeVirtualMemory、NtUnmapViewOfSection | 直接 hook |
+| NT Virtual Memory | NtAllocateVirtualMemory、NtMapViewOfSection | 无通用 realloc | NtFreeVirtualMemory、NtUnmapViewOfSection/Ex | 直接 hook；Ex 兼容新版 wrapper |
 | File Mapping | MapViewOfFile 系列 | 无通用 realloc | UnmapViewOfFile 系列 | 默认由 NT API 捕获 |
 
 V1 默认直接 hook 的规范化集合：
@@ -500,13 +500,14 @@ V1 默认直接 hook 的规范化集合：
 - NtFreeVirtualMemory
 - NtMapViewOfSection
 - NtUnmapViewOfSection
+- NtUnmapViewOfSectionEx（归一到 unmap，仅作为 wrapper 兼容物理入口）
 
 V1 提供以下命名 profile：
 
 | profile | 直接 hook 的 API 组 | 用途 |
 |---|---|---|
 | windows-nt-heap | RtlCreateHeap、RtlDestroyHeap、RtlAllocateHeap、RtlReAllocateHeap、RtlFreeHeap | 只跟踪 NT Heap；HeapAlloc、CRT malloc 等落到 NT Heap 的调用仍会被捕获 |
-| windows-virtual-memory | NtAllocateVirtualMemory、NtFreeVirtualMemory、NtMapViewOfSection、NtUnmapViewOfSection | 只跟踪直接虚拟内存和映射操作 |
+| windows-virtual-memory | NtAllocateVirtualMemory、NtFreeVirtualMemory、NtMapViewOfSection、NtUnmapViewOfSection/Ex | 只跟踪直接虚拟内存和映射操作 |
 | windows-native | windows-nt-heap 与 windows-virtual-memory 的并集 | Windows V1 默认 profile |
 
 例如，只启用 NT Heap：
@@ -1380,7 +1381,7 @@ trace 和 contract 各三轮通过，12 个 IFEO key 全部清理。详见
 [RTL_HEAP_LIFECYCLE_HOOK.md](RTL_HEAP_LIFECYCLE_HOOK.md)。
 
 P5.4 状态：新增精确 ABI 的 `NtAllocateVirtualMemory`/`NtFreeVirtualMemory` 协调 adapter。两者共享
-640-byte raw event queue；reserve 创建 MappingId，commit 复用已有 reservation，decommit 保持
+P5.4 当时使用 640-byte raw event queue；reserve 创建 MappingId，commit 复用已有 reservation，decommit 保持
 generation live，只有 release 结束 generation。当前进程的真实 handle 仍归类为 local；远程进程
 操作保存 hook 当下解析的 PID 和完整 raw event，但不创建本进程 MappingId。NT Heap 外层调用嵌套
 触发的 VM 操作由同一个固定 TEB guard 抑制，避免 backing mapping 与逻辑 heap allocation 重复记账。
@@ -1392,8 +1393,16 @@ generation live，只有 release 结束 generation。当前进程的真实 handl
 通过，54 份日志导出为 15 个零 LogEntry XML，15 个 IFEO key 全部清理。详见
 [NT_VIRTUAL_MEMORY_HOOK.md](NT_VIRTUAL_MEMORY_HOOK.md)。
 
-P5.4 尚未启用产品 profile：section-view 生命周期仍未覆盖，不能把当前组合当作完整 Windows 泄漏
-捕获范围。
+P5.5 状态：新增 `NtMapViewOfSection`、legacy `NtUnmapViewOfSection`，并兼容新版 Windows
+`UnmapViewOfFile` 实际使用的 `NtUnmapViewOfSectionEx`。三个物理入口归一为 map/unmap 两个 API ID，
+与 VM allocate/free 共用唯一 queue sequence。每个成功 local view 获得独立 MappingId；内部地址
+unmap 规范化为 view 基址，remote view 不进入本进程 outstanding 状态。
+
+合同、trace 与 race 覆盖 pagefile/file-backed、offset/size、多 view、read-only/read-write、失败
+NTSTATUS/LastError、wrapper、preexisting/unmatched、remote child、EventStream/GenerationTracker 和
+legacy/Ex quiescence。统一 raw event 为 664 bytes。详见
+[NT_SECTION_VIEW_HOOK.md](NT_SECTION_VIEW_HOOK.md)。产品 profile 仍等待 P5.6 module generation 与
+P5.7 registry/filter/statistics 收口。
 
 每增加一个 API：
 

@@ -24,7 +24,7 @@ PVOID NTAPI RtlDestroyHeap(PVOID heap);
 `__finally` 保证异常路径也释放 fixed TEB guard 与 replacement in-flight；第一遍 filter 只写固定事件
 并继续搜索。
 
-P5.4 扩展后的统一 640-byte `RtlHeapEvent` 的 create 字段映射为：
+P5.5 扩展后的统一 664-byte `RtlHeapEvent` 的 create 字段映射为：
 
 | 字段 | 值 |
 |---|---|

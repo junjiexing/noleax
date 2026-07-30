@@ -1,6 +1,6 @@
 # Preallocated MPSC Event Queue
 
-> 状态：P5.4 Windows x64 NT Heap 五 API 与 NT VM 两 API 的共享队列域完成
+> 状态：P5.5 Windows x64 NT Heap 与 NT memory 共享队列域完成
 > 范围：固定宽度原始事件、跨 API 顺序、overflow 归因及后台 writer 消费边界
 
 ## 1. 合同
@@ -35,7 +35,7 @@ consumer 只按 reservation 顺序读取。它 acquire-load slot sequence，复�
 因此队列输出顺序与 reservation 顺序一致。
 
 `reset_quiescent` 只允许在没有 producer/consumer 时调用。独立 hook 拥有的 queue 在安装前重置；
-P5.3 heap 组合对象和 P5.4 `NtMemoryHooks` 各自拥有一个共享 queue 域；同一域内 API 共用 sequence，
+P5.3 heap 组合对象和 P5.5 `NtMemoryHooks` 各自拥有一个共享 queue 域；同一域内 API 共用 sequence，
 两个域之间不依赖时间戳合并。当前 adapter 每进程只允许一次成功安装。卸载后才允许最终 drain。
 replacement lifecycle 保证 reset、final drain 和对象销毁前没有 producer；
 详见 [HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)。
@@ -45,7 +45,7 @@ replacement lifecycle 保证 reset、final drain 和对象销毁前没有 produc
 队列满时，当前 event 不获得 reservation 和 `queue_sequence`，生产者立即返回 false，并以饱和 CAS
 增加 64-bit dropped counter。计数到 `UINT64_MAX` 后保持饱和，不允许回绕为零。
 
-底层 queue 保留总 dropped counter；五个 NT Heap hook 与两个 NT VM hook 都分别维护饱和 dropped
+底层 queue 保留总 dropped counter；五个 NT Heap hook 与 NT memory 的四种逻辑 operation 都分别维护饱和 dropped
 counter，使单 consumer 能把 overflow 归因到 api_id。writer 把所选 API 的非零 interval count汇总为：
 
 ~~~text
@@ -61,7 +61,7 @@ tick_range = absent
 
 ## 4. Windows 原始事件
 
-P5.4 的统一 in-process event 固定为 640 bytes，包含：
+P5.5 的统一 in-process event 固定为 664 bytes，并加入 section handle、offset、commit size 和第三组 flags，包含：
 
 - queue sequence；
 - QueryPerformanceCounter ticks；

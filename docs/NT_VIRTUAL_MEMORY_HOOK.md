@@ -1,6 +1,6 @@
 # Windows NtAllocateVirtualMemory/NtFreeVirtualMemory Hook
 
-> 状态：P5.4 Windows x64 全部门禁完成
+> 状态：P5.4 allocate/free 门禁完成；P5.5 已并入 section-view 协调器
 > 范围：NT virtual-memory reserve/commit/decommit/release、MappingId generation、远程进程分类与安全卸载
 
 ## 1. Adapter 合同
@@ -40,7 +40,7 @@ writer 使用 `api_id=6/7`，只为当前进程成功操作分配 `MappingId`：
 
 ## 3. Trace 与分析
 
-P5.4 将统一 raw event 扩展为 640 bytes，新增目标 PID、规范化 mapping base/size 和第二组 flags。
+P5.4 将统一 raw event 扩展为 640 bytes；P5.5 加入 section 字段后为 664 bytes。
 `VmAllocateEvent` 的 wire payload 同步增加规范化 generation base/size，完整 record 为 152 bytes。
 `GenerationTracker` 对 commit 视为已有 generation 更新，对 decommit 保持 live，只让 release 结束它。
 
@@ -64,5 +64,5 @@ dictionary 和文件大小上限沿用 [TRACE_WRITER.md](TRACE_WRITER.md) 的合
 3/3。Application Verifier/Full Page Heap 下 workload、五组 race、trace 和合同各三轮通过；本轮
 54 份 `.dat` 日志按 15 个 image 导出 XML 后为零 `LogEntry`，15 个 IFEO key 全部清理。
 
-产品 profile 仍不启用；P5.5 还需补齐 section-view generation，P5.6/P5.7 再完成模块相对帧、registry
+产品 profile 仍不启用；P5.5 已补齐 section-view generation，P5.6/P5.7 再完成模块相对帧、registry
 和完整组合门禁。

@@ -341,6 +341,7 @@ RtlFreeHeapHook::~RtlFreeHeapHook() {
 }
 
 FastHookResult RtlFreeHeapHook::install() {
+  const InternalThreadScope internal_thread;
   if (state_ == State::kInstalled) {
     return {HookInstallStatus::kAlreadyInstalled,
             hook_state_->original_trampoline.load(std::memory_order_acquire)};
@@ -400,6 +401,7 @@ FastHookResult RtlFreeHeapHook::install() {
 }
 
 HookUninstallStatus RtlFreeHeapHook::uninstall(std::uint32_t flush_attempts) noexcept {
+  const InternalThreadScope internal_thread;
   if (state_ == State::kInactive || state_ == State::kRetired) {
     return HookUninstallStatus::kNotInstalled;
   }

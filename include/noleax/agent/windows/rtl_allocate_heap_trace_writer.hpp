@@ -26,6 +26,8 @@ inline constexpr noleax::trace::ApiId kRtlCreateHeapApiId = 4U;
 inline constexpr noleax::trace::ApiId kRtlDestroyHeapApiId = 5U;
 inline constexpr noleax::trace::ApiId kNtAllocateVirtualMemoryApiId = 6U;
 inline constexpr noleax::trace::ApiId kNtFreeVirtualMemoryApiId = 7U;
+inline constexpr noleax::trace::ApiId kNtMapViewOfSectionApiId = 8U;
+inline constexpr noleax::trace::ApiId kNtUnmapViewOfSectionApiId = 9U;
 
 struct RtlAllocateHeapTraceWriterOptions {
   noleax::trace::TraceWriterOptions trace;

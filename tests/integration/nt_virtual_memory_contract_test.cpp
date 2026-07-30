@@ -266,14 +266,18 @@ int main() {
   bool saw_failure = false;
   bool saw_real_handle = false;
   bool stacks_valid = true;
-  std::uint64_t allocate_events = 0U;
-  std::uint64_t free_events = 0U;
+  std::array<std::uint64_t, 4U> event_counts{};
+  std::array<noleax::agent::windows::NtVirtualMemoryEvent, 32U> event_samples{};
+  std::size_t event_sample_count = 0U;
   noleax::agent::windows::NtVirtualMemoryEvent event;
   while (hooks.try_dequeue_event(event)) {
+    if (event_sample_count < event_samples.size()) {
+      event_samples[event_sample_count++] = event;
+    }
     stacks_valid &= noleax::agent::windows::stack_capture_succeeded(event.stack) ||
                     event.stack.status == noleax::agent::windows::StackCaptureStatus::kFailed;
     if (event.operation == noleax::agent::windows::RtlHeapEventOperation::kVmAllocate) {
-      ++allocate_events;
+      ++event_counts[0];
       saw_reserve |=
           event.flags == MEM_RESERVE && event.address == 0U &&
           event.result_address == reinterpret_cast<std::uintptr_t>(hooked_artifacts.reservation) &&
@@ -293,7 +297,7 @@ int main() {
                                                      hooked_artifacts.real_handle_reservation) &&
                          event.heap_handle != reinterpret_cast<std::uintptr_t>(GetCurrentProcess());
     } else if (event.operation == noleax::agent::windows::RtlHeapEventOperation::kVmFree) {
-      ++free_events;
+      ++event_counts[1];
       saw_decommit |=
           event.flags == MEM_DECOMMIT &&
           event.address == reinterpret_cast<std::uintptr_t>(hooked_artifacts.committed_page) &&
@@ -302,11 +306,19 @@ int main() {
           event.flags == MEM_RELEASE &&
           event.address == reinterpret_cast<std::uintptr_t>(hooked_artifacts.reservation) &&
           event.status == noleax::agent::windows::NtVirtualMemoryEventStatus::kSuccess;
+    } else if (event.operation == noleax::agent::windows::RtlHeapEventOperation::kSectionMap) {
+      ++event_counts[2];
+    } else if (event.operation == noleax::agent::windows::RtlHeapEventOperation::kSectionUnmap) {
+      ++event_counts[3];
+    } else {
+      stacks_valid = false;
     }
   }
 
   const auto allocate_statistics = hooks.allocate_statistics();
   const auto free_statistics = hooks.free_statistics();
+  const auto map_statistics = hooks.map_statistics();
+  const auto unmap_statistics = hooks.unmap_statistics();
   const bool summary_matches = baseline == hooked;
   const bool guard_valid =
       recursive != nullptr && internal != nullptr &&
@@ -322,9 +334,15 @@ int main() {
           allocate_statistics.recordable_calls &&
       free_statistics.successful_calls + free_statistics.failed_calls ==
           free_statistics.recordable_calls &&
+      map_statistics.successful_calls + map_statistics.failed_calls ==
+          map_statistics.recordable_calls &&
+      unmap_statistics.successful_calls + unmap_statistics.failed_calls ==
+          unmap_statistics.recordable_calls &&
       allocate_statistics.recordable_calls ==
-          allocate_events + allocate_statistics.dropped_events &&
-      free_statistics.recordable_calls == free_events + free_statistics.dropped_events;
+          event_counts[0] + allocate_statistics.dropped_events &&
+      free_statistics.recordable_calls == event_counts[1] + free_statistics.dropped_events &&
+      map_statistics.recordable_calls == event_counts[2] + map_statistics.dropped_events &&
+      unmap_statistics.recordable_calls == event_counts[3] + unmap_statistics.dropped_events;
 
   const auto heap_uninstall_status = heap_hook.uninstall(100'000U);
   const bool heap_uninstalled =
@@ -337,22 +355,39 @@ int main() {
       !stacks_valid || !saw_reserve || !saw_commit || !saw_decommit || !saw_release ||
       !saw_failure || !saw_real_handle || !heap_uninstalled || !uninstalled || !heap_shutdown ||
       !shutdown) {
-    std::fprintf(
-        stderr,
-        "NT VM contract failed: summary=%u guard=%u nested=%u counters=%u stacks=%u "
-        "raw=%u%u%u%u%u%u events=%llu/%llu uninstall=%u shutdown=%u\n",
-        summary_matches ? 1U : 0U, guard_valid ? 1U : 0U, nested_heap_suppressed ? 1U : 0U,
-        counters_valid ? 1U : 0U, stacks_valid ? 1U : 0U, saw_reserve ? 1U : 0U,
-        saw_commit ? 1U : 0U, saw_decommit ? 1U : 0U, saw_release ? 1U : 0U, saw_failure ? 1U : 0U,
-        saw_real_handle ? 1U : 0U, static_cast<unsigned long long>(allocate_events),
-        static_cast<unsigned long long>(free_events), uninstalled ? 1U : 0U, shutdown ? 1U : 0U);
+    for (std::size_t index = 0U; index < event_sample_count; ++index) {
+      const auto& sample = event_samples[index];
+      std::fprintf(stderr,
+                   "sample[%zu]=op:%u flags:%08lx secondary:%08lx status:%u "
+                   "address:%llx result:%llx requested:%llu raw:%llu\n",
+                   index, static_cast<unsigned int>(sample.operation),
+                   static_cast<unsigned long>(sample.flags),
+                   static_cast<unsigned long>(sample.secondary_flags),
+                   static_cast<unsigned int>(sample.status),
+                   static_cast<unsigned long long>(sample.address),
+                   static_cast<unsigned long long>(sample.result_address),
+                   static_cast<unsigned long long>(sample.requested_size),
+                   static_cast<unsigned long long>(sample.raw_result));
+    }
+    std::fprintf(stderr,
+                 "NT VM contract failed: summary=%u guard=%u nested=%u counters=%u stacks=%u "
+                 "raw=%u%u%u%u%u%u events=%llu/%llu uninstall=%u shutdown=%u\n",
+                 summary_matches ? 1U : 0U, guard_valid ? 1U : 0U, nested_heap_suppressed ? 1U : 0U,
+                 counters_valid ? 1U : 0U, stacks_valid ? 1U : 0U, saw_reserve ? 1U : 0U,
+                 saw_commit ? 1U : 0U, saw_decommit ? 1U : 0U, saw_release ? 1U : 0U,
+                 saw_failure ? 1U : 0U, saw_real_handle ? 1U : 0U,
+                 static_cast<unsigned long long>(event_counts[0]),
+                 static_cast<unsigned long long>(event_counts[1]), uninstalled ? 1U : 0U,
+                 shutdown ? 1U : 0U);
     return 5;
   }
 
   std::printf(
       "status=ok reserve=1 commit=1 decommit=1 release=1 remote-handle=classified "
-      "last-error=preserved events=%llu/%llu\n",
-      static_cast<unsigned long long>(allocate_events),
-      static_cast<unsigned long long>(free_events));
+      "last-error=preserved events=%llu/%llu/%llu/%llu\n",
+      static_cast<unsigned long long>(event_counts[0]),
+      static_cast<unsigned long long>(event_counts[1]),
+      static_cast<unsigned long long>(event_counts[2]),
+      static_cast<unsigned long long>(event_counts[3]));
   return 0;
 }

@@ -12,7 +12,7 @@ P4.3 首次在正式测试路径 hook `ntdll!RtlAllocateHeap`，验证 Hoox tram
 P4.8 已增加 replacement gate、并发 revert 和 fail-safe 模块生命周期。P4.9 增加 SEH-safe 清理、
 异常失败事件以及 CFG/CET hardened 门禁。
 
-P5.3 保留原 allocate-only 构造方式并统一 raw event；P5.4 加入 NT VM 字段后当前为 640-byte
+P5.3 保留原 allocate-only 构造方式并统一 raw event；P5.5 加入 NT VM 与 section 字段后当前为 664-byte
 `RtlHeapEvent`。heap 组合路径由
 `RtlHeapHooks` 让 create/allocate/reallocate/free/destroy 引用同一个 queue，跨 API 共用唯一
 sequence。生命周期语义见 [RTL_FREE_HEAP_HOOK.md](RTL_FREE_HEAP_HOOK.md)、

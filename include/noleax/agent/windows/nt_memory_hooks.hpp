@@ -14,8 +14,14 @@ struct NtMemoryHookState;
 struct NtMemoryHookInstallResult {
   FastHookResult allocate;
   FastHookResult free;
+  FastHookResult map;
+  FastHookResult unmap;
+  FastHookResult unmap_ex;
 
-  [[nodiscard]] bool installed() const noexcept { return allocate.installed() && free.installed(); }
+  [[nodiscard]] bool installed() const noexcept {
+    return allocate.installed() && free.installed() && map.installed() && unmap.installed() &&
+           unmap_ex.installed();
+  }
 };
 
 struct NtMemoryHookStatistics {
@@ -60,8 +66,12 @@ class NtMemoryHooks final {
   [[nodiscard]] std::uint64_t replacement_in_flight_count() const noexcept;
   [[nodiscard]] NtMemoryHookStatistics allocate_statistics() const noexcept;
   [[nodiscard]] NtMemoryHookStatistics free_statistics() const noexcept;
+  [[nodiscard]] NtMemoryHookStatistics map_statistics() const noexcept;
+  [[nodiscard]] NtMemoryHookStatistics unmap_statistics() const noexcept;
   [[nodiscard]] std::uint64_t take_allocate_dropped_event_count() noexcept;
   [[nodiscard]] std::uint64_t take_free_dropped_event_count() noexcept;
+  [[nodiscard]] std::uint64_t take_map_dropped_event_count() noexcept;
+  [[nodiscard]] std::uint64_t take_unmap_dropped_event_count() noexcept;
   [[nodiscard]] std::size_t event_queue_capacity() const noexcept;
   [[nodiscard]] std::uint16_t maximum_stack_depth() const noexcept;
   [[nodiscard]] bool try_dequeue_event(NtVirtualMemoryEvent& event) noexcept;
@@ -69,6 +79,9 @@ class NtMemoryHooks final {
   [[nodiscard]] const NtVirtualMemoryEventQueue& event_queue() const noexcept;
   [[nodiscard]] void* allocate_target_address() const noexcept;
   [[nodiscard]] void* free_target_address() const noexcept;
+  [[nodiscard]] void* map_target_address() const noexcept;
+  [[nodiscard]] void* unmap_target_address() const noexcept;
+  [[nodiscard]] void* unmap_ex_target_address() const noexcept;
 
  private:
   enum class State : std::uint8_t {
@@ -88,17 +101,30 @@ class NtMemoryHooks final {
   HookBackend* backend_{nullptr};
   void* allocate_target_{nullptr};
   void* free_target_{nullptr};
+  void* map_target_{nullptr};
+  void* unmap_target_{nullptr};
+  void* unmap_ex_target_{nullptr};
   std::uint16_t maximum_stack_depth_{kDefaultMaximumStackDepth};
   State state_{State::kInactive};
   bool guard_runtime_acquired_{false};
   bool allocate_lifecycle_started_{false};
   bool free_lifecycle_started_{false};
+  bool map_lifecycle_started_{false};
+  bool unmap_lifecycle_started_{false};
   bool allocate_hook_installed_{false};
   bool free_hook_installed_{false};
+  bool map_hook_installed_{false};
+  bool unmap_hook_installed_{false};
+  bool unmap_ex_hook_installed_{false};
   bool allocate_lease_acquired_{false};
   bool free_lease_acquired_{false};
+  bool map_lease_acquired_{false};
+  bool unmap_lease_acquired_{false};
+  bool unmap_ex_lease_acquired_{false};
   bool allocate_replacement_quiescent_{false};
   bool free_replacement_quiescent_{false};
+  bool map_replacement_quiescent_{false};
+  bool unmap_replacement_quiescent_{false};
   bool backend_teardown_complete_{false};
 };
 

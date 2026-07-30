@@ -1,6 +1,6 @@
 # Windows Memory Background Trace Writer
 
-> 状态：P5.4 Windows x64 NT Heap 与 NT VM allocate/free 门禁完成
+> 状态：P5.5 Windows x64 NT Heap、NT VM 与 section-view 门禁完成
 > 范围：进程内 trace、heap/allocation/mapping generation 配对和安全停止
 
 ## 1. 目标与边界
@@ -8,7 +8,7 @@
 所选 replacement 只调用 original、保存固定宽度字段、捕获原始 PC 并尝试入队。压缩、容器
 分配、文件 I/O、栈去重、allocation_id 配对和 record codec 全部位于后台线程。
 
-当前生成七种规范化事件：
+当前生成九种规范化事件：
 
 | 原始 API | api_id | 规范化 payload |
 |---|---:|---|
@@ -19,6 +19,8 @@
 | `RtlDestroyHeap` | 5 | `HeapDestroyEvent` |
 | `NtAllocateVirtualMemory` | 6 | `VmAllocateEvent` |
 | `NtFreeVirtualMemory` | 7 | `VmFreeEvent` |
+| `NtMapViewOfSection` | 8 | `MapEvent` |
+| `NtUnmapViewOfSection`/`Ex` | 9 | `UnmapEvent` |
 
 `RtlHeapTraceWriter` 是组合模式的公开别名；原有 `RtlAllocateHeapTraceWriter` 单 hook 构造方式仍兼容，
 只写 `api_id=1`；alloc/free 和 alloc/realloc/free 构造方式也继续兼容。`NtVirtualMemoryTraceWriter`
@@ -27,8 +29,8 @@ StackDefinition 仍只保存绝对地址，`module_id` 和 `module_offset` 为�
 
 ## 2. 共享队列与跨 API 顺序
 
-五个 NT Heap hook 使用一个预分配 queue，两个 NT VM hook 使用另一个预分配 queue。统一的 640-byte
-`RtlHeapEvent` 通过 operation 区分七种 API，并包含所需参数、raw result、异常状态和定长栈。每个
+五个 NT Heap hook 使用一个预分配 queue，五个 NT memory 物理入口使用另一个预分配 queue。统一的 664-byte
+`RtlHeapEvent` 通过 operation 区分九种逻辑 API，并包含所需参数、raw result、异常状态和定长栈。每个
 queue 域成功 reservation 时
 分配唯一 sequence，因此不同线程、不同 API 的生命周期顺序不依赖可能倒退或相同的 QPC tick。
 
@@ -52,8 +54,8 @@ queue 的总 dropped counter 只用于队列级诊断。被 queue 拒绝的事�
 五个 hook 均已安装；`finish()` 要求五个 hook 均不再 installed/teardown-pending，避免过早写出正常
 结束。完整 teardown 原理见 [HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)。
 
-VM-only 模式采用相同顺序：writer 在 `NtMemoryHooks::install()` 前启动，`begin_capture()` 要求两个
-target 均已安装，`finish()` 要求两者均完成 quiescent teardown。P5.4 不跨两个独立 queue 合并 heap
+NT-memory-only 模式采用相同顺序：writer 在 `NtMemoryHooks::install()` 前启动，`begin_capture()` 要求五个
+物理 target 均已安装，`finish()` 要求全部完成 quiescent teardown。P5.5 不跨两个独立 queue 合并 heap
 与 VM 事件；NT Heap outermost guard 会抑制其嵌套 backing VM 调用，完整统一 registry 留给 P5.7。
 
 ## 3. 生命周期配对
@@ -153,11 +155,16 @@ P5.3 组合测试另覆盖：
 P5.4 VM trace 另覆盖 reserve/commit/decommit/release、preexisting、失败 NTSTATUS、真实 remote child、
 outstanding generation、MappingId 复用、两组 ApiStatistics 以及正式 EventStream/GenerationTracker 回读。
 
+P5.5 增加两组逻辑 ApiStatistics。local map 创建独立 MappingId，view 内地址 unmap 规范化为基址；
+remote 不创建 ID，未知成功 unmap 按 CaptureScope 归类为 preexisting/unmatched。pagefile/file-backed、
+多 view、wrapper、remote 与 outstanding 均经正式 EventStream/GenerationTracker 回读。
+
 `RtlFreeHeap` 与 `RtlReAllocateHeap` 合同、fail-fast、quiescence、CFG/CET 和 Full Page Heap 证据见
 [RTL_FREE_HEAP_HOOK.md](RTL_FREE_HEAP_HOOK.md) 与
 [RTL_REALLOCATE_HEAP_HOOK.md](RTL_REALLOCATE_HEAP_HOOK.md) 及
 [RTL_HEAP_LIFECYCLE_HOOK.md](RTL_HEAP_LIFECYCLE_HOOK.md) 及
 [NT_VIRTUAL_MEMORY_HOOK.md](NT_VIRTUAL_MEMORY_HOOK.md) 及
+[NT_SECTION_VIEW_HOOK.md](NT_SECTION_VIEW_HOOK.md) 及
 [WINDOWS_HOOK_HARDENING.md](WINDOWS_HOOK_HARDENING.md)。
 
 ~~~powershell

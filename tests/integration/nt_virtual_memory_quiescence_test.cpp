@@ -20,6 +20,13 @@ using NtAllocateVirtualMemoryFunction = NTSTATUS(NTAPI*)(HANDLE process, PVOID* 
                                                          ULONG allocation_type, ULONG protect);
 using NtFreeVirtualMemoryFunction = NTSTATUS(NTAPI*)(HANDLE process, PVOID* base_address,
                                                      PSIZE_T region_size, ULONG free_type);
+using NtMapViewOfSectionFunction = NTSTATUS(NTAPI*)(HANDLE section, HANDLE process,
+                                                    PVOID* base_address, ULONG_PTR zero_bits,
+                                                    SIZE_T commit_size,
+                                                    PLARGE_INTEGER section_offset,
+                                                    PSIZE_T view_size, ULONG inherit_disposition,
+                                                    ULONG allocation_type, ULONG protect);
+using NtUnmapViewOfSectionFunction = NTSTATUS(NTAPI*)(HANDLE process, PVOID base_address);
 
 constexpr std::size_t kWorkerCount = 4U;
 constexpr std::uint64_t kOperationsBeforeUninstall = 2'000U;
@@ -76,7 +83,16 @@ int main() {
   const auto free_memory = ntdll == nullptr ? nullptr
                                             : reinterpret_cast<NtFreeVirtualMemoryFunction>(
                                                   GetProcAddress(ntdll, "NtFreeVirtualMemory"));
-  if (allocate == nullptr || free_memory == nullptr) {
+  const auto map_view = ntdll == nullptr ? nullptr
+                                         : reinterpret_cast<NtMapViewOfSectionFunction>(
+                                               GetProcAddress(ntdll, "NtMapViewOfSection"));
+  const auto unmap_view = ntdll == nullptr ? nullptr
+                                           : reinterpret_cast<NtUnmapViewOfSectionFunction>(
+                                                 GetProcAddress(ntdll, "NtUnmapViewOfSection"));
+  const HANDLE section =
+      CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0U, 64U * 1024U, nullptr);
+  if (allocate == nullptr || free_memory == nullptr || map_view == nullptr ||
+      unmap_view == nullptr || section == nullptr) {
     return 2;
   }
 
@@ -110,6 +126,31 @@ int main() {
     const NTSTATUS released =
         free_memory(GetCurrentProcess(), &release_base, &release_size, MEM_RELEASE);
     if (released < 0) {
+      failures.fetch_add(1U, std::memory_order_relaxed);
+      return;
+    }
+    PVOID view = nullptr;
+    SIZE_T view_size = 4096U;
+    const NTSTATUS mapped = map_view(section, GetCurrentProcess(), &view, 0U, 0U, nullptr,
+                                     &view_size, 2U, 0U, PAGE_READWRITE);
+    if (mapped < 0 || view == nullptr || view_size < 4096U) {
+      failures.fetch_add(1U, std::memory_order_relaxed);
+      return;
+    }
+    auto* view_bytes = static_cast<std::byte*>(view);
+    view_bytes[0] = std::byte{0x3c};
+    view_bytes[4095U] = std::byte{0xc3};
+    if (unmap_view(GetCurrentProcess(), view) < 0) {
+      failures.fetch_add(1U, std::memory_order_relaxed);
+      return;
+    }
+    PVOID wrapper_view = MapViewOfFile(section, FILE_MAP_WRITE, 0U, 0U, 4096U);
+    if (wrapper_view == nullptr) {
+      failures.fetch_add(1U, std::memory_order_relaxed);
+      return;
+    }
+    static_cast<std::byte*>(wrapper_view)[0] = std::byte{0x69};
+    if (UnmapViewOfFile(wrapper_view) == FALSE) {
       failures.fetch_add(1U, std::memory_order_relaxed);
       return;
     }
@@ -155,11 +196,15 @@ int main() {
 
   const auto allocate_after_uninstall = hooks.allocate_statistics();
   const auto free_after_uninstall = hooks.free_statistics();
+  const auto map_after_uninstall = hooks.map_statistics();
+  const auto unmap_after_uninstall = hooks.unmap_statistics();
   const std::uint64_t post_goal =
       operations.load(std::memory_order_acquire) + kOperationsAfterUninstall;
   const bool reached_post_uninstall = uninstalled && wait_for_at_least(operations, post_goal);
   const auto allocate_after_post = hooks.allocate_statistics();
   const auto free_after_post = hooks.free_statistics();
+  const auto map_after_post = hooks.map_statistics();
+  const auto unmap_after_post = hooks.unmap_statistics();
 
   stop.store(true, std::memory_order_release);
   start.store(true, std::memory_order_release);
@@ -168,27 +213,37 @@ int main() {
   }
   churner.join();
 
-  std::array<std::uint64_t, 2U> dequeued{};
+  std::array<std::uint64_t, 4U> dequeued{};
   noleax::agent::windows::NtVirtualMemoryEvent event;
   while (hooks.try_dequeue_event(event)) {
     if (event.operation == noleax::agent::windows::RtlHeapEventOperation::kVmAllocate) {
       ++dequeued[0];
     } else if (event.operation == noleax::agent::windows::RtlHeapEventOperation::kVmFree) {
       ++dequeued[1];
+    } else if (event.operation == noleax::agent::windows::RtlHeapEventOperation::kSectionMap) {
+      ++dequeued[2];
+    } else if (event.operation == noleax::agent::windows::RtlHeapEventOperation::kSectionUnmap) {
+      ++dequeued[3];
     } else {
       return 4;
     }
   }
   const auto allocate_statistics = hooks.allocate_statistics();
   const auto free_statistics = hooks.free_statistics();
-  const std::array<std::uint64_t, 2U> dropped{allocate_statistics.dropped_events,
-                                              free_statistics.dropped_events};
-  const std::array<std::uint64_t, 2U> recordable{allocate_statistics.recordable_calls,
-                                                 free_statistics.recordable_calls};
-  const std::array<std::uint64_t, 2U> successful{allocate_statistics.successful_calls,
-                                                 free_statistics.successful_calls};
-  const std::array<std::uint64_t, 2U> failed{allocate_statistics.failed_calls,
-                                             free_statistics.failed_calls};
+  const auto map_statistics = hooks.map_statistics();
+  const auto unmap_statistics = hooks.unmap_statistics();
+  const std::array<std::uint64_t, 4U> dropped{
+      allocate_statistics.dropped_events, free_statistics.dropped_events,
+      map_statistics.dropped_events, unmap_statistics.dropped_events};
+  const std::array<std::uint64_t, 4U> recordable{
+      allocate_statistics.recordable_calls, free_statistics.recordable_calls,
+      map_statistics.recordable_calls, unmap_statistics.recordable_calls};
+  const std::array<std::uint64_t, 4U> successful{
+      allocate_statistics.successful_calls, free_statistics.successful_calls,
+      map_statistics.successful_calls, unmap_statistics.successful_calls};
+  const std::array<std::uint64_t, 4U> failed{
+      allocate_statistics.failed_calls, free_statistics.failed_calls, map_statistics.failed_calls,
+      unmap_statistics.failed_calls};
   bool accounting_valid = true;
   std::uint64_t total_dequeued = 0U;
   std::uint64_t total_dropped = 0U;
@@ -201,14 +256,18 @@ int main() {
   }
   accounting_valid &= hooks.event_queue().dropped_count() == total_dropped;
   const bool counters_stable = allocate_after_uninstall.calls == allocate_after_post.calls &&
-                               free_after_uninstall.calls == free_after_post.calls;
+                               free_after_uninstall.calls == free_after_post.calls &&
+                               map_after_uninstall.calls == map_after_post.calls &&
+                               unmap_after_uninstall.calls == unmap_after_post.calls;
   const bool quiescent = hooks.replacement_in_flight_count() == 0U;
   const auto reinstall = hooks.install();
   const bool shutdown = backend.shutdown();
+  const bool section_closed = CloseHandle(section) != FALSE;
   if (!all_ready || !reached_pre_uninstall || !reached_post_uninstall || !uninstalled ||
       failures.load(std::memory_order_relaxed) != 0U || !counters_stable || !accounting_valid ||
       !quiescent || backend.trampoline_lifetime_lease_count() != 0U ||
-      reinstall.allocate.status != noleax::agent::HookInstallStatus::kBackendStopped || !shutdown) {
+      reinstall.allocate.status != noleax::agent::HookInstallStatus::kBackendStopped || !shutdown ||
+      !section_closed) {
     std::fprintf(stderr,
                  "NT VM quiescence failed: ready=%llu operations=%llu churn=%llu failures=%llu "
                  "uninstall=%u stable=%u accounting=%u quiescent=%u dequeued=%llu dropped=%llu "

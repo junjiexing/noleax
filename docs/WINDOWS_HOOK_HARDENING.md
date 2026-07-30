@@ -145,3 +145,9 @@ writer 加入 hardened registry。Debug/Release 各 193/193，hardened 213/213�
 metadata，新增 NT VM race 连续 100/100，长 ABI 差分 3/3。Application Verifier/Full Page Heap 下
 三轮 workload、五组 race、三个 writer 及合同均通过。本轮 54 份 `.dat` 日志按 15 个 image 导出 XML
 后为零 `LogEntry`，结束后 15 个 IFEO key 全部不存在。
+
+同日 P5.5 将 `NtMapViewOfSection`、legacy/Ex unmap、section contract、preexisting/unmatched trace 与
+扩展后的 NT memory race 加入 registry。Debug/Release 各 195/195，hardened 216/216；21 个 PE 通过
+CFG/CET metadata，五组 race 各连续 100/100，长 ABI 差分 3/3。Application Verifier/Full Page Heap
+下三轮 workload、五组 race、四个 writer/trace 与六个合同目标均通过；脚本结束后本轮 16 个 IFEO
+target key 全部不存在。
