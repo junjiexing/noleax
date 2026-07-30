@@ -12,7 +12,7 @@ noleax [global-options] patch [patch-options]
 noleax [global-options] analyze [analyze-options] trace...
 noleax [global-options] config validate
 noleax [global-options] config print-effective
-noleax [global-options] doctor
+noleax [global-options] doctor [doctor-options]
 ~~~
 
 命令名、选项名和枚举值使用英文，诊断信息第一版使用英文。路径按平台原生格式输入，内部统一使用 UTF-8。
@@ -242,6 +242,15 @@ doctor 是只读诊断命令，检查：
 - 符号解析组件。
 
 doctor 不执行注入。
+
+~~~
+noleax doctor [--agent PATH] [--target PATH] [--pid PID] [--inject-method METHOD]
+~~~
+
+未提供可选探针时对应检查显示为 `skipped`。当前 P6 只有 `remote-thread` 会通过方法检查；
+`thread-hijack` 和 `entrypoint-code` 会明确报告为尚未实现。agent/target/PID 可同时提供，以一次完成
+文件架构、运行进程架构和注入权限检查。所有四项均可通过 TOML 的
+`injection.agent_path`、`target.path`、`target.pid` 和 `injection.method` 设置，CLI 优先。
 
 ## 11. 退出码
 

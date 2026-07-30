@@ -5,6 +5,7 @@ add_executable(noleax
 target_link_libraries(noleax
   PRIVATE
     noleax::cli
+    noleax::controller
     noleax::core
 )
 

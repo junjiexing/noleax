@@ -3,6 +3,7 @@ add_library(noleax-controller STATIC)
 if(WIN32)
   target_sources(noleax-controller PRIVATE
     controller.cpp
+    windows/diagnostics.cpp
     windows/process.cpp
     windows/remote_injector.cpp
     windows/thread_suspension.cpp

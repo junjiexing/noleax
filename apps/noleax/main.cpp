@@ -16,8 +16,34 @@
 #include "noleax/cli/command_line.hpp"
 #include "noleax/config/config_io.hpp"
 #include "noleax/config/configuration.hpp"
+#if defined(_WIN32)
+#include "noleax/controller/windows/diagnostics.hpp"
+#endif
 
 namespace {
+
+[[nodiscard]] int execute_doctor(const noleax::config::Configuration& configuration) {
+#if defined(_WIN32)
+  noleax::controller::windows::DoctorOptions options;
+  options.agent_path = configuration.injection.agent_path.value;
+  options.target_path = configuration.target.path.value;
+  options.process_id = configuration.target.pid.value;
+  options.injection_method = noleax::config::enum_value_name(configuration.injection.method.value);
+  const auto report = noleax::controller::windows::run_doctor(options);
+  noleax::controller::windows::write_doctor_report(std::cout, report);
+  if (report.has_error_category(noleax::controller::windows::DiagnosticCategory::kPermission)) {
+    return 3;
+  }
+  if (report.has_error_category(noleax::controller::windows::DiagnosticCategory::kUnsupported)) {
+    return 5;
+  }
+  return report.has_errors() ? 1 : 0;
+#else
+  static_cast<void>(configuration);
+  std::cerr << "error: doctor is not implemented on this platform\n";
+  return 5;
+#endif
+}
 
 int run_application(int argc, const char* const* argv) {
   try {
@@ -49,6 +75,9 @@ int run_application(int argc, const char* const* argv) {
     if (command_line.meta_command == noleax::cli::MetaCommand::kPrintEffectiveConfig) {
       std::cout << noleax::config::serialize_effective_config(configuration);
       return 0;
+    }
+    if (*configuration.operation.value == noleax::config::Operation::kDoctor) {
+      return execute_doctor(configuration);
     }
 
     std::cerr << "error: operation '"

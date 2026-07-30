@@ -75,6 +75,7 @@ set_tests_properties(config.print-effective PROPERTIES
 
 if(WIN32)
   target_sources(noleax-unit-tests PRIVATE
+    unit/controller_diagnostics_test.cpp
     unit/controller_process_test.cpp
     unit/ipc_named_pipe_test.cpp
     unit/hook_guard_test.cpp
@@ -91,6 +92,23 @@ if(WIN32)
     targets/controller_target.cpp
   )
   noleax_set_project_warnings(noleax-controller-target)
+
+  add_dependencies(noleax-unit-tests noleax-agent noleax-controller-target)
+  target_compile_definitions(noleax-unit-tests PRIVATE
+    NOLEAX_TEST_AGENT_PATH="$<TARGET_FILE:noleax-agent>"
+    NOLEAX_TEST_CONTROLLER_TARGET_PATH="$<TARGET_FILE:noleax-controller-target>"
+  )
+
+  add_test(NAME cli.doctor
+    COMMAND noleax doctor
+      --agent "$<TARGET_FILE:noleax-agent>"
+      --target "$<TARGET_FILE:noleax-controller-target>"
+  )
+  set_tests_properties(cli.doctor PROPERTIES
+    LABELS "cli;controller;doctor;windows"
+    PASS_REGULAR_EXPRESSION
+      "agent-image: x64 PE32"
+  )
 
   add_executable(noleax-controller-lifecycle-target
     targets/controller_lifecycle_target.cpp

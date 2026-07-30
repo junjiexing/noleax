@@ -4,9 +4,9 @@
 > 文档版本：0.1
 > 更新日期：2026-07-30
 > 确认日期：2026-07-29
-> 当前阶段：P6.5 start/stop/status 生命周期完成（`feat/windows-controller-injection`）
-> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8、P4.9、P5.1、P5.2、P5.3、P5.4、P5.5、P5.6、P5.7、P6.1、P6.2、P6.3、P6.4、P6.5
-> 下一工作项：P6.6 架构和权限诊断
+> 当前阶段：P6.6 架构和权限诊断完成（`feat/windows-controller-injection`）
+> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8、P4.9、P5.1、P5.2、P5.3、P5.4、P5.5、P5.6、P5.7、P6.1、P6.2、P6.3、P6.4、P6.5、P6.6
+> 下一工作项：P6.7 端到端 trace/analyze
 
 ## 1. 文档目的
 
@@ -1482,6 +1482,12 @@ P6.5 状态：controller 暴露 capturing 状态查询、两阶段 stop 和幂�
 结果一致、finalized 后拒绝 status，并由 trace 尾记录证明 writer drain 已完成。统一 finalize gate
 会停放新的最外层 replacement，同时允许已进入 hook 的嵌套调用退出；writer drain 后再次关门，目标
 线程才由 controller 暂停并执行物理 revert，避免把线程冻结在 trampoline 或 replacement 内。
+
+P6.6 状态：`noleax doctor` 提供只读的 Windows x64 环境诊断。它报告 controller/OS 架构与版本、
+Hoox 固定版本、token elevation、CFG/CET 状态；可选解析 agent/目标 PE 的架构和类型，校验 agent
+bootstrap export，并查询运行中 PID 的架构及 remote-thread 所需 `OpenProcess` 权限。doctor 不加载
+agent 到目标、不修改目标内存、不创建远程线程；未实现的方法、架构不匹配和权限拒绝具有稳定分类与
+退出码。
 
 人工验证：
 
