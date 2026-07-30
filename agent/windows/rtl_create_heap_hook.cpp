@@ -94,6 +94,7 @@ void fill_event(RtlCreateHeapEvent& event, std::uint64_t queue_sequence, ULONG f
                 PVOID heap_base, SIZE_T reserve_size, SIZE_T commit_size, PVOID lock,
                 PVOID parameters, PVOID result, RtlCreateHeapEventStatus status,
                 std::uint32_t exception_status, std::uint16_t maximum_stack_depth) noexcept {
+  event = RtlCreateHeapEvent{};
   LARGE_INTEGER ticks{};
   static_cast<void>(QueryPerformanceCounter(&ticks));
   event.queue_sequence = queue_sequence;

@@ -40,7 +40,7 @@ outermost 的 `successful + failed == recordable`；SEH 异常同时计入 faile
 
 ## 3. 统一事件与共享队列
 
-P5.3 的统一 608-byte `RtlHeapEvent` 保留 P5.1 定义的 free 字段：
+P5.4 的统一 640-byte `RtlHeapEvent` 保留 P5.1 定义的 free 字段：
 
 - 全局 queue sequence、QPC tick、thread ID；
 - heap handle、address、flags 和 original raw BOOLEAN result；
@@ -111,7 +111,7 @@ P5.1 新增或扩展、并在 P5.3 五 hook 组合中持续执行的门禁包括
 - matched、cross-thread、preexisting、unmatched 和 outstanding generation 的正式 trace 回读；
 - MD/MT 8×20,000×2 baseline/hooked 长差分；
 - 10 个 PE 的 CFG/CET metadata、allocate/free runtime mitigation；
-- Application Verifier/Full Page Heap 三轮；P5.3 结束后 12 个目标 IFEO key 全部不存在。
+- Application Verifier/Full Page Heap 三轮；P5.4 结束后 15 个目标 IFEO key 全部不存在。
 
 结果汇总见 [WINDOWS_HOOK_HARDENING.md](WINDOWS_HOOK_HARDENING.md)。常用定向命令：
 
@@ -124,6 +124,7 @@ ctest --preset windows-x64-release -R "rtl-free-heap|rtl-heap-trace-writer" --ou
 
 ## 8. 尚未启用的范围
 
-当前仍不启用产品 profile，也没有新增最终用户 CLI。heap create/destroy 已在 P5.3 完成；NT VM、
-section view、模块 generation 和注入链路仍待后续阶段。在这些能力完成前，当前五 hook 组合只能
+当前仍不启用产品 profile，也没有新增最终用户 CLI。heap create/destroy 已在 P5.3 完成，NT VM
+allocate/free 已在 P5.4 完成；section view、模块 generation 和注入链路仍待后续阶段。在这些能力
+完成前，当前五 hook 组合只能
 作为经过硬化的 agent building block，不能宣称完整 Windows 内存泄漏覆盖。

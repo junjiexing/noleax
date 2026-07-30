@@ -92,6 +92,7 @@ void increment_saturating(std::atomic<std::uint64_t>& value) noexcept {
 void fill_event(RtlDestroyHeapEvent& event, std::uint64_t queue_sequence, PVOID heap, PVOID result,
                 RtlDestroyHeapEventStatus status, std::uint32_t exception_status,
                 std::uint16_t maximum_stack_depth) noexcept {
+  event = RtlDestroyHeapEvent{};
   LARGE_INTEGER ticks{};
   static_cast<void>(QueryPerformanceCounter(&ticks));
   event.queue_sequence = queue_sequence;

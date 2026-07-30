@@ -1,6 +1,6 @@
 # Windows V1 Hook API Matrix
 
-> 状态：P0 基线
+> 状态：P5.4；NT Heap 与 NT virtual-memory allocate/free adapter 已完成，profile 尚未启用
 > backend：Hoox v0.1.1 replace_fast
 > target：Windows x64
 
@@ -305,8 +305,8 @@ NTSTATUS NTAPI NtUnmapViewOfSection(
 | RtlAllocateHeap | P5.3 combined candidate | guard/shared-queue/stack/SEH pass | ABI/LastError/exception/overflow/stack/trace pass | 8x20k + five-hook quiescence pass | PE + runtime pass | combined Full Page Heap 3/3 pass | no |
 | RtlReAllocateHeap | P5.3 combined candidate | guard/shared-queue/stack/SEH pass | in-place/move/zero/OOM/LastError/exception/fail-fast/trace pass | cross-thread + 8x20k + quiescence pass | PE + runtime pass | combined Full Page Heap 3/3 pass | no |
 | RtlFreeHeap | P5.3 combined candidate | guard/shared-queue/stack/SEH pass | return/LastError/exception/fail-fast/trace pass | cross-thread + 8x20k + quiescence pass | PE + runtime pass | AppVerifier Full 3/3 pass | no |
-| NtAllocateVirtualMemory | pending | pending | pending | pending | pending | pending | no |
-| NtFreeVirtualMemory | pending | pending | pending | pending | pending | pending | no |
+| NtAllocateVirtualMemory | P5.4 combined candidate | guard/shared-queue/stack/SEH pass | ABI/LastError/reserve/commit/failure/remote/trace pass | thread-churn quiescence 100/100 pass | PE + runtime pass | AppVerifier Full 3/3 pass | no |
+| NtFreeVirtualMemory | P5.4 combined candidate | guard/shared-queue/stack/SEH pass | ABI/LastError/decommit/release/failure/remote/trace pass | thread-churn quiescence 100/100 pass | PE + runtime pass | AppVerifier Full 3/3 pass | no |
 | NtMapViewOfSection | pending | pending | pending | pending | pending | pending | no |
 | NtUnmapViewOfSection | pending | pending | pending | pending | pending | pending | no |
 
@@ -340,3 +340,10 @@ P5.3 增加 `RtlCreateHeap`/`RtlDestroyHeap`，五种事件共享唯一 sequence
 destroy-with-live、handle reuse 和 analyzer 回读。Debug/Release 各 189/189、hardened 206/206、四组
 quiescence race 各 100/100、17 个 PE 的 CFG/CET 及 Full Page Heap 三轮均通过。设计与证据见
 [RTL_HEAP_LIFECYCLE_HOOK.md](RTL_HEAP_LIFECYCLE_HOOK.md)。
+
+P5.4 增加 `NtAllocateVirtualMemory`/`NtFreeVirtualMemory`。两个 API 共享 queue sequence，reserve 创建
+MappingId，commit 复用或补建 reservation generation，decommit 不结束 generation，release 才结束。
+当前进程真实 handle 与 pseudo handle 均正确分类；remote child 事件保留 PID/raw 参数但不进入本进程
+状态。Debug/Release 各 193/193、hardened 213/213，20 个 PE 通过 CFG/CET；NT VM quiescence
+100/100、Full Page Heap 三轮及 15 个 IFEO key 清理均通过。设计与证据见
+[NT_VIRTUAL_MEMORY_HOOK.md](NT_VIRTUAL_MEMORY_HOOK.md)。

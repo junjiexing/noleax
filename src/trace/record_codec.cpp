@@ -357,6 +357,8 @@ void append_event_payload(std::vector<std::byte>& output, const EventPayload& pa
                    append_u64(output, event.result_base);
                    append_u64(output, event.requested_size);
                    append_u64(output, event.result_size);
+                   append_u64(output, event.mapping_base);
+                   append_u64(output, event.mapping_size);
                    append_u32(output, event.allocation_type);
                    append_u32(output, event.protection);
                    append_u64(output, event.mapping_id.value());
@@ -476,6 +478,8 @@ void append_event_payload(std::vector<std::byte>& output, const EventPayload& pa
       event.result_base = reader.read_u64();
       event.requested_size = reader.read_u64();
       event.result_size = reader.read_u64();
+      event.mapping_base = reader.read_u64();
+      event.mapping_size = reader.read_u64();
       event.allocation_type = reader.read_u32();
       event.protection = reader.read_u32();
       event.mapping_id = MappingId{reader.read_u64()};

@@ -24,7 +24,7 @@ PVOID NTAPI RtlDestroyHeap(PVOID heap);
 `__finally` 保证异常路径也释放 fixed TEB guard 与 replacement in-flight；第一遍 filter 只写固定事件
 并继续搜索。
 
-统一 608-byte `RtlHeapEvent` 的 create 字段映射为：
+P5.4 扩展后的统一 640-byte `RtlHeapEvent` 的 create 字段映射为：
 
 | 字段 | 值 |
 |---|---|
@@ -108,5 +108,5 @@ P5.3 结果：
 .\scripts\Test-WindowsHookHardening.ps1 -RequireCetRuntime
 ~~~
 
-产品 profile 仍保持 disabled；P5.4/P5.5 的 VM 与 section-view 生命周期补齐后，才能把 Windows
-agent 宣称为完整候选。
+产品 profile 仍保持 disabled；P5.4 已完成 VM reserve/commit/decommit/release，P5.5 补齐
+section-view 生命周期后，才能继续把 Windows agent 推进为完整候选。

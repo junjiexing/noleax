@@ -181,11 +181,33 @@ void GenerationTracker::observe_vm_allocate(const noleax::trace::Event& event,
   if (!noleax::trace::call_succeeded(event.header.status) || !allocation.mapping_id.is_valid()) {
     return;
   }
+  if (auto existing_entry = live_mappings_.find(allocation.mapping_id.value());
+      existing_entry != live_mappings_.end()) {
+    MemoryGeneration& existing = existing_entry->second;
+    const noleax::trace::Address update_base =
+        allocation.mapping_base == 0U ? allocation.result_base : allocation.mapping_base;
+    const std::uint64_t update_size =
+        allocation.mapping_size == 0U ? allocation.result_size : allocation.mapping_size;
+    if (existing.kind != GenerationKind::kVirtualAllocation || update_base < existing.address) {
+      throw GenerationStateError{"virtual memory update does not match its mapping generation"};
+    }
+    if (update_base == existing.address && update_size > existing.size) {
+      existing.size = update_size;
+      return;
+    }
+    const std::uint64_t offset = update_base - existing.address;
+    if (offset > existing.size || update_size > existing.size - offset) {
+      throw GenerationStateError{"virtual memory update exceeds its mapping generation"};
+    }
+    return;
+  }
   MemoryGeneration generation;
   generation.kind = GenerationKind::kVirtualAllocation;
   generation.mapping_id = allocation.mapping_id;
-  generation.address = allocation.result_base;
-  generation.size = allocation.result_size;
+  generation.address =
+      allocation.mapping_base == 0U ? allocation.result_base : allocation.mapping_base;
+  generation.size =
+      allocation.mapping_size == 0U ? allocation.result_size : allocation.mapping_size;
   generation.created_by = event;
   add_mapping(generation);
 }
@@ -193,6 +215,10 @@ void GenerationTracker::observe_vm_allocate(const noleax::trace::Event& event,
 void GenerationTracker::observe_vm_free(const noleax::trace::Event& event,
                                         const noleax::trace::VmFreeEvent& free_event) {
   if (!noleax::trace::call_succeeded(event.header.status) || !free_event.mapping_id.is_valid()) {
+    return;
+  }
+  constexpr std::uint32_t kMemRelease = 0x00008000U;
+  if ((free_event.free_type & kMemRelease) == 0U) {
     return;
   }
   end_mapping(free_event.mapping_id, free_event.base, GenerationKind::kVirtualAllocation,

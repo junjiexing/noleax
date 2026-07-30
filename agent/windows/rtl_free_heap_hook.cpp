@@ -115,6 +115,7 @@ void increment_saturating(std::atomic<std::uint64_t>& value) noexcept {
     const bool queued = hook_state->event_queue->try_emplace(
         [heap, flags, address, exception_status, maximum_stack_depth](
             RtlFreeHeapEvent& event, std::uint64_t queue_sequence) noexcept {
+          event = RtlFreeHeapEvent{};
           LARGE_INTEGER ticks{};
           static_cast<void>(QueryPerformanceCounter(&ticks));
           event.queue_sequence = queue_sequence;
@@ -204,6 +205,7 @@ BOOLEAN NTAPI replacement_rtl_free_heap(PVOID heap, ULONG flags, PVOID address) 
             const bool queued = hook_state->event_queue->try_emplace(
                 [heap, flags, address, result, maximum_stack_depth](
                     RtlFreeHeapEvent& event, std::uint64_t queue_sequence) noexcept {
+                  event = RtlFreeHeapEvent{};
                   LARGE_INTEGER ticks{};
                   static_cast<void>(QueryPerformanceCounter(&ticks));
                   event.queue_sequence = queue_sequence;

@@ -115,6 +115,7 @@ void increment_saturating(std::atomic<std::uint64_t>& value) noexcept {
     const bool queued = hook_state->event_queue->try_emplace(
         [heap, flags, size, exception_status, maximum_stack_depth](
             RtlAllocateHeapEvent& event, std::uint64_t queue_sequence) noexcept {
+          event = RtlAllocateHeapEvent{};
           LARGE_INTEGER ticks{};
           static_cast<void>(QueryPerformanceCounter(&ticks));
           event.queue_sequence = queue_sequence;
@@ -204,6 +205,7 @@ PVOID NTAPI replacement_rtl_allocate_heap(PVOID heap, ULONG flags, SIZE_T size) 
             const bool queued = hook_state->event_queue->try_emplace(
                 [heap, flags, size, result, maximum_stack_depth](
                     RtlAllocateHeapEvent& event, std::uint64_t queue_sequence) noexcept {
+                  event = RtlAllocateHeapEvent{};
                   LARGE_INTEGER ticks{};
                   static_cast<void>(QueryPerformanceCounter(&ticks));
                   event.queue_sequence = queue_sequence;

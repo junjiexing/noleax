@@ -4,9 +4,9 @@
 > 文档版本：0.1
 > 更新日期：2026-07-30
 > 确认日期：2026-07-29
-> 当前阶段：P5.3 NT Heap generation 实现及完整自动门禁完成（`feat/windows-agent-full-api`）
-> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8、P4.9、P5.1、P5.2、P5.3
-> 下一工作项：P5.4 `NtAllocateVirtualMemory`/`NtFreeVirtualMemory`
+> 当前阶段：P5.4 NT virtual-memory generation 实现及完整自动门禁完成（`feat/windows-agent-full-api`）
+> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8、P4.9、P5.1、P5.2、P5.3、P5.4
+> 下一工作项：P5.5 `NtMapViewOfSection`/`NtUnmapViewOfSection`
 
 ## 1. 文档目的
 
@@ -1379,8 +1379,21 @@ GenerationTracker 回读。Debug/Release 各 189/189、hardened 206/206，四组
 trace 和 contract 各三轮通过，12 个 IFEO key 全部清理。详见
 [RTL_HEAP_LIFECYCLE_HOOK.md](RTL_HEAP_LIFECYCLE_HOOK.md)。
 
-P5.3 尚未启用产品 profile：VM 和 section-view 生命周期仍未覆盖，不能把当前组合当作完整 Windows
-泄漏捕获范围。
+P5.4 状态：新增精确 ABI 的 `NtAllocateVirtualMemory`/`NtFreeVirtualMemory` 协调 adapter。两者共享
+640-byte raw event queue；reserve 创建 MappingId，commit 复用已有 reservation，decommit 保持
+generation live，只有 release 结束 generation。当前进程的真实 handle 仍归类为 local；远程进程
+操作保存 hook 当下解析的 PID 和完整 raw event，但不创建本进程 MappingId。NT Heap 外层调用嵌套
+触发的 VM 操作由同一个固定 TEB guard 抑制，避免 backing mapping 与逻辑 heap allocation 重复记账。
+
+合同覆盖 reserve/commit/decommit/release、reserve+commit、指定 base、对齐、失败 NTSTATUS、
+`VirtualAlloc` 包装路径、preexisting、真实 remote child、LastError、栈、overflow 和 quiescence；trace
+由正式 EventStream/GenerationTracker 回读。Debug/Release 各 193/193、hardened 213/213，20 个 PE
+通过 CFG/CET；新增 NT VM race 100/100，长 ABI 差分 3/3。Application Verifier/Full Page Heap 三轮
+通过，54 份日志导出为 15 个零 LogEntry XML，15 个 IFEO key 全部清理。详见
+[NT_VIRTUAL_MEMORY_HOOK.md](NT_VIRTUAL_MEMORY_HOOK.md)。
+
+P5.4 尚未启用产品 profile：section-view 生命周期仍未覆盖，不能把当前组合当作完整 Windows 泄漏
+捕获范围。
 
 每增加一个 API：
 

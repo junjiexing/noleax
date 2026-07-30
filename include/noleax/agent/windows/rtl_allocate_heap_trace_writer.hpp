@@ -5,7 +5,9 @@
 #include <cstdint>
 #include <iosfwd>
 #include <memory>
+#include <string>
 
+#include "noleax/agent/windows/nt_memory_hooks.hpp"
 #include "noleax/agent/windows/rtl_allocate_heap_hook.hpp"
 #include "noleax/agent/windows/rtl_create_heap_hook.hpp"
 #include "noleax/agent/windows/rtl_destroy_heap_hook.hpp"
@@ -22,6 +24,8 @@ inline constexpr noleax::trace::ApiId kRtlFreeHeapApiId = 2U;
 inline constexpr noleax::trace::ApiId kRtlReAllocateHeapApiId = 3U;
 inline constexpr noleax::trace::ApiId kRtlCreateHeapApiId = 4U;
 inline constexpr noleax::trace::ApiId kRtlDestroyHeapApiId = 5U;
+inline constexpr noleax::trace::ApiId kNtAllocateVirtualMemoryApiId = 6U;
+inline constexpr noleax::trace::ApiId kNtFreeVirtualMemoryApiId = 7U;
 
 struct RtlAllocateHeapTraceWriterOptions {
   noleax::trace::TraceWriterOptions trace;
@@ -50,6 +54,7 @@ struct RtlAllocateHeapTraceWriterResult {
   std::uint64_t bytes_written{0U};
   bool statistics_written{false};
   bool end_of_trace_written{false};
+  std::string error_message;
 };
 
 class RtlAllocateHeapTraceWriter final {
@@ -67,6 +72,9 @@ class RtlAllocateHeapTraceWriter final {
   RtlAllocateHeapTraceWriter(RtlCreateHeapHook& create_hook, RtlAllocateHeapHook& allocate_hook,
                              RtlReAllocateHeapHook& reallocate_hook, RtlFreeHeapHook& free_hook,
                              RtlDestroyHeapHook& destroy_hook, std::ostream& output,
+                             const noleax::trace::FileHeader& file_header,
+                             RtlAllocateHeapTraceWriterOptions options = {});
+  RtlAllocateHeapTraceWriter(NtMemoryHooks& nt_memory_hooks, std::ostream& output,
                              const noleax::trace::FileHeader& file_header,
                              RtlAllocateHeapTraceWriterOptions options = {});
   ~RtlAllocateHeapTraceWriter();

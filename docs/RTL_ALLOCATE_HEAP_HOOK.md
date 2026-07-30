@@ -12,7 +12,8 @@ P4.3 首次在正式测试路径 hook `ntdll!RtlAllocateHeap`，验证 Hoox tram
 P4.8 已增加 replacement gate、并发 revert 和 fail-safe 模块生命周期。P4.9 增加 SEH-safe 清理、
 异常失败事件以及 CFG/CET hardened 门禁。
 
-P5.3 保留原 allocate-only 构造方式，同时把 raw event 扩展为统一 608-byte `RtlHeapEvent`；组合路径由
+P5.3 保留原 allocate-only 构造方式并统一 raw event；P5.4 加入 NT VM 字段后当前为 640-byte
+`RtlHeapEvent`。heap 组合路径由
 `RtlHeapHooks` 让 create/allocate/reallocate/free/destroy 引用同一个 queue，跨 API 共用唯一
 sequence。生命周期语义见 [RTL_FREE_HEAP_HOOK.md](RTL_FREE_HEAP_HOOK.md)、
 [RTL_HEAP_LIFECYCLE_HOOK.md](RTL_HEAP_LIFECYCLE_HOOK.md) 和 [TRACE_WRITER.md](TRACE_WRITER.md)。
@@ -120,7 +121,7 @@ ctest --preset windows-x64-release -L passthrough --repeat until-fail:20
 
 ## 5. 未完成边界
 
-P5.3 的五 hook Application Verifier/Full Page Heap 三轮压力、日志 review 和 12 个 IFEO key 回滚均
-已通过。产品 profile 仍保持 disabled，不是因为 NT Heap adapter 留有稳定性门禁，而是 P5 尚未实现
-VM/section-view、模块 generation 等配套生命周期能力。P4.8 生命周期见
+P5.4 的 NT Heap/NT VM Application Verifier/Full Page Heap 三轮压力、日志 review 和 15 个 IFEO key
+回滚均已通过。产品 profile 仍保持 disabled，不是因为 NT Heap adapter 留有稳定性门禁，而是 P5 尚未
+实现 section-view、模块 generation 等配套生命周期能力。P4.8 生命周期见
 [HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)。

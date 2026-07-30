@@ -5,6 +5,7 @@ add_library(noleax-hook-backend STATIC
 
 if(WIN32)
   target_sources(noleax-hook-backend PRIVATE
+    windows/nt_memory_hooks.cpp
     windows/rtl_allocate_heap_hook.cpp
     windows/rtl_allocate_heap_trace_writer.cpp
     windows/rtl_create_heap_hook.cpp

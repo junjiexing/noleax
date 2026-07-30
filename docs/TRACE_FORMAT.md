@@ -318,7 +318,7 @@ V1 固定 operation payload 和完整 record 大小如下；大小包含 8-byte 
 | Allocate | 48 | 112 |
 | Reallocate | 72 | 136 |
 | Free | 48 | 112 |
-| VmAllocate | 72 | 136 |
+| VmAllocate | 88 | 152 |
 | VmFree | 56 | 120 |
 | Map | 72 | 136 |
 | Unmap | 40 | 104 |
@@ -384,6 +384,7 @@ VmAllocate：
 - requested base。
 - result base。
 - requested/result region size。
+- mapping generation 的规范化 base/size；commit 更新可与原始 result range 不同。
 - allocation type。
 - protection。
 - mapping_id，仅本进程成功操作时非零。

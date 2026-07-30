@@ -1,13 +1,13 @@
 # Windows Hook Hardening Gate
 
-> 状态：P5.3 Windows x64 create/allocate/reallocate/free/destroy 完整门禁通过
-> 范围：NT Heap 五个 adapter 的 CFG、CET、SEH、fail-fast、Page Heap 和长压力
+> 状态：P5.4 Windows x64 NT Heap 与 NT VM allocate/free 完整门禁通过
+> 范围：七个 Windows memory adapter 的 CFG、CET、SEH、fail-fast、Page Heap 和长压力
 
 ## 1. Hardened 构建
 
 `windows-x64-hardened` 是独立 Release preset，不改变普通 Debug/Release 产物。它对 Noleax 的 C/C++
 目标启用 compiler/linker `/guard:cf`，并为 EXE/DLL 启用 `/CETCOMPAT`。hardened CTest 使用
-`dumpbin /headers` 检查 17 个真实 PE 同时包含 `Control Flow Guard` 和 `CET compatible`，覆盖：
+`dumpbin /headers` 检查 20 个真实 PE 同时包含 `Control Flow Guard` 和 `CET compatible`，覆盖：
 
 - MD/MT heap workload；
 - 五 hook 组合 hook harness DLL；
@@ -15,9 +15,10 @@
 - allocate、reallocate、free 与五 hook lifecycle 并发 quiescence executable；
 - free/reallocate/heap-lifecycle contract 与隔离 fail-fast executable；
 - allocate/reallocate exception executable。
+- NT VM quiescence、contract 与 trace-writer executable。
 
-四个 quiescence 目标还调用 `GetProcessMitigationPolicy`。CFG 是硬门禁；CET 的 PE 标记始终是硬门禁，
-硬件 shadow stack 是否实际启用则由运行机器决定。当前验收机器的四个目标均报告：
+五个 quiescence 目标还调用 `GetProcessMitigationPolicy`。CFG 是硬门禁；CET 的 PE 标记始终是硬门禁，
+硬件 shadow stack 是否实际启用则由运行机器决定。当前验收机器的五个目标均报告：
 
 ~~~text
 cfg=1 cet=1 cet_query=1
@@ -25,7 +26,7 @@ cfg=1 cet=1 cet_query=1
 
 ## 2. ABI、LastError、SEH 与 fail-fast
 
-五个 replacement 都使用精确 NTAPI 签名、固定 TEB guard 和显式 unscoped lifecycle。original 返回后先
+七个 replacement 都使用精确 NTAPI 签名、固定 TEB guard 和显式 unscoped lifecycle。original 返回后先
 保存 LastError，再执行计数、栈捕获和入队，最后恢复 LastError。recursive/internal 调用只透传
 original，不进入 trace。
 
@@ -58,12 +59,12 @@ stack 标为 failed 并生成 stack-detail Loss，但 lifecycle event 本身保�
 Options 配置新进程。脚本会：
 
 1. 拒绝覆盖任一同名 image 已存在的 IFEO 设置；
-2. 为 MD/MT workload、四个 quiescence、allocate-only/组合 writer 及各类 contract 共 12 个 image
+2. 为 MD/MT workload、五个 quiescence、三个 writer 及各类 contract 共 15 个 image
    启用 verifier；
 3. 检查 `GlobalFlag & 0x100` 以及 `PageHeapFlags & 0x1`；
 4. workload 自身要求 `verifier.dll`/`vrfcore.dll` 已加载、进程 `NtGlobalFlag` 包含 `0x100`，并从
    64-bit IFEO 再次核对 PageHeapFlags；
-5. 重复 baseline/hooked workload、四个 quiescence、两个 writer 和各类 contract；
+5. 重复 baseline/hooked workload、五个 quiescence、三个 writer 和各类 contract；
 6. 无论成功或失败都在 `finally` 中先删除全部 AppVerifier 设置，再统一检查 IFEO；
 7. 只删除 preflight 已证明由本轮创建且清理后为空的 container key，同时保留 phase 和 cleanup 两类
    错误，避免清理问题遮蔽根因。
@@ -73,24 +74,24 @@ Options 配置新进程。脚本会：
 上述判定。
 
 日志保留在 `%USERPROFILE%\AppVerifierLogs`。自动门禁要求 workload、race、trace 与 contract 三轮
-全部通过，并在结束时验证本轮 12 个 IFEO target key 均不存在。
+全部通过，并在结束时验证本轮 15 个 IFEO target key 均不存在。
 
 ## 4. 当前自动结果
 
 | 门禁 | 结果 |
 |---|---|
-| Debug full suite | 189/189 |
-| Release full suite | 189/189 |
-| Hardened full suite | 206/206 |
-| CFG/CET PE metadata | 17/17 images |
-| Four quiescence targets runtime mitigation | CFG=1, CET=1 |
-| Allocate/reallocate/free/lifecycle quiescence race | 各 100/100 |
+| Debug full suite | 193/193 |
+| Release full suite | 193/193 |
+| Hardened full suite | 213/213 |
+| CFG/CET PE metadata | 20/20 images |
+| Five quiescence targets runtime mitigation | CFG=1, CET=1 |
+| Allocate/reallocate/free/heap-lifecycle/NT-VM quiescence race | 各 100/100 |
 | Hardened MD/MT 8×20,000×2 ABI 差分 | 3/3 repetitions |
-| Five-hook SEH、LastError、guard cleanup | pass |
+| Seven-hook SEH、LastError、guard cleanup | pass |
 | Free fail-fast baseline/hooked | 3/3，均为 0xc0000374 |
-| Five-hook trace、跨线程、heap/allocation generation | pass |
+| Heap/VM trace、跨线程、heap/allocation/mapping generation | pass |
 | Application Verifier/Full Page Heap | 3/3 repetitions pass |
-| IFEO cleanup | 12/12 target keys absent |
+| IFEO cleanup | 15/15 target keys absent |
 
 长差分每轮摘要保持 P4 基线：
 
@@ -138,3 +139,9 @@ PE 通过 CFG/CET metadata，四组 race 各连续 100 次。Application Verifie
 workload、四组 race、组合 trace 及合同均通过，结束后本轮 12 个目标 IFEO key 全部不存在。普通环境
 中 `HEAP_GENERATE_EXCEPTIONS` 的超大 create 返回 NULL，Full Page Heap 下则抛出 `0xc0000017`；合同
 以 baseline 为准，要求 hooked 的返回/异常/LastError 和 raw event 完全一致。
+
+同日 P5.4 将 `NtAllocateVirtualMemory`/`NtFreeVirtualMemory`、NT VM quiescence、contract 和 trace
+writer 加入 hardened registry。Debug/Release 各 193/193，hardened 213/213；20 个 PE 通过 CFG/CET
+metadata，新增 NT VM race 连续 100/100，长 ABI 差分 3/3。Application Verifier/Full Page Heap 下
+三轮 workload、五组 race、三个 writer 及合同均通过。本轮 54 份 `.dat` 日志按 15 个 image 导出 XML
+后为零 `LogEntry`，结束后 15 个 IFEO key 全部不存在。

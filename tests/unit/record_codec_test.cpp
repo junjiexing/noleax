@@ -86,6 +86,8 @@ namespace {
   vm_allocate.result_base = 0x4000U;
   vm_allocate.requested_size = 4096U;
   vm_allocate.result_size = 8192U;
+  vm_allocate.mapping_base = 0x4000U;
+  vm_allocate.mapping_size = 8192U;
   vm_allocate.allocation_type = 0x3000U;
   vm_allocate.protection = 4U;
   vm_allocate.mapping_id = MappingId{20U};

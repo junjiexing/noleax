@@ -1,14 +1,14 @@
-# Windows NT Heap Background Trace Writer
+# Windows Memory Background Trace Writer
 
-> 状态：P5.3 Windows x64 全部门禁完成
-> 范围：NT Heap create/allocate/reallocate/free/destroy 的进程内 trace、generation 配对和安全停止
+> 状态：P5.4 Windows x64 NT Heap 与 NT VM allocate/free 门禁完成
+> 范围：进程内 trace、heap/allocation/mapping generation 配对和安全停止
 
 ## 1. 目标与边界
 
-五个 replacement 只调用 original、保存固定宽度字段、捕获原始 PC 并尝试入队。压缩、容器
+所选 replacement 只调用 original、保存固定宽度字段、捕获原始 PC 并尝试入队。压缩、容器
 分配、文件 I/O、栈去重、allocation_id 配对和 record codec 全部位于后台线程。
 
-当前生成五种规范化事件：
+当前生成七种规范化事件：
 
 | 原始 API | api_id | 规范化 payload |
 |---|---:|---|
@@ -17,18 +17,22 @@
 | `RtlReAllocateHeap` | 3 | `ReallocationEvent` |
 | `RtlCreateHeap` | 4 | `HeapCreateEvent` |
 | `RtlDestroyHeap` | 5 | `HeapDestroyEvent` |
+| `NtAllocateVirtualMemory` | 6 | `VmAllocateEvent` |
+| `NtFreeVirtualMemory` | 7 | `VmFreeEvent` |
 
 `RtlHeapTraceWriter` 是组合模式的公开别名；原有 `RtlAllocateHeapTraceWriter` 单 hook 构造方式仍兼容，
-只写 `api_id=1`；alloc/free 和 alloc/realloc/free 构造方式也继续兼容。P5.6 前
+只写 `api_id=1`；alloc/free 和 alloc/realloc/free 构造方式也继续兼容。`NtVirtualMemoryTraceWriter`
+是 VM-only 构造方式的公开别名。P5.6 前
 StackDefinition 仍只保存绝对地址，`module_id` 和 `module_offset` 为零。
 
 ## 2. 共享队列与跨 API 顺序
 
-五个 NT Heap hook 使用同一个预分配 `RtlHeapEventQueue`。统一的 608-byte `RtlHeapEvent` 通过
-operation 区分五种 API，并包含所需参数、raw result、异常状态和定长栈。成功 reservation 时由队列
+五个 NT Heap hook 使用一个预分配 queue，两个 NT VM hook 使用另一个预分配 queue。统一的 640-byte
+`RtlHeapEvent` 通过 operation 区分七种 API，并包含所需参数、raw result、异常状态和定长栈。每个
+queue 域成功 reservation 时
 分配唯一 sequence，因此不同线程、不同 API 的生命周期顺序不依赖可能倒退或相同的 QPC tick。
 
-五个 hook 分别保存 dropped counter，后台 writer 才能把共享 queue overflow 归因到正确 api_id；底层
+每个 hook 分别保存 dropped counter，后台 writer 才能把共享 queue overflow 归因到正确 api_id；底层
 queue 的总 dropped counter 只用于队列级诊断。被 queue 拒绝的事件没有 sequence，Loss 因而只保存
 数量，不伪造范围。
 
@@ -47,6 +51,10 @@ queue 的总 dropped counter 只用于队列级诊断。被 queue 拒绝的事�
 组合 writer 会拒绝独立 queue、已安装的任一 hook 或未初始化 guard runtime。`begin_capture()` 要求
 五个 hook 均已安装；`finish()` 要求五个 hook 均不再 installed/teardown-pending，避免过早写出正常
 结束。完整 teardown 原理见 [HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)。
+
+VM-only 模式采用相同顺序：writer 在 `NtMemoryHooks::install()` 前启动，`begin_capture()` 要求两个
+target 均已安装，`finish()` 要求两者均完成 quiescent teardown。P5.4 不跨两个独立 queue 合并 heap
+与 VM 事件；NT Heap outermost guard 会抑制其嵌套 backing VM 调用，完整统一 registry 留给 P5.7。
 
 ## 3. 生命周期配对
 
@@ -70,6 +78,10 @@ worker 维护 `heap_handle -> heap_id` 与 `(heap_handle, address) -> allocation
 - 成功 free 的 address 为零时写 `unmatched`；不会虚构 allocation_id。
 - 返回失败或抛出异常的 free 保持原 live entry，不结束 generation。
 
+VM-only worker 另维护按地址排序的 reservation map：reserve 分配 MappingId；commit 命中时复用该 ID，
+未命中且 CaptureScope 允许旧状态时补建 preexisting generation；decommit 保留 map；成功 release 才
+删除 generation。远程进程事件不进入本进程 map。
+
 事件丢失后 map 可能无法再证明后续 free 的精确归属；Loss 和 aggregate completeness 会把 trace 标为
 不完整，因此 analyzer 不得基于该 trace 给出“完整生命周期”的结论。
 
@@ -81,7 +93,7 @@ worker 要求原始事件 sequence 连续、thread 非零、operation/status/res
 `timestamp_adjustments`。
 
 成功或截断的原始栈使用 FNV-1a 定位，再对状态、帧数和每一帧完整比较，hash 碰撞不会误合并。
-五个 API 共用一个 stack dictionary，相同栈可以跨 API 复用同一 stack_id。dictionary 容量固定，
+同一 writer 的 API 共用一个 stack dictionary，相同栈可以跨 API 复用同一 stack_id。dictionary 容量固定，
 满后重置当前索引 segment，但 stack_id 继续单调递增；definition 总在引用它的 Event chunk 之前落盘。
 
 SEH 第一遍 filter 只写固定事件并返回 `EXCEPTION_CONTINUE_SEARCH`。异常派发期间不执行栈展开；请求
@@ -96,10 +108,10 @@ writer 生成三类 Loss：
 | 原因 | 位置 | count | sequence/tick range |
 |---|---|---:|---|
 | stack_capture_failed | agent_queue | 1 | 对应事件的精确范围 |
-| queue_full | agent_queue | 五个 hook dropped 的和 | 无；被拒绝事件没有 sequence |
+| queue_full | agent_queue | 所选 hook dropped 的和 | 无；被拒绝事件没有 sequence |
 | trace_full | writer | 未落盘事件数 | 首末丢失事件的精确范围 |
 
-Statistics 同时保存 aggregate 与组合模式下的 `api_id=1/2/3/4/5`。每个 API 及 aggregate 都必须
+Statistics 同时保存 aggregate 与所选模式下的 `api_id=1..7`。每个 API 及 aggregate 都必须
 满足：
 
 ~~~text
@@ -117,8 +129,8 @@ TraceWriter 强制保留至少 1 KiB 文件尾。普通 metadata/stack/event chu
 `max_file_size - reserve`；任何完整 chunk 放不下时不写半块，并把当前及后续已观察事件计为
 trace-full。
 
-最终 drain 后释放 reserve。组合模式最坏尾部包含两个 56-byte Loss record、一个含五个 API 的
-328-byte Statistics record、一个 48-byte EndOfTrace record 及三个 56-byte chunk header，共 656
+最终 drain 后释放 reserve。七 API 上限下的最坏尾部包含两个 56-byte Loss record、一个含七个 API 的
+424-byte Statistics record、一个 48-byte EndOfTrace record 及三个 56-byte chunk header，共 752
 bytes。终止 chunk 固定使用 none codec，因此 1 KiB reserve 不依赖 LZ4/Zstd compression bound，且
 实际文件不会超过配置上限。
 
@@ -138,10 +150,14 @@ P5.3 组合测试另覆盖：
 - 五组 ApiStatistics、aggregate Statistics、EventStream 数量和 completeness 一致；
 - queue/trace dropped 均为零的正常组合路径。
 
+P5.4 VM trace 另覆盖 reserve/commit/decommit/release、preexisting、失败 NTSTATUS、真实 remote child、
+outstanding generation、MappingId 复用、两组 ApiStatistics 以及正式 EventStream/GenerationTracker 回读。
+
 `RtlFreeHeap` 与 `RtlReAllocateHeap` 合同、fail-fast、quiescence、CFG/CET 和 Full Page Heap 证据见
 [RTL_FREE_HEAP_HOOK.md](RTL_FREE_HEAP_HOOK.md) 与
 [RTL_REALLOCATE_HEAP_HOOK.md](RTL_REALLOCATE_HEAP_HOOK.md) 及
 [RTL_HEAP_LIFECYCLE_HOOK.md](RTL_HEAP_LIFECYCLE_HOOK.md) 及
+[NT_VIRTUAL_MEMORY_HOOK.md](NT_VIRTUAL_MEMORY_HOOK.md) 及
 [WINDOWS_HOOK_HARDENING.md](WINDOWS_HOOK_HARDENING.md)。
 
 ~~~powershell
