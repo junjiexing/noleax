@@ -1,7 +1,7 @@
 # Windows Hook Hardening Gate
 
-> 状态：P5.1 Windows x64 自动门禁完成，待分支 review
-> 范围：`RtlAllocateHeap`/`RtlFreeHeap` 的 CFG、CET、SEH、fail-fast、Page Heap 和长压力
+> 状态：P5.2 Windows x64 allocate/reallocate/free 自动门禁完成
+> 范围：NT Heap 三个 adapter 的 CFG、CET、SEH、fail-fast、Page Heap 和长压力
 
 ## 1. Hardened 构建
 
@@ -126,3 +126,9 @@ checksum=0x7caf2ccfa0606232
 2026-07-30 的 P5.1 管理员门禁按默认重复强度通过，27 份对应日志为零 verifier record，清理后 7 个
 目标 IFEO key 全部不存在。profile 仍保持 disabled，等待 P5.2 及后续生命周期 API，而不是等待额外
 的 P5.1 稳定性门禁。
+
+同日 P5.2 将 `RtlReAllocateHeap`、其 quiescence/contract/SEH 目标加入 hardened registry。Debug 与
+Release 各 186/186，hardened 200/200，allocate/reallocate/free 三个 race 各连续 100 次；14 个 PE
+通过 CFG/CET metadata 检查。Application Verifier/Full Page Heap 下三轮 workload、三轮 race 及三轮
+组合 trace/contract/SEH 均通过，结束后 10 个目标 IFEO key 全部不存在。零大小合同不读取请求大小为
+0 的返回块内容，避免测试本身在 Full Page Heap 下越界；该修正后门禁通过。

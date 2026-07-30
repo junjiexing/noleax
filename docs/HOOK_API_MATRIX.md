@@ -302,9 +302,9 @@ NTSTATUS NTAPI NtUnmapViewOfSection(
 |---|---:|---:|---:|---:|---:|---:|---:|
 | RtlCreateHeap | pending | pending | pending | pending | pending | pending | no |
 | RtlDestroyHeap | pending | pending | pending | pending | pending | pending | no |
-| RtlAllocateHeap | P4.9 hardened prototype | guard/shared-queue/stack/SEH pass | ABI/LastError/exception/overflow/stack pass | 8x20k + alloc/free quiescence pass | PE + runtime pass | AppVerifier Full 3/3 pass | no |
-| RtlReAllocateHeap | pending | pending | pending | pending | pending | pending | no |
-| RtlFreeHeap | P5.1 review candidate | guard/shared-queue/stack/SEH pass | return/LastError/exception/fail-fast/trace pass | cross-thread + 8x20k + quiescence pass | PE + runtime pass | AppVerifier Full 3/3 pass | no |
+| RtlAllocateHeap | P5.2 combined candidate | guard/shared-queue/stack/SEH pass | ABI/LastError/exception/overflow/stack/trace pass | 8x20k + three-hook quiescence pass | PE + runtime pass | combined Full Page Heap 3/3 pass | no |
+| RtlReAllocateHeap | P5.2 combined candidate | guard/shared-queue/stack/SEH pass | in-place/move/zero/OOM/LastError/exception/fail-fast/trace pass | cross-thread + 8x20k + quiescence pass | PE + runtime pass | combined Full Page Heap 3/3 pass | no |
+| RtlFreeHeap | P5.2 combined candidate | guard/shared-queue/stack/SEH pass | return/LastError/exception/fail-fast/trace pass | cross-thread + 8x20k + quiescence pass | PE + runtime pass | AppVerifier Full 3/3 pass | no |
 | NtAllocateVirtualMemory | pending | pending | pending | pending | pending | pending | no |
 | NtFreeVirtualMemory | pending | pending | pending | pending | pending | pending | no |
 | NtMapViewOfSection | pending | pending | pending | pending | pending | pending | no |
@@ -316,7 +316,7 @@ cross-thread、preexisting、unmatched 和 outstanding generation；每个 API �
 分别守恒。free 合同覆盖普通返回与 SEH；bad address、wrong heap、double free 的隔离进程
 baseline/hooked 均为 `0xc0000374`。
 
-完整门禁为 Debug/Release 182/182、hardened 192/192、alloc/free quiescence 各 100/100、10 个 PE 的
+完整 P5.1 门禁为 Debug/Release 182/182、hardened 192/192、alloc/free quiescence 各 100/100、10 个 PE 的
 CFG/CET metadata/runtime 和 Application Verifier/Full Page Heap 三轮；本轮 27 份 verifier 日志为零
 记录，7 个 IFEO key 全部回滚。默认 profile 仍保持 disabled，因为 realloc、heap generation 和 VM/
 section-view API 尚未补齐。workload 与 hardening 证据见
@@ -326,3 +326,10 @@ section-view API 尚未补齐。workload 与 hardening 证据见
 [STACK_CAPTURE.md](STACK_CAPTURE.md)，free 设计见
 [RTL_FREE_HEAP_HOOK.md](RTL_FREE_HEAP_HOOK.md)，平台门禁见
 [WINDOWS_HOOK_HARDENING.md](WINDOWS_HOOK_HARDENING.md)。
+
+P5.2 增加 `RtlReAllocateHeap`，三种事件共享唯一 sequence。成功 realloc 即使地址不变也分配新的
+allocation_id；失败/异常保留旧 generation；成功但旧地址未知时创建新 generation 并标记
+preexisting/unmatched。合同覆盖原地、真实移动、零大小、OOM、SEH、跨线程、bad/wrong/freed
+address 隔离和 quiescence。Debug/Release 全量各 186/186、hardened 200/200、三个 quiescence race
+各 100/100、14 个 PE 的 CFG/CET 及 Full Page Heap 三轮均通过。设计与证据见
+[RTL_REALLOCATE_HEAP_HOOK.md](RTL_REALLOCATE_HEAP_HOOK.md)。

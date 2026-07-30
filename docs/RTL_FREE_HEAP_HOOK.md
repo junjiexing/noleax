@@ -1,6 +1,6 @@
 # Windows RtlFreeHeap Hook
 
-> 状态：P5.1 Windows x64 自动门禁完成，待分支 review
+> 状态：P5.1 Windows x64 自动门禁与人工合并完成；P5.2 已接入三 hook 组合
 > 分支：`feat/rtl-free-heap-hook`
 
 ## 1. ABI 与行为基线
@@ -47,8 +47,8 @@ P5.1 把原 allocate-only raw event 扩展为统一的 600-byte `RtlHeapEvent`�
 - success/failure/exception 及 NTSTATUS；
 - 固定容量原始调用栈。
 
-`RtlFreeHeapHook` 可单独拥有 queue，用于隔离合同测试；产品组合路径使用 `RtlHeapHooks`，让
-`RtlAllocateHeapHook` 和 `RtlFreeHeapHook` 引用同一个 `RtlHeapEventQueue`。唯一 reservation sequence
+`RtlFreeHeapHook` 可单独拥有 queue，用于隔离合同测试；产品组合路径使用 `RtlHeapHooks`，让三个
+NT Heap adapter 引用同一个 `RtlHeapEventQueue`。唯一 reservation sequence
 保证跨线程、跨 API 的生命周期总顺序。组合 writer 会拒绝两个独立 queue，不能退化为按时间戳猜测
 allocate/free 先后。
 
@@ -124,6 +124,6 @@ ctest --preset windows-x64-release -R "rtl-free-heap|rtl-heap-trace-writer" --ou
 
 ## 8. 尚未启用的范围
 
-P5.1 不启用产品 profile，也没有新增最终用户 CLI。`RtlReAllocateHeap`、heap create/destroy、NT VM、
+当前仍不启用产品 profile，也没有新增最终用户 CLI。heap create/destroy、NT VM、
 section view、模块 generation 和注入链路仍待后续阶段；在这些 API 完成前，当前 alloc/free 组合只能
 作为经过硬化的 agent building block，不能宣称完整 Windows 内存泄漏覆盖。

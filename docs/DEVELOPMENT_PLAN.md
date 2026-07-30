@@ -4,9 +4,9 @@
 > 文档版本：0.1
 > 更新日期：2026-07-30
 > 确认日期：2026-07-29
-> 当前阶段：P5.1 `RtlFreeHeap` 实现和自动门禁已完成（`feat/rtl-free-heap-hook`，待人工 review/合并）
-> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8、P4.9、P5.1
-> 下一工作项：P5.1 人工验收和合并；未经确认不开始 P5.2
+> 当前阶段：P5.2 `RtlReAllocateHeap` 实现及完整自动门禁完成（`feat/windows-agent-full-api`）
+> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8、P4.9、P5.1、P5.2
+> 下一工作项：P5.3 `RtlCreateHeap`/`RtlDestroyHeap`
 
 ## 1. 文档目的
 
@@ -1337,7 +1337,7 @@ Verifier 10.0.26100 的 `Heaps.Full=true` 下完成三轮 baseline/hooked 差分
 | P5.6 | 模块加载/卸载跟踪 | module generation 和相对栈帧 | unload/reload/地址复用/符号化 |
 | P5.7 | profile、过滤和统计 | 可启用 Windows agent profile | registry 对齐、组合压力、端到端 trace |
 
-P5.1 状态：实现和自动门禁已通过，等待当前功能分支的人工验收与合并。`RtlFreeHeap` 使用精确
+P5.1 状态：实现、自动门禁、人工验收与合并已完成。`RtlFreeHeap` 使用精确
 `BOOLEAN NTAPI(PVOID, ULONG, PVOID)` ABI，复用固定 TEB guard、SEH `__finally`、原始 `LastError`
 恢复、replacement in-flight 和 quiescent teardown。`RtlHeapHooks` 让 allocate/free 共用一个预分配
 MPSC queue；queue reservation 形成跨 API 的唯一总顺序，各 hook 仍分别维护调用、成功、失败、异常
@@ -1358,8 +1358,16 @@ Application Verifier/Full Page Heap 三轮通过；本轮 27 份日志导出 XML
 7 个 IFEO key 全部清理。详见 [RTL_FREE_HEAP_HOOK.md](RTL_FREE_HEAP_HOOK.md)、
 [TRACE_WRITER.md](TRACE_WRITER.md) 和 [WINDOWS_HOOK_HARDENING.md](WINDOWS_HOOK_HARDENING.md)。
 
-P5.1 尚未启用产品 profile：realloc、heap create/destroy、VM 和 section-view 生命周期仍未覆盖，不能
-把当前组合当作完整 Windows 泄漏捕获范围。
+P5.2 状态：`RtlReAllocateHeap` 使用精确四参数 NTAPI ABI，并接入 allocate/reallocate/free 共享
+queue。writer 使用 `api_id=3`，成功调用无论原地还是移动都结束旧 generation 并分配新 ID；失败与
+异常为 `no_change`，不会删除旧 live entry；成功但未知的旧地址按 CaptureScope 输出 preexisting 或
+unmatched。原地、移动、零大小、可控 OOM、跨线程、SEH、隔离 fail-fast、quiescence 和完整 trace
+回读均已覆盖。Debug/Release 各 186/186、hardened 200/200、三个 quiescence race 各连续 100 次、
+14 个 PE 的 CFG/CET 门禁及 Application Verifier/Full Page Heap 三轮均通过，10 个 IFEO key 已清理。详见
+[RTL_REALLOCATE_HEAP_HOOK.md](RTL_REALLOCATE_HEAP_HOOK.md)。
+
+P5.2 尚未启用产品 profile：heap create/destroy、VM 和 section-view 生命周期仍未覆盖，不能把当前
+组合当作完整 Windows 泄漏捕获范围。
 
 每增加一个 API：
 
