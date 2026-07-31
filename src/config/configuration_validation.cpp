@@ -242,7 +242,8 @@ void validate_run(const Configuration& configuration, const Configuration& defau
                               "target.working_directory");
   if (configuration.injection.method.value != InjectionMethod::kRemoteThread &&
       configuration.injection.method.value != InjectionMethod::kThreadHijack &&
-      configuration.injection.method.value != InjectionMethod::kEntrypointCode) {
+      configuration.injection.method.value != InjectionMethod::kEntrypointCode &&
+      configuration.injection.method.value != InjectionMethod::kStaticPePatch) {
     fail("injection.method", "is not supported by run");
   }
   require_default(configuration.injection.unload_on_stop, defaults.injection.unload_on_stop,

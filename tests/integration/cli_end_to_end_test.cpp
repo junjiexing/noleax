@@ -379,6 +379,36 @@ int main(int argc, char* argv[]) {
     }
     wait_for_pid(marker_pid(output_directory / "cli-entrypoint.ready"));
 
+    const auto patched_target = output_directory / "cli-patched.exe";
+    const auto agent_copy = output_directory / "noleax-agent.dll";
+    remove_file(patched_target);
+    remove_file(agent_copy);
+    std::filesystem::copy_file(agent, agent_copy);
+    const ChildResult patch = run_child(
+        noleax,
+        {"patch", "--input", utf8_path(target), "--output", utf8_path(patched_target),
+         "--agent-name", "noleax-agent.dll"},
+        run_log);
+    if (patch.exit_code != 0U || patch.log.find("patched:") == std::string::npos ||
+        !std::filesystem::is_regular_file(patched_target)) {
+      throw std::runtime_error{"noleax patch did not produce the patched target: " + patch.log};
+    }
+    const ChildResult static_run =
+        run_child(noleax,
+                  {"run", "--inject-method", "static-pe-patch", "--agent", utf8_path(agent_copy),
+                   "--trace", utf8_path(output_directory / "cli-static.nlx"), "--capture-duration",
+                   "1s", "--hook-profile", "windows-nt-heap", "--compression", "none", "--",
+                   utf8_path(patched_target), utf8_path(output_directory / "cli-static.ready"),
+                   "1800", "launch"},
+                  run_log);
+    if (static_run.exit_code != 0U ||
+        static_run.log.find("capture finalized:") == std::string::npos ||
+        !wait_for_marker(output_directory / "cli-static.ready", "ready=1", 2s)) {
+      throw std::runtime_error{"noleax run with static-pe-patch did not complete a capture: " +
+                               static_run.log};
+    }
+    wait_for_pid(marker_pid(output_directory / "cli-static.ready"));
+
     const ChildResult unsupported_method = run_child(
         noleax,
         {"attach", "--pid", "1234", "--inject-method", "entrypoint-code", "--agent",
@@ -391,8 +421,8 @@ int main(int argc, char* argv[]) {
       throw std::runtime_error{"unsupported attach injection method did not produce exit code 1"};
     }
 
-    std::cout << "status=ok run=1 attach=1 hijack=1 entrypoint=1 outstanding=1 console=1 json=1 "
-                 "csv=1 stacks=1 errors=1\n";
+    std::cout << "status=ok run=1 attach=1 hijack=1 entrypoint=1 patch=1 static=1 outstanding=1 "
+                 "console=1 json=1 csv=1 stacks=1 errors=1\n";
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "status=error message=" << error.what() << '\n';

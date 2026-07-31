@@ -82,6 +82,7 @@ if(WIN32)
     unit/ipc_named_pipe_test.cpp
     unit/hook_guard_test.cpp
     unit/hook_backend_test.cpp
+    unit/pe_patch_test.cpp
     unit/stack_capture_test.cpp
     unit/stack_dictionary_test.cpp
     unit/windows_hook_registry_test.cpp
@@ -120,7 +121,7 @@ if(WIN32)
   set_tests_properties(cli.end-to-end-trace-analyze PROPERTIES
     LABELS "cli;controller;agent;run;attach;trace;analyzer;outstanding;windows"
     PASS_REGULAR_EXPRESSION
-      "^status=ok run=1 attach=1 hijack=1 entrypoint=1 outstanding=1 console=1 json=1 csv=1 stacks=1 errors=1"
+      "^status=ok run=1 attach=1 hijack=1 entrypoint=1 patch=1 static=1 outstanding=1 console=1 json=1 csv=1 stacks=1 errors=1"
     RUN_SERIAL TRUE
     TIMEOUT 90
   )
@@ -178,6 +179,31 @@ if(WIN32)
     LABELS "controller;agent;injection;entrypoint;rollback;windows"
     PASS_REGULAR_EXPRESSION
       "^status=ok reject=1 ready-timeout=1 entry-restored=1"
+    RUN_SERIAL TRUE
+    TIMEOUT 120
+  )
+
+  add_executable(noleax-pe-patch-e2e-test
+    integration/pe_patch_e2e_test.cpp
+  )
+  target_link_libraries(noleax-pe-patch-e2e-test PRIVATE
+    noleax::analyzer
+    noleax::controller
+  )
+  noleax_set_project_warnings(noleax-pe-patch-e2e-test)
+  add_dependencies(noleax-pe-patch-e2e-test noleax-agent noleax-controller-target)
+
+  add_test(NAME controller.static-pe-patch
+    COMMAND noleax-pe-patch-e2e-test
+      "$<TARGET_FILE:noleax-agent>"
+      "$<TARGET_FILE:noleax-controller-target>"
+      "$<TARGET_FILE_DIR:noleax-pe-patch-e2e-test>/pe-patch"
+      "$<TARGET_FILE_DIR:noleax-pe-patch-e2e-test>/pe-patch.nlx"
+  )
+  set_tests_properties(controller.static-pe-patch PROPERTIES
+    LABELS "controller;agent;ipc;injection;static-pe-patch;pe;patch;launch;trace;windows"
+    PASS_REGULAR_EXPRESSION
+      "^status=ok patched=1 standalone=1 capture=1 rejected=1 events=[1-9][0-9]*"
     RUN_SERIAL TRUE
     TIMEOUT 120
   )
@@ -941,6 +967,7 @@ if(WIN32)
         noleax-thread-hijack-attach-test
         noleax-entrypoint-launch-test
         noleax-entrypoint-rollback-test
+        noleax-pe-patch-e2e-test
         noleax-rtl-heap-baseline-md
         noleax-rtl-heap-baseline-mt
         noleax-rtl-allocate-heap-hook-harness

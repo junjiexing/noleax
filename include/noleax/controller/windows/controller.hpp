@@ -16,6 +16,7 @@ enum class InjectionMethod : std::uint8_t {
   kRemoteThread,
   kThreadHijack,
   kEntrypointCode,
+  kStaticPePatch,
 };
 
 struct CaptureOptions {

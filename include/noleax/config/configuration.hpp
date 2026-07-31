@@ -48,6 +48,7 @@ enum class InjectionMethod : std::uint8_t {
   kRemoteThread,
   kThreadHijack,
   kEntrypointCode,
+  kStaticPePatch,
 };
 
 enum class HookProfile : std::uint8_t {
@@ -149,6 +150,7 @@ struct EnumTraits<InjectionMethod> {
       NamedEnumValue{std::string_view{"remote-thread"}, InjectionMethod::kRemoteThread},
       NamedEnumValue{std::string_view{"thread-hijack"}, InjectionMethod::kThreadHijack},
       NamedEnumValue{std::string_view{"entrypoint-code"}, InjectionMethod::kEntrypointCode},
+      NamedEnumValue{std::string_view{"static-pe-patch"}, InjectionMethod::kStaticPePatch},
   };
 };
 

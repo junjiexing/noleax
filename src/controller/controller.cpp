@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -22,6 +23,7 @@
 
 #include "noleax/agent/windows/bootstrap.hpp"
 #include "noleax/controller/windows/entrypoint_injector.hpp"
+#include "noleax/controller/windows/pe_patch.hpp"
 #include "noleax/controller/windows/process.hpp"
 #include "noleax/controller/windows/remote_injector.hpp"
 #include "noleax/controller/windows/thread_hijack_injector.hpp"
@@ -29,6 +31,8 @@
 #include "noleax/ipc/protocol.hpp"
 #include "noleax/ipc/windows/named_pipe.hpp"
 #include "noleax/version.hpp"
+
+#include "windows/injection_common.hpp"
 
 namespace noleax::controller::windows {
 namespace {
@@ -337,6 +341,38 @@ CaptureSession CaptureSession::launch(const LaunchOptions& launch, const Capture
                               handshake_error.what() + " (" + detail + ")"};
       }
       static_cast<void>(injection.finish(capture.timeout));
+    } else if (capture.method == InjectionMethod::kStaticPePatch) {
+      // The image already carries the bootstrap section; pass the session
+      // parameters through it and let the embedded stub do the rest.
+      const auto patch_info = read_static_patch_info(launch.executable);
+      if (!patch_info.has_value()) {
+        throw ControllerError{"the target is not a noleax-patched executable; create one with "
+                              "'noleax patch' first",
+                              ERROR_BAD_EXE_FORMAT};
+      }
+      const auto image = injection::find_remote_image_by_memory(
+          static_cast<HANDLE>(process.process_handle()),
+          launch.executable.filename().native());
+      if (!image.has_value()) {
+        throw ControllerError{"cannot locate the main image inside the target process",
+                              ERROR_MOD_NOT_FOUND};
+      }
+      const auto params_address = injection::checked_remote_address(
+          image->base, patch_info->params_rva);
+      SIZE_T written = 0U;
+      if (WriteProcessMemory(static_cast<HANDLE>(process.process_handle()),
+                             std::bit_cast<LPVOID>(params_address), &bootstrap, sizeof(bootstrap),
+                             &written) == FALSE ||
+          written != sizeof(bootstrap)) {
+        const DWORD error = GetLastError();
+        throw ControllerError{"cannot pass bootstrap parameters to the patched target "
+                              "(Windows error " +
+                                  std::to_string(error) + ")",
+                              error};
+      }
+      process.resume_main_thread();
+      process.note_main_thread_resumed();
+      connected = connect_agent(server, process.process_id(), token, launch_capture);
     } else if (capture.method == InjectionMethod::kRemoteThread) {
       static_cast<void>(inject_remote_thread(process.process_handle(), process.process_id(),
                                              capture.agent_path, bootstrap, capture.timeout));

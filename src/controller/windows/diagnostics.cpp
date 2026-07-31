@@ -429,13 +429,14 @@ DoctorReport run_doctor(const DoctorOptions& options) {
   add(report, DiagnosticSeverity::kOk, "mitigations", mitigation_state());
 
   if (options.injection_method == "remote-thread" || options.injection_method == "thread-hijack" ||
-      options.injection_method == "entrypoint-code") {
+      options.injection_method == "entrypoint-code" ||
+      options.injection_method == "static-pe-patch") {
     add(report, DiagnosticSeverity::kOk, "injection-method",
         options.injection_method + " is supported on Windows x64");
   } else {
     add(report, DiagnosticSeverity::kError, "injection-method",
         options.injection_method + " is not implemented; run supports remote-thread, "
-                                   "thread-hijack and entrypoint-code",
+                                   "thread-hijack, entrypoint-code and static-pe-patch",
         DiagnosticCategory::kUnsupported);
   }
 
