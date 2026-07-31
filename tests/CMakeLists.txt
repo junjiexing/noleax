@@ -167,7 +167,7 @@ if(WIN32)
   set_tests_properties(docs.windows-x64-examples PROPERTIES
     LABELS "docs;examples;cli;run;trace;analyzer;windows"
     PASS_REGULAR_EXPRESSION
-      "^status=ok configs=3 capture=1 events=1 outstanding=1 deferred=2"
+      "^status=ok configs=3 capture=1 events=1 outstanding=1 patch=1 hijack=1"
     RUN_SERIAL TRUE
     TIMEOUT 60
   )

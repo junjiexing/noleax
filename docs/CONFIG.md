@@ -101,9 +101,9 @@ color = "auto"
 `remote-thread` 和 `thread-hijack`（其余组合由配置校验以退出码 1 拒绝）。配置值不会被
 静默忽略。
 
-`operation = "patch"` 以及 `[patch]` 表只为后续 schema 兼容保留。P7C 已延期，V1 在完成配置和路径
-校验后仍返回退出码 5，且不创建输出。`thread-hijack` 与 `entrypoint-code` 同样是延期能力，不应出现在
-V1 配置中。
+`operation = "patch"` 与 `[patch]` 表用于静态 PE patch（P7C 已实现）：input 只接受原生 x64 EXE，
+签名文件默认拒绝，输出总是新副本且不与输入相同。patched 副本通过 `run` 加
+`injection.method = "static-pe-patch"` 捕获。详见 [STATIC_PE_PATCH.md](STATIC_PE_PATCH.md)。
 
 `capture.min_size` 与 `--capture-min-size` 语义相同。Windows V1 只在入队前过滤严格小于阈值的
 `RtlAllocateHeap`、`NtAllocateVirtualMemory` 和 `NtMapViewOfSection`；realloc、free/unmap 与 heap

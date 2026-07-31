@@ -133,22 +133,39 @@ try {
     $patchInput = Join-Path $workspace "patch-input.exe"
     $patchOutput = Join-Path $workspace "patch-output.exe"
     Copy-Item -LiteralPath $target -Destination $patchInput
-    Invoke-ExpectedExit -Executable $noleax -Description "deferred patch contract" `
-        -ExpectedExitCodes @(5) -CommandArguments @(
+    Invoke-ExpectedExit -Executable $noleax -Description "patch example" -ExpectedExitCodes @(0) `
+        -CommandArguments @(
             "patch", "--input", $patchInput, "--output", $patchOutput
         )
-    if (Test-Path -LiteralPath $patchOutput) {
-        throw "deferred patch command unexpectedly created an output file"
+    if (-not (Test-Path -LiteralPath $patchOutput -PathType Leaf)) {
+        throw "patch example did not create $patchOutput"
+    }
+    # A patched copy without controller parameters behaves like the original:
+    # the stub restores the entry bytes and the target completes uninstrumented
+    # (this target returns 7 when no capture is ready, which is the proof).
+    Copy-Item -LiteralPath $agent -Destination (Join-Path $workspace "noleax-agent.dll")
+    $standaloneMarker = Join-Path $workspace "standalone.ready"
+    $standaloneProcess = Start-Process -PassThru -FilePath $patchOutput `
+        -ArgumentList "`"$standaloneMarker`"", "1200", "launch" -WorkingDirectory $workspace -Wait
+    if ($standaloneProcess.ExitCode -ne 7) {
+        throw "patched target did not run standalone uninstrumented (exit $($standaloneProcess.ExitCode))"
     }
 
-    Invoke-ExpectedExit -Executable $noleax -Description "deferred thread hijack contract" `
-        -ExpectedExitCodes @(5) -CommandArguments @(
+    $hijackTrace = Join-Path $workspace "hijack.nlx"
+    $hijackMarker = Join-Path $workspace "hijack.ready"
+    Invoke-ExpectedExit -Executable $noleax -Description "thread hijack example" `
+        -ExpectedExitCodes @(0) `
+        -CommandArguments @(
             "run", "--inject-method", "thread-hijack", "--agent", $agent,
-            "--trace", (Join-Path $workspace "unsupported.nlx"), "--capture-duration", "1ms",
-            "--", $target, (Join-Path $workspace "unsupported.ready"), "1800", "launch"
+            "--trace", $hijackTrace, "--capture-duration", "1s",
+            "--hook-profile", "windows-nt-heap", "--compression", "none", "--",
+            $target, $hijackMarker, "1800", "launch"
         )
+    if (-not (Test-Path -LiteralPath $hijackTrace -PathType Leaf)) {
+        throw "thread hijack example did not create $hijackTrace"
+    }
 
-    Write-Output "status=ok configs=3 capture=1 events=1 outstanding=1 deferred=2"
+    Write-Output "status=ok configs=3 capture=1 events=1 outstanding=1 patch=1 hijack=1"
 }
 finally {
     if (Test-Path -LiteralPath $workspace) {

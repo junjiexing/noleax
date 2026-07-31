@@ -16,7 +16,9 @@ tag 或对外分发二进制。
 
 ## 1. 候选范围
 
-V1 支持 Windows 10/11 x64 controller、原生 x64 目标和 `remote-thread` 注入，包括：
+V1 支持 Windows 10/11 x64 controller、原生 x64 目标，注入方式为
+`remote-thread`、`thread-hijack`、`entrypoint-code`（run/attach 组合按矩阵），以及
+`noleax patch` 静态 PE patch 与 `static-pe-patch` 捕获，包括：
 
 - suspended `run` 与运行中 `attach`；
 - `windows-nt-heap`、`windows-virtual-memory` 和九个逻辑 API 的 `windows-native` profile；
@@ -26,12 +28,11 @@ V1 支持 Windows 10/11 x64 controller、原生 x64 目标和 `remote-thread` �
 
 以下能力明确不属于本候选：
 
-- P7 thread hijack、entrypoint code injection 和 static PE patch；
 - Windows x86/ARM64、Linux、macOS 和跨架构注入；
 - 自定义符号 hook DSL；
 - trace rotation、停止时卸载 agent 和多个 trace 联合分析。
 
-延期的 P7 方法只保留 CLI/配置 schema，调用时稳定返回退出码 5，不会静默回退。
+不支持的组合在配置或执行前以稳定退出码拒绝，不会静默回退。
 
 ## 2. 二进制身份
 

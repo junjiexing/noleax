@@ -2,9 +2,13 @@
 
 > Review date: 2026-07-30
 >
-> Scope: V1 Windows x64 controller, agent, IPC, trace writer/reader, analyzer and supported packaging
+> Scope: V1 Windows x64 controller, agent, IPC, trace writer/reader, analyzer, all four run
+> injection methods (remote-thread, thread-hijack, entrypoint-code, static-pe-patch), static PE
+> patch and supported packaging
 >
-> Excluded: deferred P7 thread hijack, entrypoint injection and static PE patch
+> Excluded: custom symbol hook DSL, non-x64 architectures, Linux, macOS; the P7 injection
+> strategies carry their own security analyses in THREAD_HIJACK_INJECTION.md,
+> ENTRYPOINT_INJECTION.md and STATIC_PE_PATCH.md.
 
 ## 1. Result
 

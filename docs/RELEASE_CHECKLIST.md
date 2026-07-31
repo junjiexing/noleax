@@ -16,7 +16,7 @@
 - [x] 五组 quiescence race 各 100/100，native profile 100/100，长 ABI 差分 3/3。
 - [x] Application Verifier/Full Page Heap 三轮通过，19 个 IFEO key 全部清理，导出日志零记录。
 - [x] 50/50 soak、206/206 不可信 trace corpus 和 15/15 性能 trace 通过。
-- [x] Quickstart、TOML 示例、故障排查和延期功能的可执行文档测试通过。
+- [x] Quickstart、TOML 示例、故障排查和各注入方法与 patch 的可执行文档测试通过。
 - [x] `/MT` 自包含打包、依赖闭包、第三方版权文本和解压后端到端 package smoke 通过。
 - [x] 测试 ZIP 和校验文件已删除；没有创建 tag，也没有发布二进制。
 
@@ -91,8 +91,9 @@ VM 上的实际程序：
 
 - [ ] 接受默认 LZ4、64 帧和本机参考 1.490x 中位开销；或记录必须解决的性能问题。
 - [ ] review console/JSON/CSV 输出、错误信息、Quickstart 与三份 TOML 示例，确认普通用户可独立操作。
-- [ ] 接受 V1 仅支持 Windows x64、原生同架构目标和 `remote-thread`。
-- [ ] 接受 thread hijack、entrypoint injection、static patch 和自定义符号 hook DSL 延期。
+- [ ] 接受 V1 仅支持 Windows x64、原生同架构目标，以及 run 四种、attach 两种注入方法与
+  static PE patch。
+- [ ] 接受自定义符号 hook DSL、trace rotation、unload-on-stop 和多 trace 联合分析延期到 V1 之后。
 - [ ] review [SECURITY_AUDIT.md](SECURITY_AUDIT.md) 的残余风险，尤其是 native injection、trace 中的敏感
   元数据和 DbgHelp 解析 trace 指定本地映像。
 

@@ -1611,9 +1611,9 @@ P8.4 于 2026-07-30 完成。bootstrap ABI v2 增加 controller PID，named pipe
 75 ms。审计未保留未处理的 high finding；中低风险和发布前安全门禁见 `docs/SECURITY_AUDIT.md`。
 
 P8.5 于 2026-07-30 完成。Quickstart、故障排查和 run/events/outstanding TOML 示例明确记录 V1
-边界，删除静态 patch 已可用及 thread hijack 示例等矛盾。`docs.windows-x64-examples` 会真实生成
-NT Heap trace，校验三份配置，执行 events/outstanding 分析，并验证延期的 patch/thread hijack 均
-稳定返回 5 且 patch 不创建文件；Release 定向门禁 1/1 通过。
+边界。`docs.windows-x64-examples` 会真实生成 NT Heap trace，校验三份配置，执行
+events/outstanding 分析，并验证 `patch` 生成可用副本（patched 目标 standalone 正常退出）与
+`thread-hijack` 完成捕获；Release 定向门禁 1/1 通过。
 
 P8.6 于 2026-07-30 完成。RC 切换到 `/MT` 与 `x64-windows-static`，避免远程加载 agent 时依赖目标
 进程无法从 controller 目录解析的动态 runtime。CMake install/CPack 生成带单一顶层目录和 SHA-256

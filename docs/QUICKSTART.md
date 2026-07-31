@@ -1,7 +1,8 @@
 # Noleax Windows x64 快速上手
 
-本指南适用于 V1 release candidate。当前支持 Windows x64 控制器、x64 目标和
-`remote-thread` 注入；P7 的 thread hijack、entrypoint 注入和静态 PE patch 已延期。
+本指南适用于 V1 release candidate。当前支持 Windows x64 控制器与 x64 目标；`run` 支持
+`remote-thread`、`thread-hijack`、`entrypoint-code` 和 `static-pe-patch` 注入，`attach` 支持
+`remote-thread` 和 `thread-hijack`，并可用 `noleax patch` 生成静态 patch 副本。
 
 ## 1. 准备
 
