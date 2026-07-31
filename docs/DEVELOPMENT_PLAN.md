@@ -1542,6 +1542,16 @@ ready 超时回滚均有集成测试；CLI e2e 与 doctor 已更新。详见
 - 页面权限、指令边界、CFG/CET 测试。
 - 失败时保持目标文件和内存入口一致。
 
+P7B 状态：实现、自动门禁已完成，等待人工 review 后合并。`EntrypointInjection` 在 suspended
+目标主镜像入口点写入 12 字节绝对跳转（`mov rax, stub; jmp rax`），入口以 `endbr64` 开头时
+补丁起点后移 4 字节保持 IBT 语义。stub 保存全部寄存器，执行 LdrLoadDll+bootstrap+ready 轮询，
+随后自行写回入口原始字节、`NtFlushInstructionCache`、恢复寄存器并跳回原入口（函数起点跳转，
+CET/IBT 与 shadow stack 合法）；控制器握手后回读校验入口字节并恢复页面保护。关键缺陷记录：
+stub 恢复序列最初未回到压栈后的 rsp，pop 读到调用者栈垃圾导致目标信号完成后崩溃（回归门禁
+由 launch 集成测试覆盖）；kernel32 在 suspended 进程尚未映射，stub 刷新走
+`ntdll!NtFlushInstructionCache`。回滚覆盖无 bootstrap 导出拒绝与 ready 超时后目标以恢复的
+原始入口完整运行。详见 [ENTRYPOINT_INJECTION.md](ENTRYPOINT_INJECTION.md)。
+
 #### P7C：static PE patch
 
 - 安全 PE parser/writer。
