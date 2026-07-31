@@ -31,7 +31,6 @@
 #include "noleax/ipc/protocol.hpp"
 #include "noleax/ipc/windows/named_pipe.hpp"
 #include "noleax/version.hpp"
-
 #include "windows/injection_common.hpp"
 
 namespace noleax::controller::windows {
@@ -326,10 +325,8 @@ CaptureSession CaptureSession::launch(const LaunchOptions& launch, const Capture
     } else if (capture.method == InjectionMethod::kEntrypointCode) {
       // The stub restores the original entry bytes itself after the capture
       // is ready; finish() proves the restore and re-applies page protection.
-      EntrypointInjection injection{process.process_handle(),
-                                    process.process_id(),
-                                    launch.executable.filename().native(),
-                                    capture.agent_path,
+      EntrypointInjection injection{process.process_handle(), process.process_id(),
+                                    launch.executable.filename().native(), capture.agent_path,
                                     bootstrap};
       process.resume_main_thread();
       process.note_main_thread_resumed();
@@ -347,29 +344,30 @@ CaptureSession CaptureSession::launch(const LaunchOptions& launch, const Capture
       // parameters through it and let the embedded stub do the rest.
       const auto patch_info = read_static_patch_info(launch.executable);
       if (!patch_info.has_value()) {
-        throw ControllerError{"the target is not a noleax-patched executable; create one with "
-                              "'noleax patch' first",
-                              ERROR_BAD_EXE_FORMAT};
+        throw ControllerError{
+            "the target is not a noleax-patched executable; create one with "
+            "'noleax patch' first",
+            ERROR_BAD_EXE_FORMAT};
       }
       const auto image = injection::find_remote_image_by_memory(
-          static_cast<HANDLE>(process.process_handle()),
-          launch.executable.filename().native());
+          static_cast<HANDLE>(process.process_handle()), launch.executable.filename().native());
       if (!image.has_value()) {
         throw ControllerError{"cannot locate the main image inside the target process",
                               ERROR_MOD_NOT_FOUND};
       }
-      const auto params_address = injection::checked_remote_address(
-          image->base, patch_info->params_rva);
+      const auto params_address =
+          injection::checked_remote_address(image->base, patch_info->params_rva);
       SIZE_T written = 0U;
       if (WriteProcessMemory(static_cast<HANDLE>(process.process_handle()),
                              std::bit_cast<LPVOID>(params_address), &bootstrap, sizeof(bootstrap),
                              &written) == FALSE ||
           written != sizeof(bootstrap)) {
         const DWORD error = GetLastError();
-        throw ControllerError{"cannot pass bootstrap parameters to the patched target "
-                              "(Windows error " +
-                                  std::to_string(error) + ")",
-                              error};
+        throw ControllerError{
+            "cannot pass bootstrap parameters to the patched target "
+            "(Windows error " +
+                std::to_string(error) + ")",
+            error};
       }
       process.resume_main_thread();
       process.note_main_thread_resumed();
@@ -419,14 +417,13 @@ CaptureSession CaptureSession::attach(std::uint32_t process_id, const CaptureOpt
     // restores the thread as soon as the bootstrap returned, which surfaces
     // stub failures (loader error, deadlocked thread) before the pipe wait
     // and keeps the hijacked window as short as possible.
-    ThreadHijack hijack{process.get(), process_id, capture.agent_path, bootstrap,
-                        {nullptr, false}};
+    ThreadHijack hijack{process.get(), process_id, capture.agent_path, bootstrap, {nullptr, false}};
     hijack.start();
     static_cast<void>(hijack.finish(capture.timeout));
     connected = connect_agent(server, process_id, token, attach_capture);
   } else if (capture.method == InjectionMethod::kRemoteThread) {
-    static_cast<void>(inject_remote_thread(process.get(), process_id, capture.agent_path,
-                                           bootstrap, capture.timeout));
+    static_cast<void>(inject_remote_thread(process.get(), process_id, capture.agent_path, bootstrap,
+                                           capture.timeout));
     connected = connect_agent(server, process_id, token, attach_capture);
   } else {
     throw ControllerError{"the selected injection method is not supported for attach",

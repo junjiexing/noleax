@@ -34,8 +34,8 @@ void RemoteMemory::protect(DWORD protection) {
   }
   if (FlushInstructionCache(process_, address_, size_) == FALSE) {
     const DWORD error = GetLastError();
-    throw InjectionError{
-        "FlushInstructionCache failed with Windows error " + std::to_string(error), error};
+    throw InjectionError{"FlushInstructionCache failed with Windows error " + std::to_string(error),
+                         error};
   }
 }
 
@@ -59,8 +59,7 @@ void RemoteMemory::read_at(std::size_t offset, void* bytes, std::size_t size) co
   }
   SIZE_T read_size = 0U;
   const auto* source = static_cast<const std::byte*>(address_) + offset;
-  if (ReadProcessMemory(process_, source, bytes, size, &read_size) == FALSE ||
-      read_size != size) {
+  if (ReadProcessMemory(process_, source, bytes, size, &read_size) == FALSE || read_size != size) {
     const DWORD error = GetLastError();
     throw InjectionError{"ReadProcessMemory failed with Windows error " + std::to_string(error),
                          error};
@@ -248,16 +247,15 @@ void RemoteMemory::read_at(std::size_t offset, void* bytes, std::size_t size) co
             FALSE ||
         read_size != size) {
       const DWORD error = GetLastError();
-      throw InjectionError{std::string{"cannot read remote "} + what +
-                               " (Windows error " + std::to_string(error) + ")",
+      throw InjectionError{std::string{"cannot read remote "} + what + " (Windows error " +
+                               std::to_string(error) + ")",
                            error};
     }
   };
   std::uint32_t pe_offset = 0U;
   read_remote(image_base + 0x3cU, &pe_offset, sizeof(pe_offset), "PE header offset");
   if (pe_offset > 0x1000U) {
-    throw InjectionError{"remote image has an implausible PE header offset",
-                         ERROR_BAD_EXE_FORMAT};
+    throw InjectionError{"remote image has an implausible PE header offset", ERROR_BAD_EXE_FORMAT};
   }
   std::uint32_t signature = 0U;
   read_remote(checked_remote_address(image_base, pe_offset), &signature, sizeof(signature),
@@ -283,16 +281,15 @@ void RemoteMemory::read_at(std::size_t offset, void* bytes, std::size_t size) co
             FALSE ||
         read_size != size) {
       const DWORD error = GetLastError();
-      throw InjectionError{std::string{"cannot read remote "} + what +
-                               " (Windows error " + std::to_string(error) + ")",
+      throw InjectionError{std::string{"cannot read remote "} + what + " (Windows error " +
+                               std::to_string(error) + ")",
                            error};
     }
   };
   std::uint32_t pe_offset = 0U;
   read_remote(image_base + 0x3cU, &pe_offset, sizeof(pe_offset), "PE header offset");
   if (pe_offset > 0x1000U) {
-    throw InjectionError{"remote image has an implausible PE header offset",
-                         ERROR_BAD_EXE_FORMAT};
+    throw InjectionError{"remote image has an implausible PE header offset", ERROR_BAD_EXE_FORMAT};
   }
   std::uint32_t signature = 0U;
   read_remote(checked_remote_address(image_base, pe_offset), &signature, sizeof(signature),

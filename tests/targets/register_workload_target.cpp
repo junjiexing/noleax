@@ -37,9 +37,9 @@ std::wstring g_crash_path;
     return false;
   }
   DWORD written = 0U;
-  const bool success = WriteFile(file, text.data(), static_cast<DWORD>(text.size()), &written,
-                                 nullptr) != FALSE &&
-                       written == text.size();
+  const bool success =
+      WriteFile(file, text.data(), static_cast<DWORD>(text.size()), &written, nullptr) != FALSE &&
+      written == text.size();
   static_cast<void>(CloseHandle(file));
   return success;
 }
@@ -47,12 +47,12 @@ std::wstring g_crash_path;
 LONG WINAPI crash_reporter(EXCEPTION_POINTERS* info) noexcept {
   if (info != nullptr && info->ExceptionRecord != nullptr && info->ContextRecord != nullptr) {
     char buffer[256];
-    const int length = std::snprintf(
-        buffer, sizeof(buffer),
-        "code=%08lx address=%p rip=%llx rcx=%llx r12=%llx rsp=%llx r8=%llx r9=%llx\n",
-        info->ExceptionRecord->ExceptionCode, info->ExceptionRecord->ExceptionAddress,
-        info->ContextRecord->Rip, info->ContextRecord->Rcx, info->ContextRecord->R12,
-        info->ContextRecord->Rsp, info->ContextRecord->R8, info->ContextRecord->R9);
+    const int length =
+        std::snprintf(buffer, sizeof(buffer),
+                      "code=%08lx address=%p rip=%llx rcx=%llx r12=%llx rsp=%llx r8=%llx r9=%llx\n",
+                      info->ExceptionRecord->ExceptionCode, info->ExceptionRecord->ExceptionAddress,
+                      info->ContextRecord->Rip, info->ContextRecord->Rcx, info->ContextRecord->R12,
+                      info->ContextRecord->Rsp, info->ContextRecord->R8, info->ContextRecord->R9);
     if (length > 0) {
       static_cast<void>(write_text(g_crash_path.c_str(), std::string{buffer, buffer + length}));
     }

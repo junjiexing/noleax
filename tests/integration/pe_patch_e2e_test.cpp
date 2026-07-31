@@ -180,8 +180,8 @@ int run(int argc, char* argv[]) {
     [[maybe_unused]] auto plain_session =
         noleax::controller::windows::CaptureSession::launch(plain_launch, capture);
   } catch (const std::exception& error) {
-    rejected = std::string{error.what()}.find("not a noleax-patched executable") !=
-               std::string::npos;
+    rejected =
+        std::string{error.what()}.find("not a noleax-patched executable") != std::string::npos;
   }
   if (!rejected) {
     std::fprintf(stderr, "unpatched target was not rejected\n");

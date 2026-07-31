@@ -31,8 +31,7 @@ namespace noleax::controller::windows {
 class EntrypointInjection final {
  public:
   EntrypointInjection(void* process_handle, std::uint32_t process_id,
-                      std::wstring_view image_file_name,
-                      const std::filesystem::path& agent_path,
+                      std::wstring_view image_file_name, const std::filesystem::path& agent_path,
                       const noleax::agent::windows::BootstrapParameters& bootstrap);
   ~EntrypointInjection();
 

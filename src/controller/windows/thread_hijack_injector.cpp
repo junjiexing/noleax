@@ -20,12 +20,12 @@
 namespace noleax::controller::windows {
 namespace {
 
-using injection::Handle;
-using injection::RemoteMemory;
 using injection::fail;
 using injection::find_remote_module_resilient;
+using injection::Handle;
 using injection::local_procedure_offset;
 using injection::remote_ntdll_procedure;
+using injection::RemoteMemory;
 using injection::try_unload_remote_module;
 
 // x64 bootstrap stub executed by the hijacked thread. Assembled with ml64 from
@@ -36,12 +36,12 @@ using injection::try_unload_remote_module;
 // because the controller restores the full saved CONTEXT afterwards; it never
 // returns and parks in a final spin loop until the controller restores RIP.
 constexpr std::array<std::byte, 164U> kHijackStub{
-    std::byte{0x4C}, std::byte{0x8B}, std::byte{0xE1},  // mov r12,rcx
-    std::byte{0x4C}, std::byte{0x8B}, std::byte{0xEC},  // mov r13,rsp
+    std::byte{0x4C}, std::byte{0x8B}, std::byte{0xE1},                   // mov r12,rcx
+    std::byte{0x4C}, std::byte{0x8B}, std::byte{0xEC},                   // mov r13,rsp
     std::byte{0x48}, std::byte{0x83}, std::byte{0xE4}, std::byte{0xF0},  // and rsp,-16
     std::byte{0x48}, std::byte{0x83}, std::byte{0xEC}, std::byte{0x60},  // sub rsp,60h
-    std::byte{0x33}, std::byte{0xC9},                                // xor ecx,ecx
-    std::byte{0x33}, std::byte{0xD2},                                // xor edx,edx
+    std::byte{0x33}, std::byte{0xC9},                                    // xor ecx,ecx
+    std::byte{0x33}, std::byte{0xD2},                                    // xor edx,edx
     std::byte{0x4D}, std::byte{0x8D}, std::byte{0x44}, std::byte{0x24},
     std::byte{0x10},  // lea r8,[r12+10h]   (&UNICODE_STRING)
     std::byte{0x4D}, std::byte{0x8D}, std::byte{0x4C}, std::byte{0x24},
@@ -50,50 +50,55 @@ constexpr std::array<std::byte, 164U> kHijackStub{
     std::byte{0x08},  // call qword ptr [r12+8]  (LdrLoadDll)
     std::byte{0x41}, std::byte{0x89}, std::byte{0x44}, std::byte{0x24},
     std::byte{0x44},  // mov [r12+44h],eax  (ldr status)
-    std::byte{0x41}, std::byte{0xC7}, std::byte{0x44}, std::byte{0x24}, std::byte{0x40},
-    std::byte{0x01}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},  // stage = 1
-    std::byte{0x85}, std::byte{0xC0},                                // test eax,eax
-    std::byte{0x78}, std::byte{0x64},                                // js done
+    std::byte{0x41}, std::byte{0xC7}, std::byte{0x44}, std::byte{0x24},
+    std::byte{0x40}, std::byte{0x01}, std::byte{0x00}, std::byte{0x00},
+    std::byte{0x00},                   // stage = 1
+    std::byte{0x85}, std::byte{0xC0},  // test eax,eax
+    std::byte{0x78}, std::byte{0x64},  // js done
     std::byte{0x49}, std::byte{0x8B}, std::byte{0x44}, std::byte{0x24},
-    std::byte{0x20},  // mov rax,[r12+20h]  (module)
-    std::byte{0x48}, std::byte{0x85}, std::byte{0xC0},               // test rax,rax
-    std::byte{0x74}, std::byte{0x5A},                                // jz done
+    std::byte{0x20},                                    // mov rax,[r12+20h]  (module)
+    std::byte{0x48}, std::byte{0x85}, std::byte{0xC0},  // test rax,rax
+    std::byte{0x74}, std::byte{0x5A},                   // jz done
     std::byte{0x49}, std::byte{0x8D}, std::byte{0x4C}, std::byte{0x24},
     std::byte{0x50},  // lea rcx,[r12+50h]  (&BootstrapParameters)
     std::byte{0x49}, std::byte{0x8B}, std::byte{0x54}, std::byte{0x24},
-    std::byte{0x28},  // mov rdx,[r12+28h]  (bootstrap RVA)
-    std::byte{0x48}, std::byte{0x03}, std::byte{0xD0},               // add rdx,rax
-    std::byte{0xFF}, std::byte{0xD2},                                // call rdx
+    std::byte{0x28},                                    // mov rdx,[r12+28h]  (bootstrap RVA)
+    std::byte{0x48}, std::byte{0x03}, std::byte{0xD0},  // add rdx,rax
+    std::byte{0xFF}, std::byte{0xD2},                   // call rdx
     std::byte{0x41}, std::byte{0x89}, std::byte{0x44}, std::byte{0x24},
     std::byte{0x48},  // mov [r12+48h],eax  (bootstrap result)
-    std::byte{0x41}, std::byte{0xC7}, std::byte{0x44}, std::byte{0x24}, std::byte{0x40},
-    std::byte{0x02}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},  // stage = 2
-    std::byte{0x85}, std::byte{0xC0},                                // test eax,eax
-    std::byte{0x75}, std::byte{0x39},                                // jnz done
-    std::byte{0x41}, std::byte{0xF6}, std::byte{0x44}, std::byte{0x24}, std::byte{0x38},
-    std::byte{0x01},  // test byte ptr [r12+38h],1  (wait_for_ready)
-    std::byte{0x74}, std::byte{0x28},                                // jz ready_ok
-    std::byte{0x41}, std::byte{0xBD}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},
-    std::byte{0x08},  // mov r13d,8000000h  (bounded ready poll)
+    std::byte{0x41}, std::byte{0xC7}, std::byte{0x44}, std::byte{0x24},
+    std::byte{0x40}, std::byte{0x02}, std::byte{0x00}, std::byte{0x00},
+    std::byte{0x00},                   // stage = 2
+    std::byte{0x85}, std::byte{0xC0},  // test eax,eax
+    std::byte{0x75}, std::byte{0x39},  // jnz done
+    std::byte{0x41}, std::byte{0xF6}, std::byte{0x44}, std::byte{0x24},
+    std::byte{0x38}, std::byte{0x01},  // test byte ptr [r12+38h],1  (wait_for_ready)
+    std::byte{0x74}, std::byte{0x28},  // jz ready_ok
+    std::byte{0x41}, std::byte{0xBD}, std::byte{0x00}, std::byte{0x00},
+    std::byte{0x00}, std::byte{0x08},  // mov r13d,8000000h  (bounded ready poll)
     std::byte{0x49}, std::byte{0x8B}, std::byte{0x5C}, std::byte{0x24},
     std::byte{0x20},  // mov rbx,[r12+20h]
     std::byte{0x49}, std::byte{0x03}, std::byte{0x5C}, std::byte{0x24},
-    std::byte{0x30},  // add rbx,[r12+30h]  (ready RVA)
-    std::byte{0xFF}, std::byte{0xD3},                                // poll: call rbx
-    std::byte{0x84}, std::byte{0xC0},                                // test al,al
-    std::byte{0x75}, std::byte{0x12},                                // jnz ready_ok
-    std::byte{0xF3}, std::byte{0x90},                                // pause
-    std::byte{0x41}, std::byte{0xFF}, std::byte{0xCD},               // dec r13d
-    std::byte{0x75}, std::byte{0xF3},                                // jnz poll
-    std::byte{0x41}, std::byte{0xC7}, std::byte{0x44}, std::byte{0x24}, std::byte{0x40},
-    std::byte{0x04}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},  // stage = 4
-    std::byte{0xEB}, std::byte{0x09},                                // jmp done
-    std::byte{0x41}, std::byte{0xC7}, std::byte{0x44}, std::byte{0x24}, std::byte{0x40},
-    std::byte{0x03}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},  // ready_ok: stage = 3
-    std::byte{0x41}, std::byte{0xC7}, std::byte{0x44}, std::byte{0x24}, std::byte{0x4C},
-    std::byte{0x01}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},  // done: done = 1
-    std::byte{0xF3}, std::byte{0x90},                                // spin: pause
-    std::byte{0xEB}, std::byte{0xFC},                                // jmp spin
+    std::byte{0x30},                                    // add rbx,[r12+30h]  (ready RVA)
+    std::byte{0xFF}, std::byte{0xD3},                   // poll: call rbx
+    std::byte{0x84}, std::byte{0xC0},                   // test al,al
+    std::byte{0x75}, std::byte{0x12},                   // jnz ready_ok
+    std::byte{0xF3}, std::byte{0x90},                   // pause
+    std::byte{0x41}, std::byte{0xFF}, std::byte{0xCD},  // dec r13d
+    std::byte{0x75}, std::byte{0xF3},                   // jnz poll
+    std::byte{0x41}, std::byte{0xC7}, std::byte{0x44}, std::byte{0x24},
+    std::byte{0x40}, std::byte{0x04}, std::byte{0x00}, std::byte{0x00},
+    std::byte{0x00},                   // stage = 4
+    std::byte{0xEB}, std::byte{0x09},  // jmp done
+    std::byte{0x41}, std::byte{0xC7}, std::byte{0x44}, std::byte{0x24},
+    std::byte{0x40}, std::byte{0x03}, std::byte{0x00}, std::byte{0x00},
+    std::byte{0x00},  // ready_ok: stage = 3
+    std::byte{0x41}, std::byte{0xC7}, std::byte{0x44}, std::byte{0x24},
+    std::byte{0x4C}, std::byte{0x01}, std::byte{0x00}, std::byte{0x00},
+    std::byte{0x00},                   // done: done = 1
+    std::byte{0xF3}, std::byte{0x90},  // spin: pause
+    std::byte{0xEB}, std::byte{0xFC},  // jmp spin
 };
 
 struct alignas(8) HijackStubData {
@@ -122,7 +127,8 @@ inline constexpr std::uint32_t kStageReady = 3U;
 inline constexpr std::uint32_t kStageReadyTimeout = 4U;
 inline constexpr std::uint64_t kFlagWaitForReady = 1U;
 
-static_assert(sizeof(HijackStubData) == 0x50U + sizeof(noleax::agent::windows::BootstrapParameters));
+static_assert(sizeof(HijackStubData) ==
+              0x50U + sizeof(noleax::agent::windows::BootstrapParameters));
 static_assert(offsetof(HijackStubData, stage) == 0x40U);
 static_assert(offsetof(HijackStubData, ldr_status) == 0x44U);
 static_assert(offsetof(HijackStubData, bootstrap_result) == 0x48U);
@@ -180,8 +186,7 @@ struct RipClassification {
   bool system_module{false};
 };
 
-[[nodiscard]] std::uintptr_t required_remote_module_base(HANDLE process,
-                                                         std::uint32_t process_id,
+[[nodiscard]] std::uintptr_t required_remote_module_base(HANDLE process, std::uint32_t process_id,
                                                          const wchar_t* module_name) {
   const auto module = find_remote_module_resilient(process, process_id, module_name);
   if (!module.has_value()) {
@@ -295,8 +300,7 @@ class ThreadHijack::Impl final {
     const std::wstring& wide_path = agent_path.native();
     const std::size_t path_bytes = (wide_path.size() + 1U) * sizeof(wchar_t);
     if (path_bytes > std::numeric_limits<std::uint16_t>::max()) {
-      throw InjectionError{"agent path is too long for UNICODE_STRING",
-                           ERROR_FILENAME_EXCED_RANGE};
+      throw InjectionError{"agent path is too long for UNICODE_STRING", ERROR_FILENAME_EXCED_RANGE};
     }
 
     acquire_thread(options.thread_handle);
@@ -322,9 +326,9 @@ class ThreadHijack::Impl final {
     }
     if (ResumeThread(thread_.get()) == std::numeric_limits<DWORD>::max()) {
       const DWORD error = GetLastError();
-      throw InjectionError{"ResumeThread(hijacked thread) failed with Windows error " +
-                               std::to_string(error),
-                           error};
+      throw InjectionError{
+          "ResumeThread(hijacked thread) failed with Windows error " + std::to_string(error),
+          error};
     }
     suspended_by_us_ = false;
     state_ = State::kStarted;
@@ -361,16 +365,15 @@ class ThreadHijack::Impl final {
                            static_cast<std::uint32_t>(data.ldr_status)};
     }
     if (data.stage == kStageBootstrapReturned) {
-      throw InjectionError{"agent bootstrap returned error " +
-                               std::to_string(data.bootstrap_result),
-                           ERROR_DLL_INIT_FAILED};
+      throw InjectionError{
+          "agent bootstrap returned error " + std::to_string(data.bootstrap_result),
+          ERROR_DLL_INIT_FAILED};
     }
     if (data.stage == kStageReadyTimeout) {
       throw InjectionError{"agent capture did not become ready inside the hijacked thread",
                            WAIT_TIMEOUT};
     }
-    throw InjectionError{"hijack bootstrap stub reported an impossible stage",
-                         ERROR_INVALID_STATE};
+    throw InjectionError{"hijack bootstrap stub reported an impossible stage", ERROR_INVALID_STATE};
   }
 
   void abort() noexcept {
@@ -412,8 +415,8 @@ class ThreadHijack::Impl final {
         kernel32.has_value()) {
       bases.kernel32 = kernel32->base;
     }
-    if (const auto kernelbase = find_remote_module_resilient(process_, process_id_,
-                                                             L"kernelbase.dll");
+    if (const auto kernelbase =
+            find_remote_module_resilient(process_, process_id_, L"kernelbase.dll");
         kernelbase.has_value()) {
       bases.kernelbase = kernelbase->base;
     }
@@ -540,8 +543,7 @@ class ThreadHijack::Impl final {
     if (!context_saved_) {
       return;
     }
-    if (!suspended_by_us_ &&
-        SuspendThread(thread_.get()) == std::numeric_limits<DWORD>::max()) {
+    if (!suspended_by_us_ && SuspendThread(thread_.get()) == std::numeric_limits<DWORD>::max()) {
       return;  // the thread already exited; nothing left to restore
     }
     static_cast<void>(SetThreadContext(thread_.get(), &saved_context_));

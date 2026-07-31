@@ -15,18 +15,18 @@ namespace noleax::controller::windows {
 
 enum class PePatchError : std::uint8_t {
   kNone,
-  kIo,               // file read/write/rename failure
-  kTruncated,        // file ends inside a structure
-  kNotPe,            // missing MZ/PE signature or malformed headers
-  kNotX64,           // not an AMD64 PE32+ image
-  kNotExecutable,    // DLL, driver or EFI image
-  kManaged,          // CLR header present
-  kPacked,           // packed-image heuristics
-  kMalformed,        // sections or directories out of bounds
-  kSigned,           // Authenticode signature present and not allowed
-  kNoHeaderSpace,    // no room for one more section header
-  kOverlay,          // unexpected data appended after the sections
-  kOutputExists,     // output path already exists
+  kIo,             // file read/write/rename failure
+  kTruncated,      // file ends inside a structure
+  kNotPe,          // missing MZ/PE signature or malformed headers
+  kNotX64,         // not an AMD64 PE32+ image
+  kNotExecutable,  // DLL, driver or EFI image
+  kManaged,        // CLR header present
+  kPacked,         // packed-image heuristics
+  kMalformed,      // sections or directories out of bounds
+  kSigned,         // Authenticode signature present and not allowed
+  kNoHeaderSpace,  // no room for one more section header
+  kOverlay,        // unexpected data appended after the sections
+  kOutputExists,   // output path already exists
 };
 
 class PePatchException final : public std::runtime_error {
@@ -47,9 +47,9 @@ struct PePatchOptions {
 };
 
 struct PePatchResult {
-  std::uint32_t entry_rva{0U};       // unchanged original entry point
-  std::uint32_t section_rva{0U};     // bootstrap section VA
-  std::uint32_t patch_rva{0U};       // where the entry jump was written
+  std::uint32_t entry_rva{0U};    // unchanged original entry point
+  std::uint32_t section_rva{0U};  // bootstrap section VA
+  std::uint32_t patch_rva{0U};    // where the entry jump was written
   std::uint64_t output_size{0U};
   bool signature_removed{false};
 };
