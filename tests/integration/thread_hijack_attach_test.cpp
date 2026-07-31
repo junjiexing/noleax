@@ -218,6 +218,7 @@ int run(int argc, char* argv[]) {
     const std::wstring bogus_pipe = L"\\\\.\\pipe\\noleax-hijack-ready-timeout-test";
     std::ranges::copy(bogus_pipe, bootstrap.pipe_name.begin());
     bootstrap.connect_timeout_ms = 500U;
+    bootstrap.controller_process_id = GetCurrentProcessId();
     bool timeout_error = false;
     try {
       noleax::controller::windows::ThreadHijack hijack{process, timed_out.pid, agent, bootstrap,

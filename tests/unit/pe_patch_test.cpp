@@ -98,6 +98,11 @@ TEST_CASE("static patch stub layout is self-consistent", "[controller][pe-patch]
   CHECK(pepatch::kParamsOffset + sizeof(noleax::agent::windows::BootstrapParameters) ==
         pepatch::kMarkerOffset);
   CHECK(pepatch::kContentSize >= pepatch::kScratchOffset + 0x118U);
+  // The stub's params.version comparison must match the current bootstrap ABI.
+  CHECK(pepatch::kStaticStub[pepatch::kVersionCmpOffset - 8U] == std::byte{0x41});
+  CHECK(pepatch::kStaticStub[pepatch::kVersionCmpOffset - 7U] == std::byte{0x83});
+  CHECK(static_cast<std::uint8_t>(pepatch::kStaticStub[pepatch::kVersionCmpOffset]) ==
+        noleax::agent::windows::kBootstrapVersion);
 }
 
 TEST_CASE("patch produces a verifiable image and patch info", "[controller][pe-patch]") {

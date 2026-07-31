@@ -50,6 +50,10 @@ inline constexpr char kReadySymbol[] = "noleax_agent_capture_is_ready";
 // Immediate slots inside the stub template (verified against the assembly).
 inline constexpr std::size_t kFixupSectionRvaOffset = 733U;
 inline constexpr std::size_t kFixupEntryRvaOffset = 1041U;
+// Offset of the imm8 in the stub's `cmp dword [params.version], imm8` check
+// (the instruction starts at offset 444: 41 83 BC 24 <disp32> <imm8>); it
+// must equal noleax::agent::windows::kBootstrapVersion.
+inline constexpr std::size_t kVersionCmpOffset = 452U;
 
 // ror13 hash used by the stub for module and export resolution.
 [[nodiscard]] constexpr std::uint32_t ror13(std::uint32_t value) noexcept {
@@ -124,7 +128,7 @@ inline constexpr std::array<std::byte, 1203U> kStaticStub{
     std::byte{0x00}, std::byte{0x48}, std::byte{0x85}, std::byte{0xC0}, std::byte{0x0F}, std::byte{0x84}, std::byte{0x09}, std::byte{0x01}, std::byte{0x00}, std::byte{0x00}, std::byte{0x49}, std::byte{0x89},
     std::byte{0x84}, std::byte{0x24}, std::byte{0x60}, std::byte{0x07}, std::byte{0x00}, std::byte{0x00}, std::byte{0x41}, std::byte{0x81}, std::byte{0xBC}, std::byte{0x24}, std::byte{0x00}, std::byte{0x05},
     std::byte{0x00}, std::byte{0x00}, std::byte{0x20}, std::byte{0x01}, std::byte{0x00}, std::byte{0x00}, std::byte{0x0F}, std::byte{0x85}, std::byte{0xDE}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},
-    std::byte{0x41}, std::byte{0x83}, std::byte{0xBC}, std::byte{0x24}, std::byte{0x04}, std::byte{0x05}, std::byte{0x00}, std::byte{0x00}, std::byte{0x01}, std::byte{0x0F}, std::byte{0x85}, std::byte{0xCF},
+    std::byte{0x41}, std::byte{0x83}, std::byte{0xBC}, std::byte{0x24}, std::byte{0x04}, std::byte{0x05}, std::byte{0x00}, std::byte{0x00}, std::byte{0x02}, std::byte{0x0F}, std::byte{0x85}, std::byte{0xCF},
     std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x66}, std::byte{0x41}, std::byte{0x83}, std::byte{0xBC}, std::byte{0x24}, std::byte{0x08}, std::byte{0x05}, std::byte{0x00}, std::byte{0x00},
     std::byte{0x00}, std::byte{0x0F}, std::byte{0x84}, std::byte{0xBF}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x49}, std::byte{0x8B}, std::byte{0xDD}, std::byte{0x41}, std::byte{0x8B},
     std::byte{0xBC}, std::byte{0x24}, std::byte{0x34}, std::byte{0x07}, std::byte{0x00}, std::byte{0x00}, std::byte{0xE8}, std::byte{0x4B}, std::byte{0x02}, std::byte{0x00}, std::byte{0x00}, std::byte{0x48},

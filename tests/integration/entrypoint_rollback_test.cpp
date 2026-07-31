@@ -107,6 +107,7 @@ int run(int argc, char* argv[]) {
     const std::wstring bogus_pipe = L"\\\\.\\pipe\\noleax-entrypoint-ready-timeout-test";
     std::ranges::copy(bogus_pipe, bootstrap.pipe_name.begin());
     bootstrap.connect_timeout_ms = 500U;
+    bootstrap.controller_process_id = GetCurrentProcessId();
     noleax::controller::windows::EntrypointInjection injection{
         process.process_handle(), process.process_id(), target.filename().native(), agent,
         bootstrap};

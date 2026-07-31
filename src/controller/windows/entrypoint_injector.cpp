@@ -190,7 +190,7 @@ class EntrypointInjection::Impl final {
     if (bootstrap.structure_size != sizeof(bootstrap) ||
         bootstrap.version != noleax::agent::windows::kBootstrapVersion ||
         bootstrap.pipe_name.front() == L'\0' || bootstrap.pipe_name.back() != L'\0' ||
-        bootstrap.connect_timeout_ms == 0U || bootstrap.reserved != 0U) {
+        bootstrap.connect_timeout_ms == 0U || bootstrap.controller_process_id == 0U) {
       throw InjectionError{"agent bootstrap parameters are invalid", ERROR_INVALID_PARAMETER};
     }
     if (injection::find_remote_module_resilient(process_, process_id_,
