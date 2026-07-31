@@ -23,7 +23,7 @@ class PayloadWriter final {
     Unsigned bits = std::bit_cast<Unsigned>(value);
     for (std::size_t index = 0U; index < sizeof(Integer); ++index) {
       bytes_.push_back(static_cast<std::byte>(bits & static_cast<Unsigned>(0xffU)));
-      bits >>= 8U;
+      bits = static_cast<Unsigned>(static_cast<std::uintmax_t>(bits) >> 8U);
     }
   }
 

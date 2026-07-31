@@ -562,8 +562,10 @@ std::optional<StaticPatchInfo> read_static_patch_info(const std::filesystem::pat
       }
       std::int32_t jump_offset = 0;
       std::memcpy(&jump_offset, data.data() + patch_raw + 1U, sizeof(jump_offset));
-      const std::int64_t target = static_cast<std::int64_t>(image.entry_rva) + patch_offset +
-                                  pepatch::kEntryPatchSize + jump_offset;
+      const std::int64_t target = static_cast<std::int64_t>(image.entry_rva) +
+                                  static_cast<std::int64_t>(patch_offset) +
+                                  static_cast<std::int64_t>(pepatch::kEntryPatchSize) +
+                                  static_cast<std::int64_t>(jump_offset);
       if (target != static_cast<std::int64_t>(section.virtual_address)) {
         return std::nullopt;
       }

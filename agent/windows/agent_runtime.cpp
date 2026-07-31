@@ -302,8 +302,8 @@ class CaptureRuntime final {
       add_saturating(status.dropped_events, heap->destroy_hook().dropped_event_count());
     }
     if (const auto* memory = hooks_->virtual_memory_hooks(); memory != nullptr) {
-      for (const auto statistics : {memory->allocate_statistics(), memory->free_statistics(),
-                                    memory->map_statistics(), memory->unmap_statistics()}) {
+      for (const auto& statistics : {memory->allocate_statistics(), memory->free_statistics(),
+                                     memory->map_statistics(), memory->unmap_statistics()}) {
         add_saturating(status.observed_calls, statistics.recordable_calls);
         add_saturating(status.filtered_calls, statistics.filtered_calls);
         add_saturating(status.dropped_events, statistics.dropped_events);

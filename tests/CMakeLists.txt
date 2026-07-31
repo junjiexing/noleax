@@ -214,7 +214,7 @@ if(WIN32)
     NOLEAX_TEST_CONTROLLER_TARGET_PATH="$<TARGET_FILE:noleax-controller-target>"
   )
 
-  if(MSVC)
+  if(MSVC OR (WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "Clang"))
     enable_language(ASM_MASM)
   endif()
 

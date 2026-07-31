@@ -13,7 +13,7 @@ option(NOLEAX_ENABLE_CLANG_TIDY "Run clang-tidy while compiling project sources"
 option(NOLEAX_WINDOWS_HARDENED_TESTING
   "Build Windows test images with CFG and CET compatibility metadata" OFF)
 
-if(MSVC)
+if(MSVC OR (WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "Clang"))
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 

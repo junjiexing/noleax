@@ -322,7 +322,8 @@ void checked_increment(std::uint64_t& value, const char* subject) {
   }
   constexpr std::string_view digits{"0123456789abcdef"};
   std::string result;
-  for (const unsigned char byte : value) {
+  for (const char byte_char : value) {
+    const auto byte = static_cast<unsigned char>(byte_char);
     switch (byte) {
       case '\\':
         result.append("\\\\");
