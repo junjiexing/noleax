@@ -36,6 +36,7 @@
 
 #include "noleax/controller/windows/controller.hpp"
 #include "noleax/controller/windows/diagnostics.hpp"
+#include "noleax/controller/windows/pe_patch.hpp"
 #endif
 
 namespace noleax::app {
@@ -382,6 +383,8 @@ class ConsoleControlGuard final {
       return noleax::controller::windows::InjectionMethod::kThreadHijack;
     case noleax::config::InjectionMethod::kEntrypointCode:
       return noleax::controller::windows::InjectionMethod::kEntrypointCode;
+    case noleax::config::InjectionMethod::kStaticPePatch:
+      return noleax::controller::windows::InjectionMethod::kStaticPePatch;
   }
   unsupported("injection method is not supported by the Windows controller");
 }
@@ -464,6 +467,13 @@ void validate_capture_support(const noleax::config::Configuration& configuration
   ConsoleControlGuard controls;
   try {
     if (*configuration.operation.value == noleax::config::Operation::kRun) {
+      if (capture.method == noleax::controller::windows::InjectionMethod::kStaticPePatch &&
+          !noleax::controller::windows::read_static_patch_info(*configuration.target.path.value)
+               .has_value()) {
+        throw ApplicationError{
+            1, "the target is not a noleax-patched executable; create one with 'noleax patch' "
+               "before using --inject-method static-pe-patch"};
+      }
       noleax::controller::windows::LaunchOptions launch;
       launch.executable = *configuration.target.path.value;
       launch.arguments = configuration.target.args.value;
@@ -514,6 +524,49 @@ void validate_capture_support(const noleax::config::Configuration& configuration
 
 #endif
 
+#if defined(_WIN32)
+
+[[nodiscard]] int execute_patch(const noleax::config::Configuration& configuration) {
+  noleax::controller::windows::PePatchOptions options;
+  options.input = *configuration.patch.input.value;
+  options.output = *configuration.patch.output.value;
+  options.agent_name = configuration.patch.agent_name.value;
+  options.allow_break_signature = configuration.patch.allow_break_signature.value;
+  options.verify = configuration.patch.verify.value;
+  try {
+    const auto result = noleax::controller::windows::patch_pe_image(options);
+    std::cout << "patched: input=" << noleax::config::path_to_utf8(options.input)
+              << " output=" << noleax::config::path_to_utf8(options.output);
+    std::cout << std::hex << std::showbase << " entry=" << result.entry_rva
+              << " patch_rva=" << result.patch_rva << " section_rva=" << result.section_rva
+              << std::dec << std::noshowbase << " bytes=" << result.output_size;
+    if (result.signature_removed) {
+      std::cout << " signature=removed";
+    }
+    std::cout << '\n';
+    return 0;
+  } catch (const noleax::controller::windows::PePatchException& error) {
+    switch (error.code()) {
+      case noleax::controller::windows::PePatchError::kNotX64:
+      case noleax::controller::windows::PePatchError::kNotExecutable:
+      case noleax::controller::windows::PePatchError::kManaged:
+      case noleax::controller::windows::PePatchError::kPacked:
+      case noleax::controller::windows::PePatchError::kSigned:
+        throw ApplicationError{5, std::string{"cannot patch: "} + error.what()};
+      default:
+        throw ApplicationError{1, std::string{"cannot patch: "} + error.what()};
+    }
+  }
+}
+
+#else
+
+[[nodiscard]] int execute_patch(const noleax::config::Configuration&) {
+  unsupported("patch is not implemented on this platform");
+}
+
+#endif
+
 }  // namespace
 
 ApplicationError::ApplicationError(int exit_code, const std::string& message)
@@ -535,7 +588,7 @@ int execute_operation(const noleax::config::Configuration& configuration) {
     case noleax::config::Operation::kDoctor:
       return execute_doctor(configuration);
     case noleax::config::Operation::kPatch:
-      unsupported("operation 'patch' is not implemented; static PE patch begins in P7C");
+      return execute_patch(configuration);
   }
   unsupported("operation is not supported");
 }

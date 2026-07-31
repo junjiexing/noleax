@@ -6,6 +6,7 @@ if(WIN32)
     windows/diagnostics.cpp
     windows/entrypoint_injector.cpp
     windows/injection_common.cpp
+    windows/pe_patch.cpp
     windows/process.cpp
     windows/remote_injector.cpp
     windows/thread_hijack_injector.cpp
