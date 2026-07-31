@@ -64,9 +64,11 @@ noleax run [capture-options] [injection-options] -- target [args...]
 - thread-hijack
 - entrypoint-code
 
-P6 Windows x64 只实现 `remote-thread`；其余方法返回 5，分别在 P7A/P7B 实现。控制器创建
-suspended 目标，只有 agent ready 后才恢复目标主线程。达到 `--capture-duration` 或收到 Ctrl+C 时
-完成 writer drain 和物理 hook revert；若此时目标仍运行，不终止目标。
+P7A Windows x64 已实现 `remote-thread` 与 `thread-hijack`；`entrypoint-code` 在 P7B 实现，之前
+返回 5。控制器创建 suspended 目标，只有 agent ready 后才恢复目标主线程。达到
+`--capture-duration` 或收到 Ctrl+C 时完成 writer drain 和物理 hook revert；若此时目标仍运行，
+不终止目标。`thread-hijack` 的安全语义见
+[THREAD_HIJACK_INJECTION.md](THREAD_HIJACK_INJECTION.md)。
 
 ## 5. attach
 
@@ -89,7 +91,7 @@ noleax attach --pid PID [capture-options] [injection-options]
 - remote-thread
 - thread-hijack
 
-P6 Windows x64 只实现 `remote-thread`，且 `--unload-on-stop` 当前只接受 false。attach 成功不表示
+P7A Windows x64 已实现两者，且 `--unload-on-stop` 当前只接受 false。attach 成功不表示
 trace 完整；分析输出必须标记注入前分配未知。
 
 ## 6. Capture options
@@ -256,8 +258,8 @@ doctor 不执行注入。
 noleax doctor [--agent PATH] [--target PATH] [--pid PID] [--inject-method METHOD]
 ~~~
 
-未提供可选探针时对应检查显示为 `skipped`。当前 P6 只有 `remote-thread` 会通过方法检查；
-`thread-hijack` 和 `entrypoint-code` 会明确报告为尚未实现。agent/target/PID 可同时提供，以一次完成
+未提供可选探针时对应检查显示为 `skipped`。当前 `remote-thread` 和 `thread-hijack` 会通过方法
+检查；`entrypoint-code` 会明确报告为尚未实现。agent/target/PID 可同时提供，以一次完成
 文件架构、运行进程架构和注入权限检查。所有四项均可通过 TOML 的
 `injection.agent_path`、`target.path`、`target.pid` 和 `injection.method` 设置，CLI 优先。
 

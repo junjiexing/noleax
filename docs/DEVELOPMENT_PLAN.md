@@ -1524,6 +1524,17 @@ runtime attach 连续 20/20，完整 run/attach/analyze 工作流连续 5/5。ha
 - 异常、超时和目标退出回滚。
 - ABI、XMM、栈和 RIP 恢复测试。
 
+P7A 状态：实现、自动门禁已完成，等待人工 review 后合并。`ThreadHijack` 将劫持线程的完整
+`CONTEXT_FULL | CONTEXT_FLOATING_POINT` 上下文交由控制器在 stub 完成后经 `SetThreadContext`
+恢复，避免手写间接跳回在 CET/IBT 与 shadow stack 下失效；stub 只做
+`LdrLoadDll`+bootstrap（launch 附带 ready 轮询），允许破坏全部寄存器。attach 线程选择基于
+`AllocationBase` 模块基址比较：只接受应用/其它镜像帧、kernel32/kernelbase 帧以及紧邻
+`syscall` 指令的 ntdll 阻塞帧，拒绝 ntdll 堆/loader 内部帧（初版 `GetMappedFileNameW` 名称
+识别失效曾把堆管理器内部帧误判为应用帧并导致目标堆损坏崩溃，现为回归门禁）。
+`run`/`attach` 均已接通，`ready-before-main`、寄存器 digest 一致性、无 bootstrap 导出拒绝、
+ready 超时回滚均有集成测试；CLI e2e 与 doctor 已更新。详见
+[THREAD_HIJACK_INJECTION.md](THREAD_HIJACK_INJECTION.md)。
+
 #### P7B：entrypoint code injection
 
 - suspended launch 下的临时入口补丁。
