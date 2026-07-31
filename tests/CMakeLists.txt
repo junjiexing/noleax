@@ -119,7 +119,7 @@ if(WIN32)
   set_tests_properties(cli.end-to-end-trace-analyze PROPERTIES
     LABELS "cli;controller;agent;run;attach;trace;analyzer;outstanding;windows"
     PASS_REGULAR_EXPRESSION
-      "^status=ok run=1 attach=1 outstanding=1 console=1 json=1 csv=1 stacks=1 errors=1"
+      "^status=ok run=1 attach=1 hijack=1 outstanding=1 console=1 json=1 csv=1 stacks=1 errors=1"
     RUN_SERIAL TRUE
     TIMEOUT 90
   )
@@ -128,6 +128,65 @@ if(WIN32)
   target_compile_definitions(noleax-unit-tests PRIVATE
     NOLEAX_TEST_AGENT_PATH="$<TARGET_FILE:noleax-agent>"
     NOLEAX_TEST_CONTROLLER_TARGET_PATH="$<TARGET_FILE:noleax-controller-target>"
+  )
+
+  if(MSVC)
+    enable_language(ASM_MASM)
+  endif()
+
+  add_executable(noleax-register-workload-target
+    targets/register_workload_target.cpp
+    targets/register_workload.asm
+  )
+  noleax_set_project_warnings(noleax-register-workload-target)
+
+  add_executable(noleax-thread-hijack-launch-test
+    integration/thread_hijack_launch_test.cpp
+  )
+  target_link_libraries(noleax-thread-hijack-launch-test PRIVATE
+    noleax::analyzer
+    noleax::controller
+  )
+  noleax_set_project_warnings(noleax-thread-hijack-launch-test)
+
+  add_test(NAME controller.thread-hijack-launch
+    COMMAND noleax-thread-hijack-launch-test
+      "$<TARGET_FILE:noleax-agent>"
+      "$<TARGET_FILE:noleax-controller-target>"
+      "$<TARGET_FILE_DIR:noleax-thread-hijack-launch-test>/thread-hijack-launch.nlx"
+      "$<TARGET_FILE_DIR:noleax-thread-hijack-launch-test>/thread-hijack-launch.ready"
+  )
+  set_tests_properties(controller.thread-hijack-launch PROPERTIES
+    LABELS "controller;agent;ipc;injection;thread-hijack;launch;trace;windows"
+    PASS_REGULAR_EXPRESSION
+      "^status=ok kind=launch-hijack ready-before-main=1 state=finalized events=[1-9][0-9]*"
+    RUN_SERIAL TRUE
+    TIMEOUT 90
+  )
+
+  add_executable(noleax-thread-hijack-attach-test
+    integration/thread_hijack_attach_test.cpp
+  )
+  target_link_libraries(noleax-thread-hijack-attach-test PRIVATE
+    noleax::analyzer
+    noleax::controller
+  )
+  noleax_set_project_warnings(noleax-thread-hijack-attach-test)
+  add_dependencies(noleax-thread-hijack-attach-test noleax-register-workload-target)
+
+  add_test(NAME controller.thread-hijack-attach
+    COMMAND noleax-thread-hijack-attach-test
+      "$<TARGET_FILE:noleax-agent>"
+      "$<TARGET_FILE:noleax-injector-no-bootstrap>"
+      "$<TARGET_FILE:noleax-register-workload-target>"
+      "$<TARGET_FILE_DIR:noleax-thread-hijack-attach-test>/thread-hijack-attach"
+  )
+  set_tests_properties(controller.thread-hijack-attach PROPERTIES
+    LABELS "controller;agent;ipc;injection;thread-hijack;attach;rollback;context;windows"
+    PASS_REGULAR_EXPRESSION
+      "^status=ok baseline=1 attach=1 reject=1 timeout=1 digest=4 events=[1-9][0-9]*"
+    RUN_SERIAL TRUE
+    TIMEOUT 300
   )
 
   add_test(NAME cli.doctor
@@ -829,6 +888,9 @@ if(WIN32)
         noleax-controller-attach-test
         noleax-controller-lifecycle-test
         noleax-injector-rollback-test
+        noleax-register-workload-target
+        noleax-thread-hijack-launch-test
+        noleax-thread-hijack-attach-test
         noleax-rtl-heap-baseline-md
         noleax-rtl-heap-baseline-mt
         noleax-rtl-allocate-heap-hook-harness
