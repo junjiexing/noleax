@@ -23,6 +23,7 @@
 #include "noleax/agent/windows/bootstrap.hpp"
 #include "noleax/controller/windows/process.hpp"
 #include "noleax/controller/windows/remote_injector.hpp"
+#include "noleax/controller/windows/thread_hijack_injector.hpp"
 #include "noleax/controller/windows/thread_suspension.hpp"
 #include "noleax/ipc/protocol.hpp"
 #include "noleax/ipc/windows/named_pipe.hpp"
@@ -296,12 +297,35 @@ CaptureSession CaptureSession::launch(const LaunchOptions& launch, const Capture
       SuspendedProcess::create(launch.executable, launch.arguments, launch.working_directory);
   try {
     const auto bootstrap = make_bootstrap(pipe_name, token, capture.timeout);
-    static_cast<void>(inject_remote_thread(process.process_handle(), process.process_id(),
-                                           capture.agent_path, bootstrap, capture.timeout));
     CaptureOptions launch_capture = capture;
     launch_capture.start.capture_kind = noleax::ipc::CaptureKind::kLaunch;
-    ConnectedAgent connected = connect_agent(server, process.process_id(), token, launch_capture);
-    process.resume_main_thread();
+    ConnectedAgent connected{{}, {}};
+    if (capture.method == InjectionMethod::kThreadHijack) {
+      // The stub parked the main thread until the capture is ready; finish()
+      // restores its original RtlUserThreadStart context and resumes it.
+      ThreadHijack hijack{process.process_handle(),
+                          process.process_id(),
+                          capture.agent_path,
+                          bootstrap,
+                          {process.main_thread_handle(), true}};
+      hijack.start();
+      try {
+        connected = connect_agent(server, process.process_id(), token, launch_capture);
+      } catch (...) {
+        hijack.abort();
+        throw;
+      }
+      static_cast<void>(hijack.finish(capture.timeout));
+      process.note_main_thread_resumed();
+    } else if (capture.method == InjectionMethod::kRemoteThread) {
+      static_cast<void>(inject_remote_thread(process.process_handle(), process.process_id(),
+                                             capture.agent_path, bootstrap, capture.timeout));
+      connected = connect_agent(server, process.process_id(), token, launch_capture);
+      process.resume_main_thread();
+    } else {
+      throw ControllerError{"the selected injection method is not implemented for launch",
+                            ERROR_NOT_SUPPORTED};
+    }
     const std::uint32_t process_id = process.process_id();
     const HANDLE process_handle = as_handle(process.process_handle());
     return CaptureSession{std::make_unique<Impl>(
@@ -330,11 +354,27 @@ CaptureSession CaptureSession::attach(std::uint32_t process_id, const CaptureOpt
   const std::wstring pipe_name = noleax::ipc::windows::make_pipe_name(token);
   noleax::ipc::windows::NamedPipeServer server{pipe_name};
   const auto bootstrap = make_bootstrap(pipe_name, token, capture.timeout);
-  static_cast<void>(inject_remote_thread(process.get(), process_id, capture.agent_path, bootstrap,
-                                         capture.timeout));
   CaptureOptions attach_capture = capture;
   attach_capture.start.capture_kind = noleax::ipc::CaptureKind::kAttach;
-  ConnectedAgent connected = connect_agent(server, process_id, token, attach_capture);
+  ConnectedAgent connected{{}, {}};
+  if (capture.method == InjectionMethod::kThreadHijack) {
+    // Attach does not make the stub wait for capture readiness: finish()
+    // restores the thread as soon as the bootstrap returned, which surfaces
+    // stub failures (loader error, deadlocked thread) before the pipe wait
+    // and keeps the hijacked window as short as possible.
+    ThreadHijack hijack{process.get(), process_id, capture.agent_path, bootstrap,
+                        {nullptr, false}};
+    hijack.start();
+    static_cast<void>(hijack.finish(capture.timeout));
+    connected = connect_agent(server, process_id, token, attach_capture);
+  } else if (capture.method == InjectionMethod::kRemoteThread) {
+    static_cast<void>(inject_remote_thread(process.get(), process_id, capture.agent_path,
+                                           bootstrap, capture.timeout));
+    connected = connect_agent(server, process_id, token, attach_capture);
+  } else {
+    throw ControllerError{"the selected injection method is not supported for attach",
+                          ERROR_NOT_SUPPORTED};
+  }
   const HANDLE transferred = process.release();
   return CaptureSession{std::make_unique<Impl>(process_id, transferred, true,
                                                std::move(connected.channel), connected.hello,

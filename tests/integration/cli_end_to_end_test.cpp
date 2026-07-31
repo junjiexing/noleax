@@ -347,19 +347,34 @@ int main(int argc, char* argv[]) {
       throw std::runtime_error{"corrupt trace did not produce exit code 4"};
     }
 
+    const ChildResult hijack_run =
+        run_child(noleax,
+                  {"run", "--inject-method", "thread-hijack", "--agent", utf8_path(agent), "--trace",
+                   utf8_path(output_directory / "cli-hijack.nlx"), "--capture-duration", "1s",
+                   "--hook-profile", "windows-nt-heap", "--compression", "none", "--",
+                   utf8_path(target), utf8_path(output_directory / "cli-hijack.ready"), "1800",
+                   "launch"},
+                  run_log);
+    if (hijack_run.exit_code != 0U ||
+        hijack_run.log.find("capture finalized:") == std::string::npos ||
+        !wait_for_marker(output_directory / "cli-hijack.ready", "ready=1", 2s)) {
+      throw std::runtime_error{"noleax run with thread-hijack did not complete a capture: " +
+                               hijack_run.log};
+    }
+    wait_for_pid(marker_pid(output_directory / "cli-hijack.ready"));
+
     const ChildResult unsupported_method = run_child(
         noleax,
-        {"run", "--inject-method", "thread-hijack", "--agent", utf8_path(agent), "--trace",
+        {"run", "--inject-method", "entrypoint-code", "--agent", utf8_path(agent), "--trace",
          utf8_path(output_directory / "unsupported.nlx"), "--capture-duration", "1ms", "--",
          utf8_path(target), utf8_path(output_directory / "unsupported.ready"), "100", "launch"},
         error_log);
     if (unsupported_method.exit_code != 5U ||
-        unsupported_method.log.find("supports only --inject-method remote-thread") ==
-            std::string::npos) {
+        unsupported_method.log.find("entrypoint-code") == std::string::npos) {
       throw std::runtime_error{"unsupported injection method did not produce exit code 5"};
     }
 
-    std::cout << "status=ok run=1 attach=1 outstanding=1 console=1 json=1 csv=1 stacks=1 "
+    std::cout << "status=ok run=1 attach=1 hijack=1 outstanding=1 console=1 json=1 csv=1 stacks=1 "
                  "errors=1\n";
     return 0;
   } catch (const std::exception& error) {

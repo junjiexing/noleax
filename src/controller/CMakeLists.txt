@@ -7,6 +7,7 @@ if(WIN32)
     windows/injection_common.cpp
     windows/process.cpp
     windows/remote_injector.cpp
+    windows/thread_hijack_injector.cpp
     windows/thread_suspension.cpp
   )
   target_link_libraries(noleax-controller PRIVATE bcrypt Psapi)

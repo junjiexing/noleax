@@ -12,10 +12,17 @@
 
 namespace noleax::controller::windows {
 
+enum class InjectionMethod : std::uint8_t {
+  kRemoteThread,
+  kThreadHijack,
+  kEntrypointCode,
+};
+
 struct CaptureOptions {
   std::filesystem::path agent_path;
   noleax::ipc::StartCaptureRequest start;
   std::chrono::milliseconds timeout{10'000};
+  InjectionMethod method{InjectionMethod::kRemoteThread};
 };
 
 struct LaunchOptions {

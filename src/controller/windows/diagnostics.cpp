@@ -428,11 +428,13 @@ DoctorReport run_doctor(const DoctorOptions& options) {
   add(report, DiagnosticSeverity::kOk, "token", elevation_state());
   add(report, DiagnosticSeverity::kOk, "mitigations", mitigation_state());
 
-  if (options.injection_method == "remote-thread") {
-    add(report, DiagnosticSeverity::kOk, "injection-method", "remote-thread is supported in P6");
+  if (options.injection_method == "remote-thread" || options.injection_method == "thread-hijack") {
+    add(report, DiagnosticSeverity::kOk, "injection-method",
+        options.injection_method + " is supported on Windows x64");
   } else {
     add(report, DiagnosticSeverity::kError, "injection-method",
-        options.injection_method + " is not implemented; P6 supports remote-thread only",
+        options.injection_method + " is not implemented in this build; run and attach support "
+                                   "remote-thread and thread-hijack",
         DiagnosticCategory::kUnsupported);
   }
 

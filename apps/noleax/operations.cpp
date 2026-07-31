@@ -373,12 +373,26 @@ class ConsoleControlGuard final {
   unsupported("compression codec is not supported by the Windows agent");
 }
 
+[[nodiscard]] noleax::controller::windows::InjectionMethod injection_method(
+    noleax::config::InjectionMethod method) {
+  switch (method) {
+    case noleax::config::InjectionMethod::kRemoteThread:
+      return noleax::controller::windows::InjectionMethod::kRemoteThread;
+    case noleax::config::InjectionMethod::kThreadHijack:
+      return noleax::controller::windows::InjectionMethod::kThreadHijack;
+    case noleax::config::InjectionMethod::kEntrypointCode:
+      return noleax::controller::windows::InjectionMethod::kEntrypointCode;
+  }
+  unsupported("injection method is not supported by the Windows controller");
+}
+
 [[nodiscard]] noleax::controller::windows::CaptureOptions capture_options(
     const noleax::config::Configuration& configuration, const std::filesystem::path& trace_path) {
   noleax::controller::windows::CaptureOptions capture;
   capture.agent_path = configuration.injection.agent_path.value.value_or(
       executable_path().parent_path() / "noleax-agent.dll");
   capture.timeout = capture_timeout(configuration);
+  capture.method = injection_method(configuration.injection.method.value);
   capture.start.hook_profile = hook_profile(configuration.capture.hook_profile.value);
   capture.start.compression = compression_codec(configuration.trace.compression.value);
   capture.start.maximum_stack_depth = configuration.capture.max_stack_depth.value;
@@ -393,8 +407,8 @@ class ConsoleControlGuard final {
 }
 
 void validate_capture_support(const noleax::config::Configuration& configuration) {
-  if (configuration.injection.method.value != noleax::config::InjectionMethod::kRemoteThread) {
-    unsupported("P6 supports only --inject-method remote-thread");
+  if (configuration.injection.method.value == noleax::config::InjectionMethod::kEntrypointCode) {
+    unsupported("--inject-method entrypoint-code is implemented in P7B, not in this build");
   }
   if (configuration.trace.on_full.value != noleax::config::TraceFullPolicy::kStop ||
       configuration.trace.max_files.value != 1U) {

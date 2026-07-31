@@ -85,13 +85,17 @@ TEST_CASE("Windows doctor is read-only and diagnoses current-process access",
 
   std::ostringstream output;
   noleax::controller::windows::write_doctor_report(output, report);
-  CHECK(output.str().find("[ok] injection-method: remote-thread is supported in P6") !=
+  CHECK(output.str().find("[ok] injection-method: remote-thread is supported on Windows x64") !=
         std::string::npos);
   CHECK(output.str().find("[ok] open-process: remote-thread access rights are available") !=
         std::string::npos);
   CHECK(output.str().find("summary: ok=") != std::string::npos);
 
   options.injection_method = "thread-hijack";
+  const auto hijack = noleax::controller::windows::run_doctor(options);
+  CHECK_FALSE(hijack.has_errors());
+
+  options.injection_method = "entrypoint-code";
   const auto unsupported = noleax::controller::windows::run_doctor(options);
   CHECK(unsupported.has_error_category(
       noleax::controller::windows::DiagnosticCategory::kUnsupported));

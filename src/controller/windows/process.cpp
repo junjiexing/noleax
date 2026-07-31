@@ -128,6 +128,8 @@ void SuspendedProcess::resume_main_thread() {
   main_thread_suspended_ = false;
 }
 
+void SuspendedProcess::note_main_thread_resumed() noexcept { main_thread_suspended_ = false; }
+
 void SuspendedProcess::terminate(std::uint32_t exit_code_value) noexcept {
   if (valid()) {
     static_cast<void>(TerminateProcess(as_handle(process_), exit_code_value));

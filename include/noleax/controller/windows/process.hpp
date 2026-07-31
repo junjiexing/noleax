@@ -34,6 +34,7 @@ class SuspendedProcess final {
                                                const std::filesystem::path& working_directory = {});
 
   void resume_main_thread();
+  void note_main_thread_resumed() noexcept;
   void terminate(std::uint32_t exit_code) noexcept;
   [[nodiscard]] bool wait(std::chrono::milliseconds timeout) const;
   [[nodiscard]] std::uint32_t exit_code() const;
