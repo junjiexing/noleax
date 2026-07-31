@@ -78,6 +78,7 @@ if(WIN32)
   target_sources(noleax-unit-tests PRIVATE
     unit/controller_diagnostics_test.cpp
     unit/controller_process_test.cpp
+    unit/entrypoint_injector_test.cpp
     unit/ipc_named_pipe_test.cpp
     unit/hook_guard_test.cpp
     unit/hook_backend_test.cpp
@@ -119,7 +120,7 @@ if(WIN32)
   set_tests_properties(cli.end-to-end-trace-analyze PROPERTIES
     LABELS "cli;controller;agent;run;attach;trace;analyzer;outstanding;windows"
     PASS_REGULAR_EXPRESSION
-      "^status=ok run=1 attach=1 hijack=1 outstanding=1 console=1 json=1 csv=1 stacks=1 errors=1"
+      "^status=ok run=1 attach=1 hijack=1 entrypoint=1 outstanding=1 console=1 json=1 csv=1 stacks=1 errors=1"
     RUN_SERIAL TRUE
     TIMEOUT 90
   )
@@ -133,6 +134,53 @@ if(WIN32)
   if(MSVC)
     enable_language(ASM_MASM)
   endif()
+
+  add_executable(noleax-entrypoint-launch-test
+    integration/entrypoint_launch_test.cpp
+  )
+  target_link_libraries(noleax-entrypoint-launch-test PRIVATE
+    noleax::analyzer
+    noleax::controller
+  )
+  noleax_set_project_warnings(noleax-entrypoint-launch-test)
+
+  add_test(NAME controller.entrypoint-launch
+    COMMAND noleax-entrypoint-launch-test
+      "$<TARGET_FILE:noleax-agent>"
+      "$<TARGET_FILE:noleax-controller-target>"
+      "$<TARGET_FILE_DIR:noleax-entrypoint-launch-test>/entrypoint-launch.nlx"
+      "$<TARGET_FILE_DIR:noleax-entrypoint-launch-test>/entrypoint-launch.ready"
+  )
+  set_tests_properties(controller.entrypoint-launch PROPERTIES
+    LABELS "controller;agent;ipc;injection;entrypoint;launch;trace;windows"
+    PASS_REGULAR_EXPRESSION
+      "^status=ok kind=entrypoint ready-before-main=1 state=finalized events=[1-9][0-9]*"
+    RUN_SERIAL TRUE
+    TIMEOUT 90
+  )
+
+  add_executable(noleax-entrypoint-rollback-test
+    integration/entrypoint_rollback_test.cpp
+  )
+  target_link_libraries(noleax-entrypoint-rollback-test PRIVATE
+    noleax::controller
+  )
+  noleax_set_project_warnings(noleax-entrypoint-rollback-test)
+
+  add_test(NAME controller.entrypoint-rollback
+    COMMAND noleax-entrypoint-rollback-test
+      "$<TARGET_FILE:noleax-agent>"
+      "$<TARGET_FILE:noleax-injector-no-bootstrap>"
+      "$<TARGET_FILE:noleax-controller-target>"
+      "$<TARGET_FILE_DIR:noleax-entrypoint-rollback-test>/entrypoint-rollback"
+  )
+  set_tests_properties(controller.entrypoint-rollback PROPERTIES
+    LABELS "controller;agent;injection;entrypoint;rollback;windows"
+    PASS_REGULAR_EXPRESSION
+      "^status=ok reject=1 ready-timeout=1 entry-restored=1"
+    RUN_SERIAL TRUE
+    TIMEOUT 120
+  )
 
   add_executable(noleax-register-workload-target
     targets/register_workload_target.cpp
@@ -891,6 +939,8 @@ if(WIN32)
         noleax-register-workload-target
         noleax-thread-hijack-launch-test
         noleax-thread-hijack-attach-test
+        noleax-entrypoint-launch-test
+        noleax-entrypoint-rollback-test
         noleax-rtl-heap-baseline-md
         noleax-rtl-heap-baseline-mt
         noleax-rtl-allocate-heap-hook-harness
