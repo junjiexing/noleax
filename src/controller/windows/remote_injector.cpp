@@ -1,321 +1,28 @@
 #include "noleax/controller/windows/remote_injector.hpp"
 
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-// clang-format off: tlhelp32.h and psapi.h require Windows base types.
-#include <windows.h>
-#include <tlhelp32.h>
-#include <psapi.h>
-// clang-format on
-
-#include <algorithm>
 #include <array>
-#include <bit>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <cwchar>
 #include <filesystem>
 #include <limits>
-#include <optional>
 #include <string>
-#include <string_view>
-#include <thread>
-#include <utility>
+#include <system_error>
+
+#include "injection_common.hpp"
 
 namespace noleax::controller::windows {
 namespace {
 
-class Handle final {
- public:
-  explicit Handle(HANDLE value = nullptr) noexcept : value_{value} {}
-  ~Handle() {
-    if (value_ != nullptr && value_ != INVALID_HANDLE_VALUE) {
-      static_cast<void>(CloseHandle(value_));
-    }
-  }
-
-  Handle(const Handle&) = delete;
-  Handle& operator=(const Handle&) = delete;
-
-  Handle(Handle&& other) noexcept : value_{std::exchange(other.value_, nullptr)} {}
-  Handle& operator=(Handle&& other) noexcept {
-    if (this != &other) {
-      if (value_ != nullptr && value_ != INVALID_HANDLE_VALUE) {
-        static_cast<void>(CloseHandle(value_));
-      }
-      value_ = std::exchange(other.value_, nullptr);
-    }
-    return *this;
-  }
-
-  [[nodiscard]] HANDLE get() const noexcept { return value_; }
-  [[nodiscard]] bool valid() const noexcept {
-    return value_ != nullptr && value_ != INVALID_HANDLE_VALUE;
-  }
-
- private:
-  HANDLE value_{nullptr};
-};
-
-class RemoteMemory final {
- public:
-  RemoteMemory(HANDLE process, std::size_t size) : process_{process}, size_{size} {
-    address_ = VirtualAllocEx(process_, nullptr, size_, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-    if (address_ == nullptr) {
-      const DWORD error = GetLastError();
-      throw InjectionError{"VirtualAllocEx failed with Windows error " + std::to_string(error),
-                           error};
-    }
-  }
-
-  ~RemoteMemory() {
-    if (address_ != nullptr && owned_) {
-      static_cast<void>(VirtualFreeEx(process_, address_, 0U, MEM_RELEASE));
-    }
-  }
-
-  RemoteMemory(const RemoteMemory&) = delete;
-  RemoteMemory& operator=(const RemoteMemory&) = delete;
-
-  [[nodiscard]] void* get() const noexcept { return address_; }
-  void preserve_for_timed_out_remote_thread() noexcept { owned_ = false; }
-
-  void protect(DWORD protection) {
-    DWORD previous = 0U;
-    if (VirtualProtectEx(process_, address_, size_, protection, &previous) == FALSE) {
-      const DWORD error = GetLastError();
-      throw InjectionError{"VirtualProtectEx failed with Windows error " + std::to_string(error),
-                           error};
-    }
-    if (FlushInstructionCache(process_, address_, size_) == FALSE) {
-      const DWORD error = GetLastError();
-      throw InjectionError{
-          "FlushInstructionCache failed with Windows error " + std::to_string(error), error};
-    }
-  }
-
-  void write(const void* bytes, std::size_t size) { write_at(0U, bytes, size); }
-
-  void write_at(std::size_t offset, const void* bytes, std::size_t size) {
-    if (offset > size_ || size > size_ - offset) {
-      throw InjectionError{"remote write exceeds its allocation", ERROR_BUFFER_OVERFLOW};
-    }
-    SIZE_T written = 0U;
-    auto* destination = static_cast<std::byte*>(address_) + offset;
-    if (WriteProcessMemory(process_, destination, bytes, size, &written) == FALSE ||
-        written != size) {
-      const DWORD error = GetLastError();
-      throw InjectionError{"WriteProcessMemory failed with Windows error " + std::to_string(error),
-                           error};
-    }
-  }
-
-  void read(void* bytes, std::size_t size) const { read_at(0U, bytes, size); }
-
-  void read_at(std::size_t offset, void* bytes, std::size_t size) const {
-    if (offset > size_ || size > size_ - offset) {
-      throw InjectionError{"remote read exceeds its allocation", ERROR_BUFFER_OVERFLOW};
-    }
-    SIZE_T read_size = 0U;
-    const auto* source = static_cast<const std::byte*>(address_) + offset;
-    if (ReadProcessMemory(process_, source, bytes, size, &read_size) == FALSE ||
-        read_size != size) {
-      const DWORD error = GetLastError();
-      throw InjectionError{"ReadProcessMemory failed with Windows error " + std::to_string(error),
-                           error};
-    }
-  }
-
- private:
-  HANDLE process_{nullptr};
-  void* address_{nullptr};
-  std::size_t size_{0U};
-  bool owned_{true};
-};
-
-struct RemoteModule {
-  std::uintptr_t base{0U};
-  std::wstring path;
-};
-
-[[noreturn]] void fail(const char* operation, DWORD error) {
-  throw InjectionError{
-      std::string{operation} + " failed with Windows error " + std::to_string(error), error};
-}
-
-[[nodiscard]] bool equal_case_insensitive(std::wstring_view left,
-                                          std::wstring_view right) noexcept {
-  return left.size() == right.size() && _wcsnicmp(left.data(), right.data(), left.size()) == 0;
-}
-
-[[nodiscard]] std::optional<RemoteModule> find_remote_module(std::uint32_t process_id,
-                                                             std::wstring_view module_name) {
-  Handle snapshot;
-  for (std::uint32_t attempt = 0U; attempt < 8U; ++attempt) {
-    snapshot =
-        Handle{CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, process_id)};
-    if (snapshot.valid()) {
-      break;
-    }
-    const DWORD error = GetLastError();
-    if (error != ERROR_BAD_LENGTH) {
-      fail("CreateToolhelp32Snapshot", error);
-    }
-    std::this_thread::yield();
-  }
-  if (!snapshot.valid()) {
-    fail("CreateToolhelp32Snapshot", GetLastError());
-  }
-
-  MODULEENTRY32W entry{};
-  entry.dwSize = sizeof(entry);
-  if (Module32FirstW(snapshot.get(), &entry) == FALSE) {
-    const DWORD error = GetLastError();
-    if (error == ERROR_NO_MORE_FILES) {
-      return std::nullopt;
-    }
-    fail("Module32FirstW", error);
-  }
-  do {
-    if (equal_case_insensitive(entry.szModule, module_name)) {
-      return RemoteModule{reinterpret_cast<std::uintptr_t>(entry.modBaseAddr), entry.szExePath};
-    }
-    entry.dwSize = sizeof(entry);
-  } while (Module32NextW(snapshot.get(), &entry) != FALSE);
-  if (GetLastError() != ERROR_NO_MORE_FILES) {
-    fail("Module32NextW", GetLastError());
-  }
-  return std::nullopt;
-}
-
-[[nodiscard]] std::optional<RemoteModule> find_remote_image_by_memory(
-    HANDLE process, std::wstring_view module_name) {
-  SYSTEM_INFO system_info{};
-  GetSystemInfo(&system_info);
-  auto address = reinterpret_cast<std::uintptr_t>(system_info.lpMinimumApplicationAddress);
-  const auto maximum = reinterpret_cast<std::uintptr_t>(system_info.lpMaximumApplicationAddress);
-  while (address < maximum) {
-    MEMORY_BASIC_INFORMATION memory{};
-    const SIZE_T queried =
-        VirtualQueryEx(process, std::bit_cast<const void*>(address), &memory, sizeof(memory));
-    if (queried != sizeof(memory)) {
-      const DWORD error = GetLastError();
-      if (error == ERROR_INVALID_PARAMETER) {
-        break;
-      }
-      fail("VirtualQueryEx", error);
-    }
-    const auto base = reinterpret_cast<std::uintptr_t>(memory.BaseAddress);
-    const auto allocation_base = reinterpret_cast<std::uintptr_t>(memory.AllocationBase);
-    if (memory.State == MEM_COMMIT && memory.Type == MEM_IMAGE && base == allocation_base) {
-      std::wstring path(32'768U, L'\0');
-      const DWORD size = GetMappedFileNameW(process, memory.AllocationBase, path.data(),
-                                            static_cast<DWORD>(path.size()));
-      if (size != 0U && size < path.size()) {
-        path.resize(size);
-        if (equal_case_insensitive(std::filesystem::path{path}.filename().native(), module_name)) {
-          return RemoteModule{allocation_base, std::move(path)};
-        }
-      }
-    }
-    if (memory.RegionSize == 0U ||
-        memory.RegionSize > std::numeric_limits<std::uintptr_t>::max() - base) {
-      break;
-    }
-    const auto next = base + memory.RegionSize;
-    if (next <= address) {
-      break;
-    }
-    address = next;
-  }
-  return std::nullopt;
-}
-
-[[nodiscard]] std::optional<RemoteModule> find_remote_module_resilient(
-    HANDLE process, std::uint32_t process_id, std::wstring_view module_name) {
-  try {
-    return find_remote_module(process_id, module_name);
-  } catch (const InjectionError& error) {
-    if (error.system_error() != ERROR_PARTIAL_COPY) {
-      throw;
-    }
-    return find_remote_image_by_memory(process, module_name);
-  }
-}
-
-[[nodiscard]] std::uintptr_t checked_remote_address(std::uintptr_t base, std::uintptr_t offset) {
-  if (offset > std::numeric_limits<std::uintptr_t>::max() - base) {
-    throw InjectionError{"remote procedure address overflows", ERROR_ARITHMETIC_OVERFLOW};
-  }
-  return base + offset;
-}
-
-[[nodiscard]] std::uintptr_t local_procedure_offset(HMODULE module, const char* name) {
-  const FARPROC procedure = GetProcAddress(module, name);
-  if (procedure == nullptr) {
-    fail("GetProcAddress", GetLastError());
-  }
-  const auto module_address = reinterpret_cast<std::uintptr_t>(module);
-  const auto procedure_address = reinterpret_cast<std::uintptr_t>(procedure);
-  if (procedure_address < module_address) {
-    throw InjectionError{"local procedure address precedes its module", ERROR_INVALID_ADDRESS};
-  }
-  return procedure_address - module_address;
-}
-
-struct RemoteThreadResult {
-  std::uint32_t thread_id{0U};
-  std::uint32_t exit_code{0U};
-};
-
-[[nodiscard]] RemoteThreadResult run_remote_thread(HANDLE process, std::uintptr_t procedure,
-                                                   void* parameter,
-                                                   std::chrono::milliseconds timeout,
-                                                   RemoteMemory* parameter_memory,
-                                                   RemoteMemory* procedure_memory = nullptr) {
-  DWORD thread_id = 0U;
-  const auto start = std::bit_cast<LPTHREAD_START_ROUTINE>(procedure);
-  Handle thread{CreateRemoteThread(process, nullptr, 0U, start, parameter, 0U, &thread_id)};
-  if (!thread.valid()) {
-    fail("CreateRemoteThread", GetLastError());
-  }
-  const DWORD timeout_value = timeout.count() >= static_cast<long long>(INFINITE - 1U)
-                                  ? INFINITE - 1U
-                                  : static_cast<DWORD>((std::max)(timeout.count(), 1LL));
-  const DWORD wait_result = WaitForSingleObject(thread.get(), timeout_value);
-  if (wait_result == WAIT_TIMEOUT) {
-    if (parameter_memory != nullptr) {
-      parameter_memory->preserve_for_timed_out_remote_thread();
-    }
-    if (procedure_memory != nullptr) {
-      procedure_memory->preserve_for_timed_out_remote_thread();
-    }
-    throw InjectionError{"remote thread timed out; its parameter allocation was retained",
-                         WAIT_TIMEOUT};
-  }
-  if (wait_result != WAIT_OBJECT_0) {
-    fail("WaitForSingleObject(remote thread)", GetLastError());
-  }
-  DWORD exit_code = 0U;
-  if (GetExitCodeThread(thread.get(), &exit_code) == FALSE) {
-    fail("GetExitCodeThread", GetLastError());
-  }
-  return {thread_id, exit_code};
-}
-
-[[nodiscard]] std::uintptr_t remote_ntdll_procedure(HANDLE process, std::uint32_t process_id,
-                                                    const char* name) {
-  const HMODULE local_ntdll = GetModuleHandleW(L"ntdll.dll");
-  if (local_ntdll == nullptr) {
-    fail("GetModuleHandleW(ntdll)", GetLastError());
-  }
-  const auto remote_ntdll = find_remote_module_resilient(process, process_id, L"ntdll.dll");
-  if (!remote_ntdll.has_value()) {
-    throw InjectionError{"target process does not contain ntdll.dll", ERROR_MOD_NOT_FOUND};
-  }
-  return checked_remote_address(remote_ntdll->base, local_procedure_offset(local_ntdll, name));
-}
+using injection::RemoteMemory;
+using injection::RemoteThreadResult;
+using injection::checked_remote_address;
+using injection::fail;
+using injection::find_remote_module_resilient;
+using injection::local_procedure_offset;
+using injection::remote_ntdll_procedure;
+using injection::run_remote_thread;
+using injection::try_unload_remote_module;
 
 struct alignas(8) RemoteLdrLoadContext {
   std::uintptr_t ldr_load_dll{0U};
@@ -379,17 +86,6 @@ struct LoadedRemoteModule {
                          ERROR_MOD_NOT_FOUND};
   }
   return {context.module_handle, loaded.thread_id};
-}
-
-void try_unload_remote_module(HANDLE process, std::uint32_t process_id,
-                              std::uintptr_t remote_module,
-                              std::chrono::milliseconds timeout) noexcept {
-  try {
-    static_cast<void>(run_remote_thread(process,
-                                        remote_ntdll_procedure(process, process_id, "LdrUnloadDll"),
-                                        std::bit_cast<void*>(remote_module), timeout, nullptr));
-  } catch (...) {
-  }
 }
 
 }  // namespace

@@ -4,6 +4,7 @@ if(WIN32)
   target_sources(noleax-controller PRIVATE
     controller.cpp
     windows/diagnostics.cpp
+    windows/injection_common.cpp
     windows/process.cpp
     windows/remote_injector.cpp
     windows/thread_suspension.cpp
