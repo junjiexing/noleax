@@ -57,6 +57,13 @@ pwsh -NoProfile -File .\scripts\Test-NoleaxPackage.ps1 -SkipBuild
 
 完整、可复现的构建命令见 [BUILDING.md](BUILDING.md)。
 
+## 发布包
+
+main 分支 CI 全部通过后，流水线会用 CPack 生成自包含 ZIP（`bin/` 内含 `noleax.exe` 与
+`noleax-agent.dll`，另含 LICENSE、文档、示例与第三方声明及 SHA-256 校验文件），并上传到
+GitHub Releases 的滚动预发布 `ci-latest`；推送 `v*` 标签则创建对应版本的 release 附件。打包布局
+与发布流程见 [docs/PACKAGING.md](docs/PACKAGING.md)。
+
 ## 快速上手
 
 以下示例假设已进入 `noleax.exe` 所在目录（RC 包的 `bin` 目录或构建输出的 `bin`）。
