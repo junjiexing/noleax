@@ -22,6 +22,7 @@ noleax.exe --config .\examples\analyze-outstanding.toml
 noleax.exe --config .\examples\analyze-events.toml analyze --format csv --output .\events.csv
 ~~~
 
-V1 不支持 `thread-hijack`、`entrypoint-code` 或 `patch`。完整流程见
-[../docs/QUICKSTART.md](../docs/QUICKSTART.md)。
+`run` 支持 `remote-thread`、`thread-hijack`、`entrypoint-code` 和 `static-pe-patch` 注入，
+`attach` 支持 `remote-thread` 和 `thread-hijack`，并可用 `noleax patch` 生成静态 patch 副本。
+完整流程见 [../docs/QUICKSTART.md](../docs/QUICKSTART.md)。
 
