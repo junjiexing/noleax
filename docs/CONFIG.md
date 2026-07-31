@@ -96,9 +96,10 @@ color = "auto"
 
 当前 Windows x64 对尚未实现但已为后续阶段预留的组合返回 5：`trace.on_full` 仅支持 `stop`、
 `trace.max_files` 仅支持 1，attach 的 `injection.unload_on_stop` 仅支持 false，analysis
-每次仅支持一个 input。`injection.method` 在 run 下支持 `remote-thread`、`thread-hijack` 和
-`entrypoint-code`，attach 下支持 `remote-thread` 和 `thread-hijack`（其余组合由配置校验以
-退出码 1 拒绝）。配置值不会被静默忽略。
+每次仅支持一个 input。`injection.method` 在 run 下支持 `remote-thread`、`thread-hijack`、
+`entrypoint-code` 和 `static-pe-patch`（后者要求 `noleax patch` 产物），attach 下支持
+`remote-thread` 和 `thread-hijack`（其余组合由配置校验以退出码 1 拒绝）。配置值不会被
+静默忽略。
 
 `capture.min_size` 与 `--capture-min-size` 语义相同。Windows V1 只在入队前过滤严格小于阈值的
 `RtlAllocateHeap`、`NtAllocateVirtualMemory` 和 `NtMapViewOfSection`；realloc、free/unmap 与 heap

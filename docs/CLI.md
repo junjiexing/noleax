@@ -63,10 +63,14 @@ noleax run [capture-options] [injection-options] -- target [args...]
 - remote-thread
 - thread-hijack
 - entrypoint-code
+- static-pe-patch
 
-P7B Windows x64 三种方法均已实现。控制器创建 suspended 目标，只有 agent ready 后才恢复目标
-主线程。达到 `--capture-duration` 或收到 Ctrl+C 时完成 writer drain 和物理 hook revert；若此时
-目标仍运行，不终止目标。`thread-hijack` 的安全语义见
+P7C Windows x64 全部方法均已实现。`static-pe-patch` 要求目标是 `noleax patch` 生成的副本；
+未打补丁的目标在执行前以退出码 1 拒绝，patched 副本的捕获语义见
+[STATIC_PE_PATCH.md](STATIC_PE_PATCH.md) 与 [ADR 0004](adr/0004-static-pe-patch-run-semantics.md)。
+控制器创建 suspended 目标，只有 agent ready 后才恢复目标主线程。达到
+`--capture-duration` 或收到 Ctrl+C 时完成 writer drain 和物理 hook revert；若此时目标仍运行，
+不终止目标。`thread-hijack` 的安全语义见
 [THREAD_HIJACK_INJECTION.md](THREAD_HIJACK_INJECTION.md)，`entrypoint-code` 的入口补丁与恢复
 语义见 [ENTRYPOINT_INJECTION.md](ENTRYPOINT_INJECTION.md)。
 
@@ -161,8 +165,13 @@ noleax patch --input INPUT --output OUTPUT [options]
 - input 与 output 必须不同。
 - output 已存在时失败，不提供隐式覆盖。
 - V1 只接受原生 x64 EXE。
-- 签名文件默认拒绝。
+- 签名文件默认拒绝，`--allow-break-signature` 时从输出中剥离签名。
 - managed、driver、EFI、packed 或结构异常文件拒绝。
+- patch 只生成输出副本；写临时文件并重新解析验证后才改名。
+- 产物通过 `noleax run --inject-method static-pe-patch` 捕获；直接运行与未打补丁行为一致。
+- patch 会改变文件哈希并通常破坏签名；agent DLL（--agent-name）需与产物同目录部署。
+
+已实现，完整边界见 [STATIC_PE_PATCH.md](STATIC_PE_PATCH.md)。
 
 ## 8. analyze
 
@@ -259,9 +268,9 @@ doctor 不执行注入。
 noleax doctor [--agent PATH] [--target PATH] [--pid PID] [--inject-method METHOD]
 ~~~
 
-未提供可选探针时对应检查显示为 `skipped`。当前 `remote-thread`、`thread-hijack` 和
-`entrypoint-code` 都会通过方法检查。agent/target/PID 可同时提供，以一次完成
-文件架构、运行进程架构和注入权限检查。所有四项均可通过 TOML 的
+未提供可选探针时对应检查显示为 `skipped`。当前 `remote-thread`、`thread-hijack`、
+`entrypoint-code` 和 `static-pe-patch` 都会通过方法检查。agent/target/PID 可同时提供，以一次
+完成文件架构、运行进程架构和注入权限检查。所有四项均可通过 TOML 的
 `injection.agent_path`、`target.path`、`target.pid` 和 `injection.method` 设置，CLI 优先。
 
 ## 11. 退出码

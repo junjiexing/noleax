@@ -68,3 +68,170 @@ stage 编码：1=`LdrLoadDll` 已返回（附 NTSTATUS），2=bootstrap 已返�
   数据（常规 PE 入口点满足）。
 - 与 `thread-hijack` 相同的 XSTATE 限制：stub 恢复 XMM0-15/MXCSR，不覆盖 YMM/ZMM 高位；
   进程入口点处于 CRT 启动前，实际不使用 AVX 状态，风险可忽略。
+
+## 附录 A：stub 完整参考汇编（ml64）
+
+```asm
+; P7B entrypoint-code bootstrap stub (x64). Reference source for the byte
+; array embedded in src/controller/windows/entrypoint_injector.cpp.
+;
+; Runs as the temporarily patched image entrypoint of a suspended-launch
+; target: saves the complete register state, loads the agent with
+; LdrLoadDll, invokes noleax_agent_bootstrap, optionally waits for capture
+; readiness, restores the original entry bytes, flushes the instruction
+; cache, restores registers and jumps to the original entrypoint.
+;
+; rcx = EntryStubData:
+;   00  magic (8)
+;   08  LdrLoadDll absolute (8)
+;   10  UNICODE_STRING.Length (2)
+;   12  UNICODE_STRING.MaximumLength (2)
+;   14  padding (4)
+;   18  UNICODE_STRING.Buffer (8)
+;   20  module handle out (8)
+;   28  bootstrap RVA (8)
+;   30  ready RVA (8)
+;   38  FlushInstructionCache absolute (8)
+;   40  original entry VA (8)
+;   48  patch VA (8)
+;   50  patch length (8)
+;   58  flags (8), bit 0 = wait for capture ready
+;   60  stage (4)
+;   64  LdrLoadDll NTSTATUS (4)
+;   68  bootstrap result (4)
+;   6C  restored flag (4)
+;   70  xmm save area (16 * 16 = 100h)
+;  170  mxcsr (4) + padding (4)
+;  178  BootstrapParameters (120h bytes)
+;  298  original entry bytes (20h bytes)
+
+.code
+entry_stub proc
+    mov     r12, 1122334455667788h   ; patched by the controller: EntryStubData address
+
+    pushfq
+    push    rax
+    push    rbx
+    push    rcx
+    push    rdx
+    push    rsi
+    push    rdi
+    push    rbp
+    push    r8
+    push    r9
+    push    r10
+    push    r11
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+
+    mov     r14, rsp                         ; keep the pushed-state rsp for the restore
+    movdqu  [r12+70h], xmm0
+    movdqu  [r12+80h], xmm1
+    movdqu  [r12+90h], xmm2
+    movdqu  [r12+0A0h], xmm3
+    movdqu  [r12+0B0h], xmm4
+    movdqu  [r12+0C0h], xmm5
+    movdqu  [r12+0D0h], xmm6
+    movdqu  [r12+0E0h], xmm7
+    movdqu  [r12+0F0h], xmm8
+    movdqu  [r12+100h], xmm9
+    movdqu  [r12+110h], xmm10
+    movdqu  [r12+120h], xmm11
+    movdqu  [r12+130h], xmm12
+    movdqu  [r12+140h], xmm13
+    movdqu  [r12+150h], xmm14
+    movdqu  [r12+160h], xmm15
+    stmxcsr [r12+170h]
+    and     rsp, -16
+    sub     rsp, 60h
+    xor     ecx, ecx
+    xor     edx, edx
+    lea     r8, [r12+10h]
+    lea     r9, [r12+20h]
+    call    qword ptr [r12+8]
+    mov     [r12+64h], eax
+    mov     dword ptr [r12+60h], 1
+    test    eax, eax
+    js      restore_entry
+    mov     rax, [r12+20h]
+    test    rax, rax
+    jz      restore_entry
+    lea     rcx, [r12+178h]
+    mov     rdx, [r12+28h]
+    add     rdx, rax
+    call    rdx
+    mov     [r12+68h], eax
+    mov     dword ptr [r12+60h], 2
+    test    eax, eax
+    jnz     restore_entry
+    test    byte ptr [r12+58h], 1
+    jz      ready_ok
+    mov     r13d, 8000000h
+    mov     rbx, [r12+20h]
+    add     rbx, [r12+30h]
+poll_loop:
+    call    rbx
+    test    al, al
+    jnz     ready_ok
+    pause
+    dec     r13d
+    jnz     poll_loop
+    mov     dword ptr [r12+60h], 4
+    jmp     short restore_entry
+ready_ok:
+    mov     dword ptr [r12+60h], 3
+restore_entry:
+    cld
+    mov     rdi, [r12+48h]
+    lea     rsi, [r12+298h]
+    mov     rcx, [r12+50h]
+    rep movsb
+    mov     rcx, -1
+    mov     rdx, [r12+48h]
+    mov     r8, [r12+50h]
+    call    qword ptr [r12+38h]
+    mov     dword ptr [r12+6Ch], 1
+    ldmxcsr [r12+170h]
+    movdqu  xmm0, [r12+70h]
+    movdqu  xmm1, [r12+80h]
+    movdqu  xmm2, [r12+90h]
+    movdqu  xmm3, [r12+0A0h]
+    movdqu  xmm4, [r12+0B0h]
+    movdqu  xmm5, [r12+0C0h]
+    movdqu  xmm6, [r12+0D0h]
+    movdqu  xmm7, [r12+0E0h]
+    movdqu  xmm8, [r12+0F0h]
+    movdqu  xmm9, [r12+100h]
+    movdqu  xmm10, [r12+110h]
+    movdqu  xmm11, [r12+120h]
+    movdqu  xmm12, [r12+130h]
+    movdqu  xmm13, [r12+140h]
+    movdqu  xmm14, [r12+150h]
+    movdqu  xmm15, [r12+160h]
+    ; rax is repurposed as the final jump register; every other register is
+    ; restored exactly. [rsp+112] is the saved-rax slot.
+    mov     rsp, r14                         ; back to the pushed register frame
+    mov     rax, [r12+40h]
+    xchg    rax, [rsp+112]
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     r11
+    pop     r10
+    pop     r9
+    pop     r8
+    pop     rbp
+    pop     rdi
+    pop     rsi
+    pop     rdx
+    pop     rcx
+    pop     rbx
+    pop     rax
+    popfq
+    jmp     rax
+entry_stub endp
+end
+```

@@ -4,9 +4,9 @@
 > 文档版本：0.1
 > 更新日期：2026-07-30
 > 确认日期：2026-07-29
-> 当前阶段：P6 Windows x64 首个端到端工作流完成（`main`）
-> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8、P4.9、P5.1、P5.2、P5.3、P5.4、P5.5、P5.6、P5.7、P6.1、P6.2、P6.3、P6.4、P6.5、P6.6、P6.7
-> 下一工作项：P7A thread hijack（开始前单独分支和 review）
+> 当前阶段：P7 高级注入与 PE patch 三个分支实现完成（等待人工 review 合并）
+> 已完成工作项：P2.1、P2.2、P2.3、P2.4、P2.5、P2.6、P2.7、P3.1、P3.2、P3.3、P3.4、P3.5、P3.6、P3.7、P3.8、P4.1、P4.2、P4.3、P4.4、P4.5、P4.6、P4.7、P4.8、P4.9、P5.1、P5.2、P5.3、P5.4、P5.5、P5.6、P5.7、P6.1、P6.2、P6.3、P6.4、P6.5、P6.6、P6.7、P7A、P7B、P7C
+> 下一工作项：P7 各分支人工 review 与合并，然后进入 P8 V1 硬化与发布候选
 
 ## 1. 文档目的
 
@@ -1559,6 +1559,21 @@ stub 恢复序列最初未回到压栈后的 rsp，pop 读到调用者栈垃圾�
 - 输出副本及原入口跳转。
 - 签名、managed、packed 和架构检查。
 - patch 后重新解析和启动测试。
+
+P7C 状态：实现、自动门禁已完成，等待人工 review 后合并。`patch_pe_image` 只写输出副本：
+新增 `.nlxboot` section（stub + 清零参数区 + marker + ror13 哈希），**保持
+`AddressOfEntryPoint` 不变**，仅把原入口（保留 `endbr64`）前 5 字节改为直接 `jmp rel32`
+到 stub，因此 loader 的 CFG 校验与 IBT 落点不受影响、ASLR 下无需重定位。stub 完全位置无关
+（PEB 链 + 导出哈希解析 kernelbase/ntdll），在任何出口路径上都用
+VirtualProtect+memcpy+NtFlushInstructionCache 恢复入口原始字节后跳回原入口；`run
+--inject-method static-pe-patch` 由控制器把会话参数写入内存映像参数区完成捕获，直接运行则
+与未打补丁行为一致。v1 曾把入口 RVA 指向新 section，hardened（/guard:cf）下 loader 入口调用
+CFG 位图未命中导致 0xC0000409，已改为当前设计并列为回归门禁；stub 的 PE32+ 导出目录偏移
+0x88（误用 PE32 的 0x78 曾越界崩溃）同列为门禁。拒绝矩阵覆盖 DLL、managed、x86、EFI、UPX、
+坏签名、截断、入口越界、overlay、签名（默认拒绝，`--allow-break-signature` 时剥离）、
+输出已存在、二次 patch 与 agent 名非法。运行时语义见
+[ADR 0004](adr/0004-static-pe-patch-run-semantics.md)，完整设计见
+[STATIC_PE_PATCH.md](STATIC_PE_PATCH.md)。
 
 阶段门禁：
 
