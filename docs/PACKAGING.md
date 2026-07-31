@@ -2,8 +2,8 @@
 
 > 状态：P8.6 release-candidate packaging gate
 
-V1 使用 CMake install 与 CPack ZIP 生成自包含目录。包只用于 RC 验证；Noleax 自身许可证、安全联系
-方式和签名策略确定之前，不得公开分发。
+V1 使用 CMake install 与 CPack ZIP 生成自包含目录。Noleax 以 MIT License 发布；包内容的公开
+分发范围（clean-machine 验收、签名策略）仍由 RELEASE_CHECKLIST.md 管控。
 
 ## 生成本地包
 
@@ -61,3 +61,15 @@ pwsh -NoProfile -File .\scripts\Test-NoleaxPackage.ps1 -SkipBuild
 
 这证明包不依赖构建树中的 Noleax DLL；测试 workload 仍由测试构建提供。最终 clean-machine/VM 的人工
 验收属于 P8.7，并应在未安装 Visual Studio 的 Windows x64 环境中执行。
+
+## CI 发布
+
+ci workflow 在 `windows-x64-release` job 的构建与测试全部通过后执行 `cpack -G ZIP`，把
+`noleax-0.1.0-windows-x64.zip` 与 `.sha256` 作为 workflow artifact 保留（30 天）。当整个 CI
+在以下事件上成功时，`release` job 会把同一对文件上传到 GitHub Releases：
+
+- 推送 `v*` 标签：创建（或更新）该标签对应的 release，ZIP 作为附件。
+- 推送 main：更新名为 `ci-latest` 的滚动预发布（prerelease），附件同名替换。
+
+包内含 `bin/`（noleax.exe 与 noleax-agent.dll）、`LICENSE`、第三方声明与 `licenses/` 原始版权
+文本，布局与本地 `cpack` 产物一致。

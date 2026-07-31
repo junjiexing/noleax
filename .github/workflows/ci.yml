@@ -3,6 +3,7 @@ name: ci
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
@@ -92,3 +93,47 @@ jobs:
           cmake --preset $env:PRESET @configureArguments
           cmake --build --preset $env:PRESET
           ctest --preset $env:PRESET
+
+      - name: Package release ZIP
+        if: matrix.preset == 'windows-x64-release'
+        shell: pwsh
+        run: |
+          cpack --config .\build\windows-x64-release\CPackConfig.cmake -G ZIP
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Get-ChildItem .\build\windows-x64-release\package\
+
+      - name: Upload release package artifact
+        if: matrix.preset == 'windows-x64-release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: noleax-windows-x64-package
+          path: build/windows-x64-release/package/*.zip*
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    runs-on: windows-latest
+    needs: [format, windows-x64]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    permissions:
+      contents: write
+    steps:
+      - name: Download release package
+        uses: actions/download-artifact@v4
+        with:
+          name: noleax-windows-x64-package
+
+      - name: Publish tagged release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: "*.zip*"
+
+      - name: Update rolling prerelease
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ci-latest
+          name: "Continuous build (main)"
+          prerelease: true
+          files: "*.zip*"
