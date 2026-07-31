@@ -288,7 +288,7 @@ noleax 自身成功时返回 0，目标进程退出码在摘要中以 `target_ex
 
 ## License
 
-Noleax 自身许可证尚未确定。在许可证明确及正式发布获批前，不应对外分发。
+Noleax 以 [MIT License](LICENSE) 发布。
 
 第三方依赖、版本、Hoox 修改及完整版权文本清单见
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
