@@ -150,7 +150,10 @@ void fill_event(RtlDestroyHeapEvent& event, std::uint64_t queue_sequence, PVOID 
 
 #endif
 
-PVOID NTAPI replacement_rtl_destroy_heap(PVOID heap) noexcept {
+// Not noexcept: SEH exceptions raised by the original API must unwind through this frame
+// (for example HEAP_GENERATE_EXCEPTIONS failures); clang terminates when an exception
+// leaves a noexcept function.
+PVOID NTAPI replacement_rtl_destroy_heap(PVOID heap) {
   const ReplacementRoute route = replacement_lifecycle.enter_unscoped();
   RtlDestroyHeapHookState* hook_state = nullptr;
   RtlDestroyHeapFunction original = nullptr;

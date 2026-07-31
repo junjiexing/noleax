@@ -156,8 +156,11 @@ void fill_event(RtlCreateHeapEvent& event, std::uint64_t queue_sequence, ULONG f
 
 #endif
 
+// Not noexcept: SEH exceptions raised by the original API must unwind through this frame
+// (for example HEAP_GENERATE_EXCEPTIONS failures); clang terminates when an exception
+// leaves a noexcept function.
 PVOID NTAPI replacement_rtl_create_heap(ULONG flags, PVOID heap_base, SIZE_T reserve_size,
-                                        SIZE_T commit_size, PVOID lock, PVOID parameters) noexcept {
+                                        SIZE_T commit_size, PVOID lock, PVOID parameters) {
   const ReplacementRoute route = replacement_lifecycle.enter_unscoped();
   RtlCreateHeapHookState* hook_state = nullptr;
   RtlCreateHeapFunction original = nullptr;

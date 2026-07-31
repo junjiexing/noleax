@@ -289,20 +289,22 @@ void fill_section_event(NtVirtualMemoryEvent& event, std::uint64_t queue_sequenc
 
 #endif
 
+// Not noexcept: SEH exceptions raised by the original API must unwind through these frames
+// (for example HEAP_GENERATE_EXCEPTIONS failures); clang terminates when an exception
+// leaves a noexcept function.
 NTSTATUS NTAPI replacement_nt_allocate_virtual_memory(HANDLE process, PVOID* base_address,
                                                       ULONG_PTR zero_bits, PSIZE_T region_size,
-                                                      ULONG allocation_type,
-                                                      ULONG protect) noexcept;
+                                                      ULONG allocation_type, ULONG protect);
 NTSTATUS NTAPI replacement_nt_free_virtual_memory(HANDLE process, PVOID* base_address,
-                                                  PSIZE_T region_size, ULONG free_type) noexcept;
+                                                  PSIZE_T region_size, ULONG free_type);
 NTSTATUS NTAPI replacement_nt_map_view_of_section(HANDLE section, HANDLE process,
                                                   PVOID* base_address, ULONG_PTR zero_bits,
                                                   SIZE_T commit_size, PLARGE_INTEGER section_offset,
                                                   PSIZE_T view_size, ULONG inherit_disposition,
-                                                  ULONG allocation_type, ULONG protect) noexcept;
-NTSTATUS NTAPI replacement_nt_unmap_view_of_section(HANDLE process, PVOID base_address) noexcept;
+                                                  ULONG allocation_type, ULONG protect);
+NTSTATUS NTAPI replacement_nt_unmap_view_of_section(HANDLE process, PVOID base_address);
 NTSTATUS NTAPI replacement_nt_unmap_view_of_section_ex(HANDLE process, PVOID base_address,
-                                                       ULONG flags) noexcept;
+                                                       ULONG flags);
 
 [[nodiscard]] void* allocate_replacement_address() noexcept {
   return reinterpret_cast<void*>(&replacement_nt_allocate_virtual_memory);
@@ -527,8 +529,7 @@ LONG record_unmap_exception_filter(EXCEPTION_POINTERS* exception_pointers, Repla
 
 NTSTATUS NTAPI replacement_nt_allocate_virtual_memory(HANDLE process, PVOID* base_address,
                                                       ULONG_PTR zero_bits, PSIZE_T region_size,
-                                                      ULONG allocation_type,
-                                                      ULONG protect) noexcept {
+                                                      ULONG allocation_type, ULONG protect) {
   const ReplacementRoute route = allocate_replacement_lifecycle.enter_unscoped();
   NtMemoryHookState* hook_state = nullptr;
   NtAllocateVirtualMemoryFunction original = nullptr;
@@ -627,7 +628,7 @@ NTSTATUS NTAPI replacement_nt_allocate_virtual_memory(HANDLE process, PVOID* bas
 }
 
 NTSTATUS NTAPI replacement_nt_free_virtual_memory(HANDLE process, PVOID* base_address,
-                                                  PSIZE_T region_size, ULONG free_type) noexcept {
+                                                  PSIZE_T region_size, ULONG free_type) {
   const ReplacementRoute route = free_replacement_lifecycle.enter_unscoped();
   NtMemoryHookState* hook_state = nullptr;
   NtFreeVirtualMemoryFunction original = nullptr;
@@ -720,7 +721,7 @@ NTSTATUS NTAPI replacement_nt_map_view_of_section(HANDLE section, HANDLE process
                                                   PVOID* base_address, ULONG_PTR zero_bits,
                                                   SIZE_T commit_size, PLARGE_INTEGER section_offset,
                                                   PSIZE_T view_size, ULONG inherit_disposition,
-                                                  ULONG allocation_type, ULONG protect) noexcept {
+                                                  ULONG allocation_type, ULONG protect) {
   const ReplacementRoute route = map_replacement_lifecycle.enter_unscoped();
   NtMemoryHookState* hook_state = nullptr;
   NtMapViewOfSectionFunction original = nullptr;
@@ -827,7 +828,7 @@ NTSTATUS NTAPI replacement_nt_map_view_of_section(HANDLE section, HANDLE process
   return result;
 }
 
-NTSTATUS NTAPI replacement_nt_unmap_view_of_section(HANDLE process, PVOID base_address) noexcept {
+NTSTATUS NTAPI replacement_nt_unmap_view_of_section(HANDLE process, PVOID base_address) {
   const ReplacementRoute route = unmap_replacement_lifecycle.enter_unscoped();
   NtMemoryHookState* hook_state = nullptr;
   NtUnmapViewOfSectionFunction original = nullptr;
@@ -906,7 +907,7 @@ NTSTATUS NTAPI replacement_nt_unmap_view_of_section(HANDLE process, PVOID base_a
 }
 
 NTSTATUS NTAPI replacement_nt_unmap_view_of_section_ex(HANDLE process, PVOID base_address,
-                                                       ULONG flags) noexcept {
+                                                       ULONG flags) {
   const ReplacementRoute route = unmap_replacement_lifecycle.enter_unscoped();
   NtMemoryHookState* hook_state = nullptr;
   NtUnmapViewOfSectionExFunction original = nullptr;
