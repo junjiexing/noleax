@@ -275,6 +275,41 @@ void RemoteMemory::read_at(std::size_t offset, void* bytes, std::size_t size) co
   return size_of_image;
 }
 
+[[nodiscard]] std::uint32_t remote_entry_point_rva(HANDLE process, std::uintptr_t image_base) {
+  const auto read_remote = [process](std::uintptr_t address, void* bytes, std::size_t size,
+                                     const char* what) {
+    SIZE_T read_size = 0U;
+    if (ReadProcessMemory(process, std::bit_cast<LPCVOID>(address), bytes, size, &read_size) ==
+            FALSE ||
+        read_size != size) {
+      const DWORD error = GetLastError();
+      throw InjectionError{std::string{"cannot read remote "} + what +
+                               " (Windows error " + std::to_string(error) + ")",
+                           error};
+    }
+  };
+  std::uint32_t pe_offset = 0U;
+  read_remote(image_base + 0x3cU, &pe_offset, sizeof(pe_offset), "PE header offset");
+  if (pe_offset > 0x1000U) {
+    throw InjectionError{"remote image has an implausible PE header offset",
+                         ERROR_BAD_EXE_FORMAT};
+  }
+  std::uint32_t signature = 0U;
+  read_remote(checked_remote_address(image_base, pe_offset), &signature, sizeof(signature),
+              "PE signature");
+  if (signature != 0x0000'4550U) {  // "PE\0\0"
+    throw InjectionError{"remote image does not contain a PE signature", ERROR_BAD_EXE_FORMAT};
+  }
+  constexpr std::uint32_t kEntryPointOffset = 4U + 20U + 16U;  // signature + COFF + PE32+ field
+  std::uint32_t entry_point_rva = 0U;
+  read_remote(checked_remote_address(image_base, pe_offset + kEntryPointOffset), &entry_point_rva,
+              sizeof(entry_point_rva), "entry point RVA");
+  if (entry_point_rva == 0U) {
+    throw InjectionError{"remote image does not have an entry point", ERROR_BAD_EXE_FORMAT};
+  }
+  return entry_point_rva;
+}
+
 void try_unload_remote_module(HANDLE process, std::uint32_t process_id,
                               std::uintptr_t remote_module,
                               std::chrono::milliseconds timeout) noexcept {

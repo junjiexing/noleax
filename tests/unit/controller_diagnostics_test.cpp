@@ -96,6 +96,10 @@ TEST_CASE("Windows doctor is read-only and diagnoses current-process access",
   CHECK_FALSE(hijack.has_errors());
 
   options.injection_method = "entrypoint-code";
+  const auto entrypoint = noleax::controller::windows::run_doctor(options);
+  CHECK_FALSE(entrypoint.has_errors());
+
+  options.injection_method = "static-pe-patch";
   const auto unsupported = noleax::controller::windows::run_doctor(options);
   CHECK(unsupported.has_error_category(
       noleax::controller::windows::DiagnosticCategory::kUnsupported));

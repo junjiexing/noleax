@@ -407,9 +407,6 @@ class ConsoleControlGuard final {
 }
 
 void validate_capture_support(const noleax::config::Configuration& configuration) {
-  if (configuration.injection.method.value == noleax::config::InjectionMethod::kEntrypointCode) {
-    unsupported("--inject-method entrypoint-code is implemented in P7B, not in this build");
-  }
   if (configuration.trace.on_full.value != noleax::config::TraceFullPolicy::kStop ||
       configuration.trace.max_files.value != 1U) {
     unsupported("P6 supports only --on-trace-full stop with --max-trace-files 1");

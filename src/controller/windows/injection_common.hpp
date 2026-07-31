@@ -120,6 +120,9 @@ struct RemoteThreadResult {
 // Reads SizeOfImage from the remote PE header of a mapped image.
 [[nodiscard]] std::uint32_t remote_image_size(HANDLE process, std::uintptr_t image_base);
 
+// Reads AddressOfEntryPoint from the remote PE header of a mapped image.
+[[nodiscard]] std::uint32_t remote_entry_point_rva(HANDLE process, std::uintptr_t image_base);
+
 void try_unload_remote_module(HANDLE process, std::uint32_t process_id,
                               std::uintptr_t remote_module,
                               std::chrono::milliseconds timeout) noexcept;

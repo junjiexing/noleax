@@ -363,19 +363,36 @@ int main(int argc, char* argv[]) {
     }
     wait_for_pid(marker_pid(output_directory / "cli-hijack.ready"));
 
+    const ChildResult entrypoint_run =
+        run_child(noleax,
+                  {"run", "--inject-method", "entrypoint-code", "--agent", utf8_path(agent),
+                   "--trace", utf8_path(output_directory / "cli-entrypoint.nlx"),
+                   "--capture-duration", "1s", "--hook-profile", "windows-nt-heap", "--compression",
+                   "none", "--", utf8_path(target),
+                   utf8_path(output_directory / "cli-entrypoint.ready"), "1800", "launch"},
+                  run_log);
+    if (entrypoint_run.exit_code != 0U ||
+        entrypoint_run.log.find("capture finalized:") == std::string::npos ||
+        !wait_for_marker(output_directory / "cli-entrypoint.ready", "ready=1", 2s)) {
+      throw std::runtime_error{"noleax run with entrypoint-code did not complete a capture: " +
+                               entrypoint_run.log};
+    }
+    wait_for_pid(marker_pid(output_directory / "cli-entrypoint.ready"));
+
     const ChildResult unsupported_method = run_child(
         noleax,
-        {"run", "--inject-method", "entrypoint-code", "--agent", utf8_path(agent), "--trace",
-         utf8_path(output_directory / "unsupported.nlx"), "--capture-duration", "1ms", "--",
-         utf8_path(target), utf8_path(output_directory / "unsupported.ready"), "100", "launch"},
+        {"attach", "--pid", "1234", "--inject-method", "entrypoint-code", "--agent",
+         utf8_path(agent), "--trace", utf8_path(output_directory / "unsupported.nlx"),
+         "--capture-duration", "1ms"},
         error_log);
-    if (unsupported_method.exit_code != 5U ||
-        unsupported_method.log.find("entrypoint-code") == std::string::npos) {
-      throw std::runtime_error{"unsupported injection method did not produce exit code 5"};
+    if (unsupported_method.exit_code != 1U ||
+        unsupported_method.log.find("attach supports remote-thread and thread-hijack") ==
+            std::string::npos) {
+      throw std::runtime_error{"unsupported attach injection method did not produce exit code 1"};
     }
 
-    std::cout << "status=ok run=1 attach=1 hijack=1 outstanding=1 console=1 json=1 csv=1 stacks=1 "
-                 "errors=1\n";
+    std::cout << "status=ok run=1 attach=1 hijack=1 entrypoint=1 outstanding=1 console=1 json=1 "
+                 "csv=1 stacks=1 errors=1\n";
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "status=error message=" << error.what() << '\n';

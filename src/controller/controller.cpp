@@ -21,6 +21,7 @@
 #include <utility>
 
 #include "noleax/agent/windows/bootstrap.hpp"
+#include "noleax/controller/windows/entrypoint_injector.hpp"
 #include "noleax/controller/windows/process.hpp"
 #include "noleax/controller/windows/remote_injector.hpp"
 #include "noleax/controller/windows/thread_hijack_injector.hpp"
@@ -317,6 +318,25 @@ CaptureSession CaptureSession::launch(const LaunchOptions& launch, const Capture
       }
       static_cast<void>(hijack.finish(capture.timeout));
       process.note_main_thread_resumed();
+    } else if (capture.method == InjectionMethod::kEntrypointCode) {
+      // The stub restores the original entry bytes itself after the capture
+      // is ready; finish() proves the restore and re-applies page protection.
+      EntrypointInjection injection{process.process_handle(),
+                                    process.process_id(),
+                                    launch.executable.filename().native(),
+                                    capture.agent_path,
+                                    bootstrap};
+      process.resume_main_thread();
+      process.note_main_thread_resumed();
+      try {
+        connected = connect_agent(server, process.process_id(), token, launch_capture);
+      } catch (const std::exception& handshake_error) {
+        const std::string detail = injection.describe_failure();
+        injection.abort();
+        throw ControllerError{std::string{"agent handshake failed after entrypoint bootstrap: "} +
+                              handshake_error.what() + " (" + detail + ")"};
+      }
+      static_cast<void>(injection.finish(capture.timeout));
     } else if (capture.method == InjectionMethod::kRemoteThread) {
       static_cast<void>(inject_remote_thread(process.process_handle(), process.process_id(),
                                              capture.agent_path, bootstrap, capture.timeout));
