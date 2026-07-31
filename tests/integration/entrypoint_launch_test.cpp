@@ -66,10 +66,9 @@ int run(int argc, char* argv[]) {
   auto session = noleax::controller::windows::CaptureSession::launch(launch, capture);
   const bool marker_created = wait_for_file(marker, 4s);
   if (!session.launched_target() || session.stopped() || !marker_created) {
-    std::fprintf(stderr,
-                 "entrypoint launch precondition failed: launched=%u stopped=%u marker=%u\n",
-                 session.launched_target() ? 1U : 0U, session.stopped() ? 1U : 0U,
-                 marker_created ? 1U : 0U);
+    std::fprintf(
+        stderr, "entrypoint launch precondition failed: launched=%u stopped=%u marker=%u\n",
+        session.launched_target() ? 1U : 0U, session.stopped() ? 1U : 0U, marker_created ? 1U : 0U);
     return 3;
   }
   std::ifstream marker_input{marker};

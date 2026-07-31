@@ -41,7 +41,8 @@ class JsonEmitter {
       throw JsonFormatError{"JSON string is not valid UTF-8"};
     }
     raw("\"");
-    for (const unsigned char byte : value) {
+    for (const char byte_char : value) {
+      const auto byte = static_cast<unsigned char>(byte_char);
       switch (byte) {
         case '"':
           raw("\\\"");

@@ -190,8 +190,8 @@ int run(int argc, char* argv[]) {
     [[maybe_unused]] auto session =
         noleax::controller::windows::CaptureSession::attach(rejected.pid, capture);
   } catch (const noleax::controller::windows::InjectionError& error) {
-    rejected_with_export_error = std::string{error.what()}.find("GetProcAddress") !=
-                                 std::string::npos;
+    rejected_with_export_error =
+        std::string{error.what()}.find("GetProcAddress") != std::string::npos;
   }
   if (!rejected_with_export_error) {
     std::fprintf(stderr, "no-bootstrap agent was not rejected with the export error\n");
@@ -207,10 +207,10 @@ int run(int argc, char* argv[]) {
   //    must still produce the baseline digest.
   const TargetRun timed_out = launch_workload(target, directory, "hijack-timeout");
   {
-    const HANDLE process = OpenProcess(PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION |
-                                           PROCESS_VM_OPERATION | PROCESS_VM_READ |
-                                           PROCESS_VM_WRITE | SYNCHRONIZE,
-                                       FALSE, timed_out.pid);
+    const HANDLE process =
+        OpenProcess(PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION |
+                        PROCESS_VM_READ | PROCESS_VM_WRITE | SYNCHRONIZE,
+                    FALSE, timed_out.pid);
     if (process == nullptr) {
       return 10;
     }
@@ -221,8 +221,8 @@ int run(int argc, char* argv[]) {
     bootstrap.controller_process_id = GetCurrentProcessId();
     bool timeout_error = false;
     try {
-      noleax::controller::windows::ThreadHijack hijack{process, timed_out.pid, agent, bootstrap,
-                                                       {nullptr, true}};
+      noleax::controller::windows::ThreadHijack hijack{
+          process, timed_out.pid, agent, bootstrap, {nullptr, true}};
       hijack.start();
       static_cast<void>(hijack.finish(60s));
     } catch (const noleax::controller::windows::InjectionError& error) {

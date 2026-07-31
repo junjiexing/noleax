@@ -19,8 +19,8 @@ using noleax::controller::windows::PePatchException;
 using noleax::controller::windows::PePatchOptions;
 
 std::filesystem::path make_temp_dir() {
-  const auto base = std::filesystem::temp_directory_path() /
-                    std::filesystem::path{"noleax-pe-patch-unit"};
+  const auto base =
+      std::filesystem::temp_directory_path() / std::filesystem::path{"noleax-pe-patch-unit"};
   std::error_code error;
   static_cast<void>(std::filesystem::remove_all(base, error));
   std::filesystem::create_directories(base);
@@ -69,7 +69,8 @@ LayoutInfo layout_of(const std::vector<std::byte>& data) {
   return info;
 }
 
-PePatchOptions options_for(const std::filesystem::path& input, const std::filesystem::path& output) {
+PePatchOptions options_for(const std::filesystem::path& input,
+                           const std::filesystem::path& output) {
   PePatchOptions options;
   options.input = input;
   options.output = output;
@@ -246,8 +247,7 @@ TEST_CASE("patch rejects unsupported and malformed inputs", "[controller][pe-pat
     write_all(input, source);
     write_all(output, source);
     try {
-      static_cast<void>(
-          noleax::controller::windows::patch_pe_image(options_for(input, output)));
+      static_cast<void>(noleax::controller::windows::patch_pe_image(options_for(input, output)));
       FAIL("expected the existing output to be rejected");
     } catch (const PePatchException& error) {
       CHECK(error.code() == PePatchError::kOutputExists);

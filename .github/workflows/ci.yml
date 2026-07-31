@@ -42,8 +42,36 @@ jobs:
           PRESET: ${{ matrix.preset }}
           ENABLE_CLANG_TIDY: ${{ matrix.clang_tidy }}
         run: |
+          $ErrorActionPreference = "Stop"
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
+
+          # Runner images ship C:\vcpkg checkouts that may predate the pinned baseline or be
+          # shallow clones missing it; align the registry with the pinned baseline so manifest
+          # mode resolves the same versions as a local build.
+          $baseline = (Get-Content -Raw vcpkg.json | ConvertFrom-Json).'builtin-baseline'
+          & git -C $env:VCPKG_ROOT cat-file -e "$baseline^{commit}" 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            & git -C $env:VCPKG_ROOT fetch --depth 1 origin $baseline
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          }
+          & git -C $env:VCPKG_ROOT -c advice.detachedHead=false checkout --force --quiet $baseline
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
           .\scripts\Enter-NoleaxDevShell.ps1
+
+          # The VS dev shell only exposes Ninja when the VS CMake component is installed;
+          # install Ninja explicitly when it is not runnable.
+          $ninjaWorks = $false
+          if ($null -ne (Get-Command ninja -ErrorAction SilentlyContinue)) {
+            & ninja --version 2>$null | Out-Null
+            $ninjaWorks = ($LASTEXITCODE -eq 0)
+          }
+          if (-not $ninjaWorks) {
+            choco install ninja --no-progress -y
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          }
+
+          $PSNativeCommandUseErrorActionPreference = $true
 
           $configureArguments = @()
           if ($env:ENABLE_CLANG_TIDY -eq "true") {

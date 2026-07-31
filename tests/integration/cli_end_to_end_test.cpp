@@ -347,14 +347,13 @@ int main(int argc, char* argv[]) {
       throw std::runtime_error{"corrupt trace did not produce exit code 4"};
     }
 
-    const ChildResult hijack_run =
-        run_child(noleax,
-                  {"run", "--inject-method", "thread-hijack", "--agent", utf8_path(agent), "--trace",
-                   utf8_path(output_directory / "cli-hijack.nlx"), "--capture-duration", "1s",
-                   "--hook-profile", "windows-nt-heap", "--compression", "none", "--",
-                   utf8_path(target), utf8_path(output_directory / "cli-hijack.ready"), "1800",
-                   "launch"},
-                  run_log);
+    const ChildResult hijack_run = run_child(
+        noleax,
+        {"run", "--inject-method", "thread-hijack", "--agent", utf8_path(agent), "--trace",
+         utf8_path(output_directory / "cli-hijack.nlx"), "--capture-duration", "1s",
+         "--hook-profile", "windows-nt-heap", "--compression", "none", "--", utf8_path(target),
+         utf8_path(output_directory / "cli-hijack.ready"), "1800", "launch"},
+        run_log);
     if (hijack_run.exit_code != 0U ||
         hijack_run.log.find("capture finalized:") == std::string::npos ||
         !wait_for_marker(output_directory / "cli-hijack.ready", "ready=1", 2s)) {
@@ -363,14 +362,13 @@ int main(int argc, char* argv[]) {
     }
     wait_for_pid(marker_pid(output_directory / "cli-hijack.ready"));
 
-    const ChildResult entrypoint_run =
-        run_child(noleax,
-                  {"run", "--inject-method", "entrypoint-code", "--agent", utf8_path(agent),
-                   "--trace", utf8_path(output_directory / "cli-entrypoint.nlx"),
-                   "--capture-duration", "1s", "--hook-profile", "windows-nt-heap", "--compression",
-                   "none", "--", utf8_path(target),
-                   utf8_path(output_directory / "cli-entrypoint.ready"), "1800", "launch"},
-                  run_log);
+    const ChildResult entrypoint_run = run_child(
+        noleax,
+        {"run", "--inject-method", "entrypoint-code", "--agent", utf8_path(agent), "--trace",
+         utf8_path(output_directory / "cli-entrypoint.nlx"), "--capture-duration", "1s",
+         "--hook-profile", "windows-nt-heap", "--compression", "none", "--", utf8_path(target),
+         utf8_path(output_directory / "cli-entrypoint.ready"), "1800", "launch"},
+        run_log);
     if (entrypoint_run.exit_code != 0U ||
         entrypoint_run.log.find("capture finalized:") == std::string::npos ||
         !wait_for_marker(output_directory / "cli-entrypoint.ready", "ready=1", 2s)) {
@@ -384,11 +382,11 @@ int main(int argc, char* argv[]) {
     remove_file(patched_target);
     remove_file(agent_copy);
     std::filesystem::copy_file(agent, agent_copy);
-    const ChildResult patch = run_child(
-        noleax,
-        {"patch", "--input", utf8_path(target), "--output", utf8_path(patched_target),
-         "--agent-name", "noleax-agent.dll"},
-        run_log);
+    const ChildResult patch =
+        run_child(noleax,
+                  {"patch", "--input", utf8_path(target), "--output", utf8_path(patched_target),
+                   "--agent-name", "noleax-agent.dll"},
+                  run_log);
     if (patch.exit_code != 0U || patch.log.find("patched:") == std::string::npos ||
         !std::filesystem::is_regular_file(patched_target)) {
       throw std::runtime_error{"noleax patch did not produce the patched target: " + patch.log};
@@ -409,12 +407,12 @@ int main(int argc, char* argv[]) {
     }
     wait_for_pid(marker_pid(output_directory / "cli-static.ready"));
 
-    const ChildResult unsupported_method = run_child(
-        noleax,
-        {"attach", "--pid", "1234", "--inject-method", "entrypoint-code", "--agent",
-         utf8_path(agent), "--trace", utf8_path(output_directory / "unsupported.nlx"),
-         "--capture-duration", "1ms"},
-        error_log);
+    const ChildResult unsupported_method =
+        run_child(noleax,
+                  {"attach", "--pid", "1234", "--inject-method", "entrypoint-code", "--agent",
+                   utf8_path(agent), "--trace", utf8_path(output_directory / "unsupported.nlx"),
+                   "--capture-duration", "1ms"},
+                  error_log);
     if (unsupported_method.exit_code != 1U ||
         unsupported_method.log.find("attach supports remote-thread and thread-hijack") ==
             std::string::npos) {

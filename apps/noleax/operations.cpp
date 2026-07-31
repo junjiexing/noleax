@@ -471,8 +471,9 @@ void validate_capture_support(const noleax::config::Configuration& configuration
           !noleax::controller::windows::read_static_patch_info(*configuration.target.path.value)
                .has_value()) {
         throw ApplicationError{
-            1, "the target is not a noleax-patched executable; create one with 'noleax patch' "
-               "before using --inject-method static-pe-patch"};
+            1,
+            "the target is not a noleax-patched executable; create one with 'noleax patch' "
+            "before using --inject-method static-pe-patch"};
       }
       noleax::controller::windows::LaunchOptions launch;
       launch.executable = *configuration.target.path.value;

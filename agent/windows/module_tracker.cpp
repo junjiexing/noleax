@@ -148,10 +148,12 @@ void capture_code_view(RawModuleEvent& event,
                            static_cast<std::uint64_t>(entry.AddressOfRawData) + header.size(),
                            event.pdb_path.data(), to_read)) {
       const auto terminator =
-          std::find(event.pdb_path.begin(), event.pdb_path.begin() + to_read, '\0');
+          std::find(event.pdb_path.begin(),
+                    event.pdb_path.begin() + static_cast<std::ptrdiff_t>(to_read), '\0');
       event.pdb_path_length =
           static_cast<std::uint16_t>(std::distance(event.pdb_path.begin(), terminator));
-      if (terminator == event.pdb_path.begin() + to_read && available > to_read) {
+      if (terminator == event.pdb_path.begin() + static_cast<std::ptrdiff_t>(to_read) &&
+          available > to_read) {
         set_flag(event, RawModuleEventFlag::kPdbPathTruncated);
       }
     }

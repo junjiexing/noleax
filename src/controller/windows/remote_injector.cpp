@@ -14,13 +14,13 @@
 namespace noleax::controller::windows {
 namespace {
 
-using injection::RemoteMemory;
-using injection::RemoteThreadResult;
 using injection::checked_remote_address;
 using injection::fail;
 using injection::find_remote_module_resilient;
 using injection::local_procedure_offset;
 using injection::remote_ntdll_procedure;
+using injection::RemoteMemory;
+using injection::RemoteThreadResult;
 using injection::run_remote_thread;
 using injection::try_unload_remote_module;
 

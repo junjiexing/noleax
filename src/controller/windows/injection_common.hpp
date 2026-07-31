@@ -90,8 +90,7 @@ struct RemoteModule {
 
 [[noreturn]] void fail(const char* operation, DWORD error);
 
-[[nodiscard]] bool equal_case_insensitive(std::wstring_view left,
-                                          std::wstring_view right) noexcept;
+[[nodiscard]] bool equal_case_insensitive(std::wstring_view left, std::wstring_view right) noexcept;
 
 [[nodiscard]] std::optional<RemoteModule> find_remote_module(std::uint32_t process_id,
                                                              std::wstring_view module_name);

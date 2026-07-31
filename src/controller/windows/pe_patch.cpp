@@ -88,8 +88,8 @@ struct Section {
   std::uint32_t characteristics{0U};
 
   [[nodiscard]] std::string_view name_view() const {
-    const auto length = static_cast<std::size_t>(
-        std::find(name.begin(), name.end(), '\0') - name.begin());
+    const auto length =
+        static_cast<std::size_t>(std::find(name.begin(), name.end(), '\0') - name.begin());
     return std::string_view{name.data(), length};
   }
 };
@@ -198,9 +198,8 @@ struct PeImage {
 [[nodiscard]] const Section& entry_section(const PeImage& image) {
   for (const Section& section : image.sections) {
     const std::uint64_t begin = section.virtual_address;
-    const std::uint64_t size =
-        (std::max)(static_cast<std::uint64_t>(section.virtual_size),
-                   static_cast<std::uint64_t>(section.raw_size));
+    const std::uint64_t size = (std::max)(static_cast<std::uint64_t>(section.virtual_size),
+                                          static_cast<std::uint64_t>(section.raw_size));
     if (image.entry_rva >= begin && image.entry_rva < begin + size) {
       return section;
     }
@@ -244,7 +243,8 @@ void validate_patchable(const PeImage& image, std::uint64_t file_size, bool allo
 
   std::uint64_t raw_end = image.size_of_headers;
   for (const Section& section : image.sections) {
-    raw_end = (std::max)(raw_end, static_cast<std::uint64_t>(section.raw_offset) + section.raw_size);
+    raw_end =
+        (std::max)(raw_end, static_cast<std::uint64_t>(section.raw_offset) + section.raw_size);
   }
   const Directory& certificate = image.directories[kDirectorySecurity];
   const bool has_overlay = raw_end < file_size;
@@ -262,10 +262,10 @@ void validate_patchable(const PeImage& image, std::uint64_t file_size, bool allo
     reject(PePatchError::kOverlay, "the image has data appended after its sections");
   }
 
-  const std::uint64_t headers_end = static_cast<std::uint64_t>(image.section_table_offset) +
-                                    static_cast<std::uint64_t>(image.number_of_sections) *
-                                        kSectionHeaderSize +
-                                    kSectionHeaderSize;
+  const std::uint64_t headers_end =
+      static_cast<std::uint64_t>(image.section_table_offset) +
+      static_cast<std::uint64_t>(image.number_of_sections) * kSectionHeaderSize +
+      kSectionHeaderSize;
   std::uint64_t first_raw = file_size;
   for (const Section& section : image.sections) {
     if (section.raw_size != 0U) {
@@ -275,8 +275,8 @@ void validate_patchable(const PeImage& image, std::uint64_t file_size, bool allo
   if (headers_end > first_raw || headers_end > image.size_of_headers) {
     reject(PePatchError::kNoHeaderSpace, "no room for one more section header");
   }
-  if (image.section_alignment < 0x1000U ||
-      image.file_alignment < 0x200U || image.file_alignment > image.section_alignment) {
+  if (image.section_alignment < 0x1000U || image.file_alignment < 0x200U ||
+      image.file_alignment > image.section_alignment) {
     reject(PePatchError::kMalformed, "implausible alignment values");
   }
 }
@@ -285,7 +285,7 @@ void validate_patchable(const PeImage& image, std::uint64_t file_size, bool allo
   if (agent_name.empty() || agent_name.size() > (pepatch::kAgentNameCapacity / 2U) - 1U ||
       agent_name.find_first_of("\\/:*?\"<>|") != std::string::npos) {
     reject(PePatchError::kMalformed,
-             "patch.agent_name must be a bare file name of at most 63 characters");
+           "patch.agent_name must be a bare file name of at most 63 characters");
   }
   std::wstring wide;
   wide.reserve(agent_name.size());
@@ -455,18 +455,17 @@ PePatchResult patch_pe_image(const PePatchOptions& options) {
   result.patch_rva = plan.patch_rva;
 
   // Strip the certificate overlay when allowed; anything else was rejected.
-  const std::uint64_t raw_end = result.signature_removed
-                                    ? static_cast<std::uint64_t>(
-                                          image.directories[kDirectorySecurity].rva)
-                                    : static_cast<std::uint64_t>(data.size());
+  const std::uint64_t raw_end =
+      result.signature_removed
+          ? static_cast<std::uint64_t>(image.directories[kDirectorySecurity].rva)
+          : static_cast<std::uint64_t>(data.size());
   data.resize(static_cast<std::size_t>(raw_end));
 
   const std::uint32_t new_raw_offset = align_up(data.size(), image.file_alignment, "the raw size");
   const std::uint32_t new_raw_size =
       align_up(pepatch::kContentSize, image.file_alignment, "the raw size");
-  const std::vector<std::byte> content =
-      build_section_content(result.section_rva, result.entry_rva, result.patch_rva,
-                            plan.original_bytes, agent_name);
+  const std::vector<std::byte> content = build_section_content(
+      result.section_rva, result.entry_rva, result.patch_rva, plan.original_bytes, agent_name);
 
   Section bootstrap;
   std::memcpy(bootstrap.name.data(), kBootstrapSectionName, sizeof(kBootstrapSectionName) - 1U);
@@ -494,9 +493,9 @@ PePatchResult patch_pe_image(const PePatchOptions& options) {
   std::memcpy(data.data() + plan.patch_raw_offset + 1U, &plan.jump_offset,
               sizeof(plan.jump_offset));
 
-  const std::uint64_t new_header_offset = static_cast<std::uint64_t>(image.section_table_offset) +
-                                          static_cast<std::uint64_t>(image.number_of_sections) *
-                                              kSectionHeaderSize;
+  const std::uint64_t new_header_offset =
+      static_cast<std::uint64_t>(image.section_table_offset) +
+      static_cast<std::uint64_t>(image.number_of_sections) * kSectionHeaderSize;
   write_at<std::uint32_t>(data, new_header_offset + 8U, bootstrap.virtual_size);
   write_at<std::uint32_t>(data, new_header_offset + 12U, bootstrap.virtual_address);
   write_at<std::uint32_t>(data, new_header_offset + 16U, bootstrap.raw_size);
@@ -563,14 +562,16 @@ std::optional<StaticPatchInfo> read_static_patch_info(const std::filesystem::pat
       }
       std::int32_t jump_offset = 0;
       std::memcpy(&jump_offset, data.data() + patch_raw + 1U, sizeof(jump_offset));
-      const std::int64_t target = static_cast<std::int64_t>(image.entry_rva) + patch_offset +
-                                  pepatch::kEntryPatchSize + jump_offset;
+      const std::int64_t target = static_cast<std::int64_t>(image.entry_rva) +
+                                  static_cast<std::int64_t>(patch_offset) +
+                                  static_cast<std::int64_t>(pepatch::kEntryPatchSize) +
+                                  static_cast<std::int64_t>(jump_offset);
       if (target != static_cast<std::int64_t>(section.virtual_address)) {
         return std::nullopt;
       }
-      return StaticPatchInfo{image.entry_rva, section.virtual_address,
-                             section.virtual_address +
-                                 static_cast<std::uint32_t>(pepatch::kParamsOffset)};
+      return StaticPatchInfo{
+          image.entry_rva, section.virtual_address,
+          section.virtual_address + static_cast<std::uint32_t>(pepatch::kParamsOffset)};
     }
     return std::nullopt;
   } catch (const PePatchException&) {

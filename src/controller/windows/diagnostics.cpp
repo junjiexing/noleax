@@ -435,8 +435,9 @@ DoctorReport run_doctor(const DoctorOptions& options) {
         options.injection_method + " is supported on Windows x64");
   } else {
     add(report, DiagnosticSeverity::kError, "injection-method",
-        options.injection_method + " is not implemented; run supports remote-thread, "
-                                   "thread-hijack, entrypoint-code and static-pe-patch",
+        options.injection_method +
+            " is not implemented; run supports remote-thread, "
+            "thread-hijack, entrypoint-code and static-pe-patch",
         DiagnosticCategory::kUnsupported);
   }
 

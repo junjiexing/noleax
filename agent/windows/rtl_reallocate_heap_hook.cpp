@@ -148,8 +148,10 @@ void increment_saturating(std::atomic<std::uint64_t>& value) noexcept {
 
 #endif
 
-PVOID NTAPI replacement_rtl_reallocate_heap(PVOID heap, ULONG flags, PVOID address,
-                                            SIZE_T size) noexcept {
+// Not noexcept: SEH exceptions raised by the original API must unwind through this frame
+// (for example HEAP_GENERATE_EXCEPTIONS failures); clang terminates when an exception
+// leaves a noexcept function.
+PVOID NTAPI replacement_rtl_reallocate_heap(PVOID heap, ULONG flags, PVOID address, SIZE_T size) {
   const ReplacementRoute route = replacement_lifecycle.enter_unscoped();
   RtlReAllocateHeapHookState* hook_state = nullptr;
   RtlReAllocateHeapFunction original = nullptr;

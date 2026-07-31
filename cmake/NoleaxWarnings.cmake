@@ -16,6 +16,12 @@ function(noleax_set_project_warnings target)
       $<$<COMPILE_LANGUAGE:CXX>:-Wpedantic>
       $<$<COMPILE_LANGUAGE:CXX>:-Wconversion>
       $<$<COMPILE_LANGUAGE:CXX>:-Wsign-conversion>
+      # GetProcAddress results are cast to the real function type, which is the
+      # documented Windows idiom; clang's -Wcast-function-type-mismatch rejects it.
+      $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:Clang,AppleClang>>:-Wno-cast-function-type-mismatch>
+      # Windows-only sources use SEH __try/__except guarded by _MSC_VER, which clang
+      # also defines; silence -Wpedantic's extension-token note for them.
+      $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:Clang,AppleClang>>:-Wno-language-extension-token>
     )
     if(NOLEAX_WARNINGS_AS_ERRORS)
       target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Werror>)

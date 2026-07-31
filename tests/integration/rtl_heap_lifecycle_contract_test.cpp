@@ -90,8 +90,7 @@ struct CallObservation {
   return hooks.flush(100'000U) && hooks.uninstall(0U);
 }
 
-[[nodiscard]] bool finish_uninstall(
-    noleax::agent::windows::RtlAllocateHeapHook& hook) noexcept {
+[[nodiscard]] bool finish_uninstall(noleax::agent::windows::RtlAllocateHeapHook& hook) noexcept {
   const auto status = hook.uninstall(0U);
   if (status == noleax::agent::HookUninstallStatus::kUninstalled ||
       status == noleax::agent::HookUninstallStatus::kNotInstalled) {
@@ -115,28 +114,26 @@ struct CallObservation {
       result.allocate.status == noleax::agent::HookInstallStatus::kAlreadyReplaced ||
       result.allocate.status == noleax::agent::HookInstallStatus::kBackendStopped;
   const bool rolled_back =
-      result.create.installed() && expected_failure &&
-      !hooks.create_hook().is_installed() && !hooks.create_hook().has_pending_teardown() &&
-      coordinator_backend.installed_count() == 0U &&
+      result.create.installed() && expected_failure && !hooks.create_hook().is_installed() &&
+      !hooks.create_hook().has_pending_teardown() && coordinator_backend.installed_count() == 0U &&
       coordinator_backend.trampoline_lifetime_lease_count() == 0U;
 
   const bool coordinator_uninstalled = hooks.uninstall();
   const bool coordinator_shutdown = coordinator_backend.shutdown();
   const bool blocker_uninstalled = finish_uninstall(blocker);
   const bool blocker_shutdown = blocker_backend.shutdown();
-  if (!rolled_back || !coordinator_uninstalled || !coordinator_shutdown ||
-      !blocker_uninstalled || !blocker_shutdown) {
-    std::fprintf(stderr,
-                 "partial install rollback failed: create=%u allocate=%u installed=%u "
-                 "pending=%u backend=%zu leases=%zu coordinator=%u/%u blocker=%u/%u\n",
-                 static_cast<unsigned int>(result.create.status),
-                 static_cast<unsigned int>(result.allocate.status),
-                 hooks.create_hook().is_installed() ? 1U : 0U,
-                 hooks.create_hook().has_pending_teardown() ? 1U : 0U,
-                 coordinator_backend.installed_count(),
-                 coordinator_backend.trampoline_lifetime_lease_count(),
-                 coordinator_uninstalled ? 1U : 0U, coordinator_shutdown ? 1U : 0U,
-                 blocker_uninstalled ? 1U : 0U, blocker_shutdown ? 1U : 0U);
+  if (!rolled_back || !coordinator_uninstalled || !coordinator_shutdown || !blocker_uninstalled ||
+      !blocker_shutdown) {
+    std::fprintf(
+        stderr,
+        "partial install rollback failed: create=%u allocate=%u installed=%u "
+        "pending=%u backend=%zu leases=%zu coordinator=%u/%u blocker=%u/%u\n",
+        static_cast<unsigned int>(result.create.status),
+        static_cast<unsigned int>(result.allocate.status),
+        hooks.create_hook().is_installed() ? 1U : 0U,
+        hooks.create_hook().has_pending_teardown() ? 1U : 0U, coordinator_backend.installed_count(),
+        coordinator_backend.trampoline_lifetime_lease_count(), coordinator_uninstalled ? 1U : 0U,
+        coordinator_shutdown ? 1U : 0U, blocker_uninstalled ? 1U : 0U, blocker_shutdown ? 1U : 0U);
     return 21;
   }
   return 0;

@@ -2,6 +2,7 @@
 #define NOMINMAX
 #include <windows.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstddef>
@@ -94,8 +95,13 @@ int main() {
   std::atomic<std::uint64_t> failures{0U};
   std::atomic<bool> start{false};
   std::atomic<bool> stop{false};
+  // Leave scheduling headroom so the thread churner is not starved on small-core machines.
+  const std::size_t hardware_threads =
+      static_cast<std::size_t>(std::thread::hardware_concurrency());
+  const std::size_t worker_count =
+      hardware_threads > 3U ? std::min(kWorkerCount, hardware_threads - 2U) : 2U;
   std::array<std::thread, kWorkerCount> workers;
-  for (std::size_t worker_index = 0U; worker_index < workers.size(); ++worker_index) {
+  for (std::size_t worker_index = 0U; worker_index < worker_count; ++worker_index) {
     workers[worker_index] = std::thread{[&, worker_index] {
       ready.fetch_add(1U, std::memory_order_release);
       while (!start.load(std::memory_order_acquire)) {
@@ -136,7 +142,7 @@ int main() {
     }
   }};
 
-  const bool all_ready = wait_for_at_least(ready, kWorkerCount);
+  const bool all_ready = wait_for_at_least(ready, worker_count);
   start.store(true, std::memory_order_release);
   bool reached_pre_uninstall = false;
   if (all_ready) {
@@ -169,8 +175,8 @@ int main() {
 
   stop.store(true, std::memory_order_release);
   start.store(true, std::memory_order_release);
-  for (auto& worker : workers) {
-    worker.join();
+  for (std::size_t worker_index = 0U; worker_index < worker_count; ++worker_index) {
+    workers[worker_index].join();
   }
   thread_churner.join();
 
