@@ -70,7 +70,9 @@ P7C Windows x64 全部方法均已实现。`static-pe-patch` 要求目标是 `no
 [STATIC_PE_PATCH.md](STATIC_PE_PATCH.md) 与 [ADR 0004](adr/0004-static-pe-patch-run-semantics.md)。
 控制器创建 suspended 目标，只有 agent ready 后才恢复目标主线程。达到
 `--capture-duration` 或收到 Ctrl+C 时完成 writer drain 和物理 hook revert；若此时目标仍运行，
-不终止目标。`thread-hijack` 的安全语义见
+不终止目标。若目标先于捕获停止自行退出，agent 随进程消失，无法执行 drain 与 revert：noleax
+结束会话并保留已按 flush 间隔落盘的 trace（缺少尾部记录），输出 target_exit_code 并以退出码 2
+报告结果不完整。`thread-hijack` 的安全语义见
 [THREAD_HIJACK_INJECTION.md](THREAD_HIJACK_INJECTION.md)，`entrypoint-code` 的入口补丁与恢复
 语义见 [ENTRYPOINT_INJECTION.md](ENTRYPOINT_INJECTION.md)。
 
