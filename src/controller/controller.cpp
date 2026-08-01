@@ -38,6 +38,10 @@ namespace {
 
 [[nodiscard]] HANDLE as_handle(void* value) noexcept { return static_cast<HANDLE>(value); }
 
+[[nodiscard]] bool closed_pipe(const noleax::ipc::windows::PipeError& error) noexcept {
+  return error.system_error() == ERROR_NO_DATA || error.system_error() == ERROR_BROKEN_PIPE;
+}
+
 class OwnedHandle final {
  public:
   explicit OwnedHandle(HANDLE value = nullptr) noexcept : value_{value} {}
@@ -150,19 +154,31 @@ class CaptureSession::Impl final {
       return final_status_;
     }
     require_active();
-    const noleax::ipc::CaptureStatus drained =
-        transact(noleax::ipc::MessageType::kStopCapture, noleax::ipc::MessageType::kCaptureDrained);
-    if (drained.state != noleax::ipc::AgentState::kDrained) {
-      throw ControllerError{"agent did not enter the drained state"};
+    try {
+      const noleax::ipc::CaptureStatus drained = transact(
+          noleax::ipc::MessageType::kStopCapture, noleax::ipc::MessageType::kCaptureDrained);
+      if (drained.state != noleax::ipc::AgentState::kDrained) {
+        throw ControllerError{"agent did not enter the drained state"};
+      }
+      ThreadSuspension suspension{process_id_, hello_.worker_thread_id};
+      final_status_ = transact(noleax::ipc::MessageType::kFinalizeHooks,
+                               noleax::ipc::MessageType::kCaptureFinalized);
+      if (final_status_.state != noleax::ipc::AgentState::kFinalized) {
+        throw ControllerError{"agent did not enter the finalized state"};
+      }
+      stopped_ = true;
+      return final_status_;
+    } catch (const noleax::ipc::windows::PipeError& error) {
+      if (!closed_pipe(error) || !wait_for_target(std::chrono::milliseconds{0})) {
+        throw;
+      }
+      // The target exited on its own before finalization, so the agent and the pipe went
+      // away with it. End the session without finalization instead of failing the stop.
+      stopped_ = true;
+      final_status_ = noleax::ipc::CaptureStatus{};
+      final_status_.state = noleax::ipc::AgentState::kFailed;
+      return final_status_;
     }
-    ThreadSuspension suspension{process_id_, hello_.worker_thread_id};
-    final_status_ = transact(noleax::ipc::MessageType::kFinalizeHooks,
-                             noleax::ipc::MessageType::kCaptureFinalized);
-    if (final_status_.state != noleax::ipc::AgentState::kFinalized) {
-      throw ControllerError{"agent did not enter the finalized state"};
-    }
-    stopped_ = true;
-    return final_status_;
   }
 
   [[nodiscard]] bool wait_for_target(std::chrono::milliseconds timeout) const {

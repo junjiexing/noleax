@@ -445,6 +445,16 @@ void validate_capture_support(const noleax::config::Configuration& configuration
     throw ApplicationError{target_exited ? 2 : 3,
                            std::string{"cannot finalize capture: "} + error.what()};
   }
+  if (final.state != noleax::ipc::AgentState::kFinalized) {
+    std::cout << "capture ended: trace=" << noleax::config::path_to_utf8(trace_path)
+              << " pid=" << session.process_id();
+    if (target_exited) {
+      std::cout << " target_exit_code=" << session.target_exit_code();
+    }
+    std::cout << " note=target exited before the agent finalized the capture; trace trailer is "
+                 "missing\n";
+    return 2;
+  }
   std::cout << "capture finalized: trace=" << noleax::config::path_to_utf8(trace_path)
             << " pid=" << session.process_id() << " observed=" << final.observed_calls
             << " written=" << final.written_events << " filtered=" << final.filtered_calls

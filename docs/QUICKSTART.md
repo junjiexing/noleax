@@ -31,8 +31,9 @@
 ~~~
 
 目标退出、达到 `--capture-duration` 或按 Ctrl+C 时，Noleax 会停止捕获、drain writer 并输出统计。
-达到 duration 或 Ctrl+C 不会终止仍在运行的目标。先用短时、可重复 workload 建立未注入基线，再对
-长期进程使用 attach。
+达到 duration 或 Ctrl+C 不会终止仍在运行的目标。如果目标在捕获停止前自行退出，agent 随进程
+消失，无法完成 drain：命令保留已落盘的 trace（缺少尾部记录），输出 target_exit_code 并以退出
+码 2 结束。先用短时、可重复 workload 建立未注入基线，再对长期进程使用 attach。
 
 默认 profile `windows-native` 同时捕获 NT Heap 与 NT virtual-memory API。只关注 heap 时显式使用
 `windows-nt-heap` 可减少事件量和干扰。

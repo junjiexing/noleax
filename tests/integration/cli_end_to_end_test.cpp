@@ -338,6 +338,23 @@ int main(int argc, char* argv[]) {
     }
     verify_outstanding_json(attach_json, true);
 
+    const auto exit_trace = output_directory / "cli-exit.nlx";
+    const auto exit_marker = output_directory / "cli-exit.ready";
+    const auto exit_log = output_directory / "cli-exit.log";
+    for (const auto& path : {exit_trace, exit_marker, exit_log}) {
+      remove_file(path);
+    }
+    const ChildResult exit_run =
+        run_child(noleax,
+                  {"run", "--agent", utf8_path(agent), "--trace", utf8_path(exit_trace),
+                   "--hook-profile", "windows-nt-heap", "--compression", "none", "--",
+                   utf8_path(target), utf8_path(exit_marker), "300", "launch"},
+                  exit_log);
+    if (exit_run.exit_code != 2U || exit_run.log.find("target_exit_code=0") == std::string::npos ||
+        exit_run.log.find("cannot finalize capture") != std::string::npos) {
+      throw std::runtime_error{"noleax run did not handle a self-exiting target: " + exit_run.log};
+    }
+
     const auto corrupt_trace = output_directory / "cli-corrupt.nlx";
     const auto error_log = output_directory / "cli-error.log";
     write_file(corrupt_trace, "not a Noleax trace");
