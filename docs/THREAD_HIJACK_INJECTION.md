@@ -1,6 +1,4 @@
-# Thread Hijack 注入（P7A）
-
-> 状态：P7A Windows x64 完成
+# Thread Hijack 注入
 > 注入方式：`thread-hijack`，`run` 与 `attach` 均支持
 
 ## 1. 目的与适用范围
@@ -146,8 +144,8 @@ jmp     spin                   ; 停在此循环，等待控制器恢复上下�
   - hijack attach 产生合法 trace，且 `preexisting_allocations_unknown=true`。
   - 缺少 bootstrap 导出的 agent 镜像在接触线程前被拒绝。
   - 不可达 pipe 强制 stub ready 超时，`finish()` 恢复线程，目标 digest 仍与基线一致。
-- CLI e2e 增加 `run --inject-method thread-hijack` 覆盖；`entrypoint-code` 在 P7B 前仍返回 5。
-- doctor 将 `remote-thread`/`thread-hijack` 报告为支持，`entrypoint-code` 报告为未实现。
+- CLI e2e 覆盖 `run --inject-method thread-hijack`。
+- doctor 将 `remote-thread`/`thread-hijack`/`entrypoint-code` 报告为支持。
 
 ## 8. 已知限制
 

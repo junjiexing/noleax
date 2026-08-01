@@ -1,10 +1,9 @@
 # Windows NT section view hook
 
-> 状态：P5.7 Windows x64 完成；section view 已接入产品 profile
 
 ## 1. 规范化入口
 
-`NtMemoryHooks` 在 P5.5 协调安装：
+`NtMemoryHooks` 协调安装以下入口：
 
 - `NtMapViewOfSection`；
 - `NtUnmapViewOfSection`；
@@ -19,7 +18,7 @@ in-flight 生命周期，只有两个 target 都 revert 且 callback quiescent �
 
 ## 2. 热路径与 raw event
 
-P5.5 将统一 `RtlHeapEvent` 扩展为固定 664 bytes，新增：
+统一 `RtlHeapEvent` 扩展为固定 664 bytes，新增：
 
 - raw section handle；
 - 调用前 section offset；
@@ -48,7 +47,7 @@ install/uninstall 入口也标记为 internal scope，防止 Hoox 安装其他 h
 `NtUnmapViewOfSectionEx`。同时 hook legacy 与 Ex unmap 是避免 wrapper view 假阳性的必要条件；二者
 仍归一为同一种 trace operation，避免重复生命周期。
 
-## 5. 自动门禁
+## 5. 自动验证
 
 合同与 trace 测试覆盖：
 
@@ -66,4 +65,4 @@ Hardened registry、CFG/CET image 检查及 Application Verifier/Full Page Heap 
 组合 trace 和 race 目标。
 
 最终结果：Debug/Release 195/195、hardened 216/216、21 个 PE、五组 race 100/100、长 ABI 差分
-3/3、Application Verifier/Full Page Heap 3/3；本轮 16 个 IFEO target key 全部清理。
+3/3、Application Verifier/Full Page Heap 3/3；16 个 IFEO target key 全部清理。

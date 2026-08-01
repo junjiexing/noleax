@@ -12,7 +12,7 @@ corrupt input.
 | CRC mismatch or malformed framing | Reject input; do not emit a completed result | 4 |
 | Unsupported future major version | Reject as incompatible | 4 |
 
-`cli.trace-recovery-compatibility` is the CLI-level P8 contract. It creates traces with a truncated
+`cli.trace-recovery-compatibility` is the CLI-level compatibility contract. It creates traces with a truncated
 final chunk, an unknown event record, a future minor header extension, a corrupt final chunk, and a
 future major version. The first three must retain the event from the last completed event chunk in
 valid JSON. Hard failures must not contain a completed completeness summary.

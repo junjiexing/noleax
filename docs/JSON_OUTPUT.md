@@ -1,13 +1,12 @@
 # Noleax JSON 输出
 
-> 状态：P6.7 writer、schema、真实元数据与公开 CLI 完成
 > schema：`docs/schema/noleax-analysis-v1.schema.json`
 > 日期：2026-07-29
 
 ## 1. 目标与边界
 
 JSON 输出是面向程序消费的版本化接口。V1 提供 `JsonWriter`、`analyze_events_to_json` 和
-`analyze_outstanding_to_json`。P6.7 的公开 CLI 已统一接入文件、退出码和真实符号展示，三种格式
+`analyze_outstanding_to_json`。公开 CLI 已统一接入文件、退出码和真实符号展示，三种格式
 共享 filter 和 presentation resolver。
 
 events 管线边读 trace 边写匹配 Event 和全部 Loss，只保留当前受限 chunk，不将全部事件构造成

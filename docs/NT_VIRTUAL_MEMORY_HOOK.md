@@ -1,6 +1,5 @@
 # Windows NtAllocateVirtualMemory/NtFreeVirtualMemory Hook
 
-> 状态：P5.4 allocate/free 门禁完成；P5.5 已并入 section-view 协调器
 > 范围：NT virtual-memory reserve/commit/decommit/release、MappingId generation、远程进程分类与安全卸载
 
 ## 1. Adapter 合同
@@ -40,7 +39,7 @@ writer 使用 `api_id=6/7`，只为当前进程成功操作分配 `MappingId`：
 
 ## 3. Trace 与分析
 
-P5.4 将统一 raw event 扩展为 640 bytes；P5.5 加入 section 字段后为 664 bytes。
+为容纳 NT VM 字段，统一 raw event 扩展为 640 bytes；加入 section 字段后当前为 664 bytes。
 `VmAllocateEvent` 的 wire payload 同步增加规范化 generation base/size，完整 record 为 152 bytes。
 `GenerationTracker` 对 commit 视为已有 generation 更新，对 decommit 保持 live，只让 release 结束它。
 
@@ -59,11 +58,11 @@ dictionary 和文件大小上限沿用 [TRACE_WRITER.md](TRACE_WRITER.md) 的合
 - NT Heap 外层调用造成的真实嵌套 NT VM 递归抑制；
 - queue overflow 计数守恒、模块 pin、并发 thread churn 和 quiescent teardown。
 
-2026-07-30 验收结果：Debug/Release 各 193/193，hardened 213/213；20 个 PE 通过 CFG/CET metadata，
+验证结果：Debug/Release 各 193/193，hardened 213/213；20 个 PE 通过 CFG/CET metadata，
 五个 quiescence 目标报告 `cfg=1 cet=1`。新增 NT VM race 连续 100/100，MD/MT 8×20,000×2 长差分
-3/3。Application Verifier/Full Page Heap 下 workload、五组 race、trace 和合同各三轮通过；本轮
+3/3。Application Verifier/Full Page Heap 下 workload、五组 race、trace 和合同各三轮通过；
 54 份 `.dat` 日志按 15 个 image 导出 XML 后为零 `LogEntry`，15 个 IFEO key 全部清理。
 
-P5.7 已将 VM 与 section-view family 接入 `windows-virtual-memory` 和 `windows-native` 产品 profile；
-native 模式与 NT Heap 共用 queue，并通过完整组合、过滤、统计和逻辑停录门禁。详见
+VM 与 section-view family 已接入 `windows-virtual-memory` 和 `windows-native` 产品 profile；
+native 模式与 NT Heap 共用 queue，并通过完整组合、过滤、统计和逻辑停录验证。详见
 [WINDOWS_HOOK_PROFILES.md](WINDOWS_HOOK_PROFILES.md)。

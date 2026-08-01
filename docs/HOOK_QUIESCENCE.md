@@ -1,6 +1,5 @@
 # Windows replacement quiescence
 
-> 状态：P5.7 Windows x64 完成；产品 profile 已拆分逻辑停录与物理卸载
 > 范围：Windows memory adapter 的停止记录、并发 revert、trampoline 回收和代码生命周期
 
 ## 1. 要解决的窗口
@@ -24,7 +23,7 @@ revert，再等 replacement counter”仍不安全。
 | `original` | 只调用 trampoline，不再产生事件 |
 | `target` | 调用对应的已恢复 target，不访问 session、queue、guard 或 trampoline |
 
-P5.7 另维护 `recording_in_flight`：只有读取到 `record` 快照的调用计入它；所有 replacement 调用仍计入
+此外另维护 `recording_in_flight`：只有读取到 `record` 快照的调用计入它；所有 replacement 调用仍计入
 原有 `in_flight`。产品停止严格按以下顺序执行：
 
 1. 所选 hook 一次性执行 `record -> original`，关闭新事件。
@@ -59,7 +58,7 @@ replacement 未在有界等待内退出，lease 不释放，Hoox 不 flush。若
 original trampoline、event queue、guard runtime 引用和 backend lease 都转为进程级保留，不能为了
 避免泄漏而释放仍可能被线程使用的状态。
 
-P5.3 heap 组合对象与 P5.5 `NtMemoryHooks` 的 event queue 都由独立所有权持有。若协调安装的 hook
+heap 组合对象与 `NtMemoryHooks` 的 event queue 都由独立所有权持有。若协调安装的 hook
 任一无法 quiesce，协调器会
 连同 hook state 一起保留共享 queue，避免只保留单 hook state、却随后析构其外部 queue 的
 use-after-free。
@@ -94,9 +93,9 @@ Windows 代码更新临界区：
 - 使用 Hoox 已有的 VirtualAlloc-backed metal array，patch apply 临界区不走 process heap。
 
 无法打开或暂停的受保护线程仍是当前边界；当前版本不支持 protected process。运行中安装的线程 PC
-重定位也不在本阶段范围内，只在 hook 激活后创建压力线程并验证并发停止。
+重定位也不在当前范围内，只在 hook 激活后创建压力线程并验证并发停止。
 
-## 7. 自动验收
+## 7. 自动验证
 
 测试覆盖：
 
@@ -109,23 +108,22 @@ Windows 代码更新临界区：
 - 成功 stop 和 `FreeLibrary` 后模块仍被 pin，导出代码仍可执行；
 - 原有 writer final drain、MD/MT ABI 差分和全量回归。
 
-P5.7 新增 native profile 组合门禁：九个逻辑 API 共用一个 queue；持续 heap/VM worker 与线程 churn
+native profile 组合验证：九个逻辑 API 共用一个 queue；持续 heap/VM worker 与线程 churn
 期间先逻辑停录，停录后的九组 recordable counter 保持不变；writer 先完成并退出，worker 停止后才
-物理 uninstall。该门禁同时验证 `written + filtered + dropped = observed` 和正式 trace 回读。
+物理 uninstall。该组合同时验证 `written + filtered + dropped = observed` 和正式 trace 回读。
 
-最终门禁中五组既有 race 与 native profile 各连续 100/100；Debug/Release 各 205/205、hardened
+整体验证中，五组既有 race 与 native profile 各连续 100/100；Debug/Release 各 205/205、hardened
 230/230，Application Verifier/Full Page Heap 三轮通过。
 
-P5.4 Debug/Release 全量均为 193/193，hardened 为 213/213。加入 Windows RWX 暂停 overlay 后，
-allocate/reallocate/free、五 hook heap lifecycle 和双 hook NT VM 并发 race（含 thread churn）各连续
-100 次通过；overlay
-前原 allocate Debug 测试在第 17 次出现崩溃。Release module-retention、passthrough、writer 与组合
-生命周期测试也全部通过。
+NT VM 组合加入时，Debug/Release 全量均为 193/193，hardened 为 213/213。加入 Windows RWX 暂停
+overlay 后，allocate/reallocate/free、五 hook heap lifecycle 和双 hook NT VM 并发 race（含 thread
+churn）各连续 100 次通过；overlay 前原 allocate Debug 测试在第 17 次出现崩溃。Release
+module-retention、passthrough、writer 与组合生命周期测试也全部通过。
 
-P5.5 将 NT memory 组合扩展到 allocate/free/map/legacy unmap/Ex unmap 五个物理入口。Debug/Release
-各 195/195、hardened 216/216；五组 race 各 100/100，其中 NT memory workload 同时执行 direct
-section map/legacy unmap 与 `MapViewOfFile`/Ex unmap。停止后四种逻辑 operation 的计数均保持稳定，
-共享 queue 的 `recordable = dequeued + dropped` 守恒。
+section 入口加入后，NT memory 组合扩展到 allocate/free/map/legacy unmap/Ex unmap 五个物理入口。
+Debug/Release 各 195/195、hardened 216/216；五组 race 各 100/100，其中 NT memory workload 同时执行
+direct section map/legacy unmap 与 `MapViewOfFile`/Ex unmap。停止后四种逻辑 operation 的计数均保持
+稳定，共享 queue 的 `recordable = dequeued + dropped` 守恒。
 
 Release x64 object 的 replacement 反汇编复核确认，正常路径只调用 original/恢复后的 target、
 固定 TEB 槽 guard、`GetLastError`/`SetLastError`、`QueryPerformanceCounter`、

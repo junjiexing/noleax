@@ -1,6 +1,5 @@
 # Hook Recursion and Internal-Thread Guard
 
-> 状态：P4.4 Windows x64 完成
 > 范围：入口分类与抑制判定；尚不生成内存事件
 
 ## 1. 目标
@@ -13,8 +12,8 @@ allocator replacement 必须在不分配内存、不获取锁、不执行 I/O、
 - `internal-thread`：agent 自身线程或作用域，必须抑制，优先级高于 recursive。
 
 每个入口都会增加该线程的 hook depth，退出时恢复。`InternalThreadScope` 支持嵌套，最外层作用域
-退出后才清除 internal 状态。P4.4 只维护分类计数，用来证明真实 replacement 执行了正确分支；事件
-队列从 P4.5 开始接入。
+退出后才清除 internal 状态。guard 只维护分类计数，用来证明真实 replacement 执行了正确分支；事件
+队列在 guard 分类之后接入。
 
 ## 2. static TLS 崩溃根因
 
@@ -77,17 +76,16 @@ adapter 只有在 hook 已进入 inactive 状态后才释放槽。索引缺失�
 4. acquire-load original trampoline 并调用；
 5. MSVC `__finally` 恢复 hook depth；普通 RAII `HookInvocationGuard` 继续供非 replacement 作用域使用。
 
-P4.5 在步骤 4 后为 outermost 调用增加了预分配 event queue，但没有改变 guard 的 TLS 路径或
+步骤 4 之后，outermost 调用写入预分配 event queue；这不改变 guard 的 TLS 路径或
 recursive/internal-thread 抑制规则，详见 [EVENT_QUEUE.md](EVENT_QUEUE.md)。
 
 Release x64 object 反汇编确认 guard 正常路径只有原子 index load、`gs:[TEB]` 固定槽访问、整数
 位运算和 store；没有 heap、锁、文件、loader、日志或 TLS API 调用。对象中不存在 `.tls$` 段或
 CRT `_tls_index` 引用。`TlsAlloc`/`TlsFree` 只存在于 adapter 安装前和安全 teardown 后的冷路径。
 
-P4.9 已完成 `HEAP_GENERATE_EXCEPTIONS` 隔离进程合同。original 以 SEH 离开时，C++ `/EHsc` RAII
+`HEAP_GENERATE_EXCEPTIONS` 隔离进程合同已完成。original 以 SEH 离开时，C++ `/EHsc` RAII
 不作为异步异常清理保证；replacement 因此通过显式 enter/leave pair 和 `__finally` 恢复 guard，外层
-handler 返回后 depth 必须为零。异常合同、事件语义和结果见
-[WINDOWS_HOOK_HARDENING.md](WINDOWS_HOOK_HARDENING.md)。P4.8 replacement in-flight/quiescence 见
+handler 返回后 depth 必须为零。replacement in-flight/quiescence 见
 [HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)。
 
 ## 5. 验证

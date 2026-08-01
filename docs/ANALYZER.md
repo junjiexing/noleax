@@ -1,8 +1,7 @@
 # Noleax Analyzer
 
-> 状态：P6.7 公开 CLI 与真实 Module/Stack 元数据装配完成
 
-## 1. P3.1 范围
+## 1. 范围
 
 `analyze_event_stream` 使用正式 TraceReader、RecordCursor 和 V1 record decoder，按 trace 顺序
 回调 FileHeader、CaptureScope、Event、Loss、CaptureStatistics 和 EndOfTrace。它一次只保留一个
@@ -40,7 +39,7 @@ events 流当前强制执行：
 - EndOfTrace 写入的 aggregate completeness 和 abnormal stop。
 
 只要存在任一 completeness issue，推荐退出码为 2；不支持或损坏到不能继续解析的输入由 CLI
-在接入阶段映射为退出码 4。
+映射为退出码 4。
 
 ## 4. Generation 状态机
 
@@ -62,7 +61,7 @@ allocation_id 或 mapping_id 作为身份，不以可复用的地址作为身份
 - 若 end 引用了当前状态中不存在的有效 ID，继续处理并增加 orphan counter，以支持存在 Loss 的
   trace；若 ID 存在但地址、heap 或 mapping kind 矛盾，则拒绝该 trace 的状态语义。
 
-创建和结束回调在状态变更点同步触发，供 P3.3 只保存候选窗口内的 generation。状态机同时保留
+创建和结束回调在状态变更点同步触发，供窗口分析器只保存候选窗口内的 generation。状态机同时保留
 所有历史 generation ID 的集合以检测 ID 重用；该索引受输入 trace 文件大小上限约束。
 
 ## 5. Outstanding 窗口
@@ -163,11 +162,11 @@ module+offset 和绝对地址。所有 DbgHelp 调用跨实例全局串行，mod
 
 ## 11. CLI 集成
 
-P6.7 的 `TraceMetadata` 对输入执行一次受限预扫描，保留历史 ModuleId、StackId 和符号模块；正式
+`TraceMetadata` 对输入执行一次受限预扫描，保留历史 ModuleId、StackId 和符号模块；正式
 events/outstanding 分析再从文件头重新读取。两次读取均使用相同的 TraceReader/EventStream 校验，
 第二次仍保持 formatter 的流式特性。API 名来自固定 Windows hook registry，module generation 和
 stack frame 来自 trace，符号失败时稳定回退到 module+offset 和绝对地址。
 
 `noleax analyze` 已映射全部 V1 filter 和 console/JSON/CSV。完整性 issue 返回 2，损坏到无法继续的
-trace 返回 4。P6.7 每次调用只接受一个 trace；多文件/rotation 合并在实现明确的跨文件 sequence、
+trace 返回 4。CLI 每次调用只接受一个 trace；多文件/rotation 合并在实现明确的跨文件 sequence、
 module generation 和输出 schema 前返回 5。

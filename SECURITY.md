@@ -41,6 +41,3 @@ and allocation behavior; treat it as potentially sensitive.
 - Symbol networking is disabled by default. It occurs only with explicit `--symbol-server` or config.
 - Incomplete analysis is not a definitive leak verdict. Always inspect the completeness state and
   exit code before acting on a result.
-
-The detailed V1 review, residual risks, and verification evidence are in
-[`docs/SECURITY_AUDIT.md`](docs/SECURITY_AUDIT.md).

@@ -1,6 +1,5 @@
 # Noleax CSV 输出
 
-> 状态：P6.7 writer、真实元数据与公开 CLI 完成
 > schema version：1
 > 日期：2026-07-29
 
@@ -115,7 +114,7 @@ absolute_address|module|module_offset|symbol|symbol_offset
 写为 `\n`、`\r`、`\t`，其他 ASCII 控制字符写为 `\xHH`。缺失的 frame 子字段为空。这个子格式
 先完成自身转义，再作为整体按标准 CSV 规则引用。
 
-## 6. 测试门禁
+## 6. 测试验证
 
 自动测试冻结两种 header 的完整字段顺序，并覆盖 Event/Loss/summary、九类 payload、outstanding
 窗口、逗号/双引号/CRLF、Unicode、stack 子格式、64 位边界、非法 UTF-8、writer 状态和输出失败。

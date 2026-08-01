@@ -1,8 +1,6 @@
-# Static PE Patch（P7C）
+# Static PE Patch
 
-> 状态：P7C Windows x64 完成
 > 命令：`noleax patch`；捕获：`noleax run --inject-method static-pe-patch`
-> 运行时使用语义：见 [ADR 0004](adr/0004-static-pe-patch-run-semantics.md)
 
 ## 1. 目的与边界
 
@@ -84,7 +82,7 @@ jmp     rax
 
 历史缺陷记录：v1 方案把 `AddressOfEntryPoint` 指向新 section，loader 的间接入口调用在
 `/guard:cf` 目标的 CFG 位图中找不到新入口，hardened preset 下以 `0xC0000409` fail-fast；
-改为“入口 RVA 不变 + 直接 rel32 跳转 + stub 运行时写回原始字节”后通过 hardened 门禁。
+改为“入口 RVA 不变 + 直接 rel32 跳转 + stub 运行时写回原始字节”后通过 hardened 验证。
 
 ## 4. 捕获流程（run + static-pe-patch）
 

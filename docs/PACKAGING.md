@@ -1,9 +1,7 @@
 # Noleax Windows x64 打包
 
-> 状态：P8.6 release-candidate packaging gate
 
-V1 使用 CMake install 与 CPack ZIP 生成自包含目录。Noleax 以 MIT License 发布；包内容的公开
-分发范围（clean-machine 验收、签名策略）仍由 RELEASE_CHECKLIST.md 管控。
+V1 使用 CMake install 与 CPack ZIP 生成自包含目录。Noleax 以 MIT License 发布。
 
 ## 生成本地包
 
@@ -31,17 +29,37 @@ noleax-0.1.0-windows-x64/
     noleax.exe
     noleax-agent.dll
   docs/
+    quickstart.md
+    troubleshooting.md
+    cli.md
+    config.md
+    console-output.md
+    json-output.md
+    csv-output.md
+    trace-format.md
+    trace-recovery.md
+    symbolization.md
+    static-pe-patch.md
+    hook-profiles.md
+    roadmap.md
+    schema/
+      noleax-analysis-v1.schema.json
   examples/
   licenses/
   README.md
   BUILDING.md
   SECURITY.md
+  LICENSE
   THIRD_PARTY_NOTICES.md
 ~~~
 
 controller 和 agent 必须保持在同一个 `bin` 目录。Hoox、LZ4、Zstandard 与 MSVC runtime 静态链接；
 CLI11 与 toml++ 由头文件编译。`licenses/` 保存锁定 vcpkg baseline 的六份原始版权文本。两个 PE 的
 动态依赖必须全部由受支持 Windows 提供，包不携带第三方 DLL。
+
+`docs/` 只包含使用方法相关的文档（快速上手、排错、命令与配置、输出格式、符号化、trace 格式与
+恢复、静态 patch、hook profile、未完成能力），安装时重命名为小写 kebab 名；内部设计文档保留在
+仓库中，不随包发布。
 
 ## 自动 smoke
 
@@ -59,8 +77,8 @@ pwsh -NoProfile -File .\scripts\Test-NoleaxPackage.ps1 -SkipBuild
 5. 从 staging 执行 version、doctor、真实 NT Heap capture 和两种 analyze 示例。
 6. 生成 ZIP 和 SHA-256 companion，解压到新目录后重复布局、依赖和端到端工作流。
 
-这证明包不依赖构建树中的 Noleax DLL；测试 workload 仍由测试构建提供。最终 clean-machine/VM 的人工
-验收属于 P8.7，并应在未安装 Visual Studio 的 Windows x64 环境中执行。
+这证明包不依赖构建树中的 Noleax DLL；测试 workload 仍由测试构建提供。发布到干净环境前，应在
+未安装 Visual Studio 的 Windows x64 机器上做一次人工验证。
 
 ## CI 发布
 

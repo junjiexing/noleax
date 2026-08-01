@@ -1,6 +1,5 @@
 # Windows V1 Hook Profiles
 
-> 状态：P5.7 Windows x64 完成
 > 范围：registry、profile 选择、热路径过滤、统计与产品停止顺序
 
 ## 1. 单一 registry
@@ -103,7 +102,7 @@ decoded_events == observed_calls - filtered_before_queue - dropped_events
 - writer 在物理 revert 前完成，目标 worker 停止后才 uninstall；
 - queue/trace 零丢失以及完整 EndOfTrace。
 
-最终门禁结果：Debug/Release 各 205/205、hardened 230/230、25 个 PE 的 CFG/CET metadata 通过；
+整体验证结果：Debug/Release 各 205/205、hardened 230/230、25 个 PE 的 CFG/CET metadata 通过；
 五组既有 race 与 native profile 各连续 100/100，MD/MT 8×20,000×2 长差分 3/3。Application
 Verifier/Full Page Heap 下 workload、race、writer/contract 和 native profile 各三轮通过，19 个 IFEO
 key 全部清理。
