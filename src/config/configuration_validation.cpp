@@ -93,9 +93,12 @@ void require_default_analysis(const Configuration& configuration, const Configur
                   operation);
   require_default(configuration.analysis.output, defaults.analysis.output, "analysis.output",
                   operation);
-  require_default(configuration.analysis.a, defaults.analysis.a, "analysis.a", operation);
-  require_default(configuration.analysis.b, defaults.analysis.b, "analysis.b", operation);
-  require_default(configuration.analysis.c, defaults.analysis.c, "analysis.c", operation);
+  require_default(configuration.analysis.from, defaults.analysis.from, "analysis.from", operation);
+  require_default(configuration.analysis.to, defaults.analysis.to, "analysis.to", operation);
+  require_default(configuration.analysis.end, defaults.analysis.end, "analysis.end", operation);
+  require_default(configuration.analysis.group_by, defaults.analysis.group_by, "analysis.group_by",
+                  operation);
+  require_default(configuration.analysis.sort, defaults.analysis.sort, "analysis.sort", operation);
 }
 
 void require_default_filters(const Configuration& configuration, const Configuration& defaults,
@@ -316,25 +319,33 @@ void validate_analyze(const Configuration& configuration, const Configuration& d
     require_existing_path(std::optional{input}, "analysis.inputs");
   }
   validate_output_parent(configuration.analysis.output.value, "analysis.output");
-  if (configuration.analysis.mode.value == AnalysisMode::kOutstanding) {
-    if (!configuration.analysis.a.value.has_value()) {
-      fail("analysis.a", "is required in outstanding mode");
-    }
-    if (!configuration.analysis.b.value.has_value()) {
-      fail("analysis.b", "is required in outstanding mode");
-    }
-  } else if (configuration.analysis.a.value.has_value() ||
-             configuration.analysis.b.value.has_value() ||
-             configuration.analysis.c.value.has_value()) {
-    fail("analysis.a", "a, b, and c are only valid in outstanding mode");
+  const bool events_mode = configuration.analysis.mode.value == AnalysisMode::kEvents;
+  if (events_mode && configuration.analysis.end.value.has_value()) {
+    fail("analysis.end", "is only valid in leaks mode");
   }
-  if (configuration.analysis.a.value.has_value() && configuration.analysis.b.value.has_value() &&
-      *configuration.analysis.a.value > *configuration.analysis.b.value) {
-    fail("analysis.a", "must be less than or equal to analysis.b");
+  if (configuration.analysis.from.value.has_value() &&
+      configuration.analysis.to.value.has_value() &&
+      *configuration.analysis.from.value > *configuration.analysis.to.value) {
+    fail("analysis.from", "must be less than or equal to analysis.to");
   }
-  if (configuration.analysis.c.value.has_value() && configuration.analysis.b.value.has_value() &&
-      *configuration.analysis.c.value < *configuration.analysis.b.value) {
-    fail("analysis.c", "must be greater than or equal to analysis.b");
+  if (configuration.analysis.end.value.has_value() && configuration.analysis.to.value.has_value() &&
+      *configuration.analysis.end.value < *configuration.analysis.to.value) {
+    fail("analysis.end", "must be greater than or equal to analysis.to");
+  }
+  const bool sort_specified = configuration.analysis.sort.source != ValueSource::kDefault;
+  if (sort_specified && !configuration.analysis.group_by.value.has_value()) {
+    fail("analysis.sort", "requires --group-by");
+  }
+  if (configuration.analysis.group_by.value.has_value()) {
+    const AnalysisSort sort = configuration.analysis.sort.value;
+    if (events_mode && sort == AnalysisSort::kBytes) {
+      fail("analysis.sort", "bytes is only valid with --mode leaks");
+    }
+    if (!events_mode && (sort == AnalysisSort::kAllocBytes || sort == AnalysisSort::kFreeBytes ||
+                         sort == AnalysisSort::kNetBytes)) {
+      fail("analysis.sort",
+           "alloc-bytes, free-bytes, and net-bytes are only valid with --mode events");
+    }
   }
   if (configuration.filters.min_size.value.has_value() &&
       configuration.filters.max_size.value.has_value() &&

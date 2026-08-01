@@ -196,14 +196,14 @@ void wait_for_pid(std::uint32_t process_id) {
                                                              std::string format) {
   return {"analyze",
           "--mode",
-          "outstanding",
+          "leaks",
           "--format",
           std::move(format),
           "--output",
           utf8_path(output),
-          "--a",
+          "--from",
           "0ns",
-          "--b",
+          "--to",
           "900ms",
           "--min-size",
           "123457B",
@@ -218,7 +218,7 @@ void wait_for_pid(std::uint32_t process_id) {
 
 void verify_outstanding_json(const std::filesystem::path& path, bool attach) {
   const auto document = noleax::testing::parse_json(read_file(path));
-  if (document.at("mode").scalar() != "outstanding" ||
+  if (document.at("mode").scalar() != "leaks" ||
       document.at("summary").at("outstanding").unsigned_value() != 1U ||
       document.at("metadata").at("capture").at("preexisting_allocations_unknown").boolean_value() !=
           attach) {
@@ -297,6 +297,39 @@ int main(int argc, char* argv[]) {
         });
     if (!analysis_completed(csv.exit_code) || !csv_has_target) {
       throw std::runtime_error{"CSV analysis omitted API or stack metadata"};
+    }
+
+    const auto stacks_json = output_directory / "cli-stacks.json";
+    const auto leak_stacks_json = output_directory / "cli-leak-stacks.json";
+    for (const auto& path : {stacks_json, leak_stacks_json}) {
+      remove_file(path);
+    }
+    const ChildResult event_stacks = run_child(
+        noleax,
+        {"analyze", "--mode", "events", "--group-by", "stack", "--sort", "alloc-bytes", "--format",
+         "json", "--output", utf8_path(stacks_json), "--api", "RtlAllocateHeap", "--stack-module",
+         "noleax-cli-e2e-target.exe", utf8_path(run_trace)},
+        run_log);
+    const auto event_stacks_document = noleax::testing::parse_json(read_file(stacks_json));
+    const auto& event_groups = event_stacks_document.at("groups").array_items();
+    if (!analysis_completed(event_stacks.exit_code) ||
+        event_stacks_document.at("mode").scalar() != "stacks" ||
+        event_stacks_document.at("dataset").scalar() != "events" || event_groups.empty() ||
+        event_groups.front().at("alloc_bytes").unsigned_value() < 123457U ||
+        event_groups.front().at("calls").unsigned_value() == 0U) {
+      throw std::runtime_error{"event stacks analysis did not aggregate the target stack"};
+    }
+
+    auto leak_stacks_args = outstanding_arguments(run_trace, leak_stacks_json, "json");
+    leak_stacks_args.insert(leak_stacks_args.end() - 1, {"--group-by", "stack", "--sort", "bytes"});
+    const ChildResult leak_stacks = run_child(noleax, leak_stacks_args, run_log);
+    const auto leak_stacks_document = noleax::testing::parse_json(read_file(leak_stacks_json));
+    const auto& leak_groups = leak_stacks_document.at("groups").array_items();
+    if (!analysis_completed(leak_stacks.exit_code) ||
+        leak_stacks_document.at("dataset").scalar() != "leaks" || leak_groups.size() != 1U ||
+        leak_groups.front().at("calls").unsigned_value() != 1U ||
+        leak_groups.front().at("bytes").unsigned_value() != 123457U) {
+      throw std::runtime_error{"leak stacks analysis did not aggregate the surviving allocation"};
     }
 
     const auto attach_trace = output_directory / "cli-attach.nlx";

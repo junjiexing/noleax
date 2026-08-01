@@ -23,12 +23,13 @@ events 输出可能包含已完成校验的前序记录，但不会包含闭合�
 |---|---|
 | `schema` | 固定为 `noleax.analysis` |
 | `schema_version` | 固定为整数 `1` |
-| `mode` | `events` 或 `outstanding` |
+| `mode` | `events`、`leaks` 或 `stacks` |
 | `metadata` | trace header 和 capture scope |
 | `filters` | 本次实际使用的全部过滤条件；未设置的范围为 `null`，空枚举为 `[]` |
 | `summary` | trace、完整性、统计和对应 mode 的计数 |
 
-events 文档另有 `events` 数组；outstanding 文档另有 `window` 和 `allocations`。V1 schema 对根对象、
+events 文档另有 `events` 数组；leaks 文档另有 `window` 和 `allocations`；stacks 文档另有
+`dataset`、`window` 和 `groups`。V1 schema 对根对象、
 所有已定义对象及九类 payload 禁止未知字段。新增字段需要新的 schema version；仅新增枚举值也必须
 按消费者无法静默误解的兼容策略处理。
 
@@ -62,15 +63,26 @@ integer 的 parser，或把数值 token 作为十进制字符串解析。地址�
 summary 的 mode 专属字段为 `matched_events` 和 `filtered_events`。公共字段包括 trace event/Loss 数、
 读取字节、已知末尾、截断与格式理解状态、capture statistics、termination 和 completeness。
 
-## 5. outstanding 模式
+## 5. leaks 模式
 
-`window` 保留请求的 `a_ns`、`b_ns`、可空的 `requested_c_ns`、实际 `effective_c_ns`、c 是否采用
-trace end，以及原始 `trace_end_monotonic_ticks`。窗口语义仍为在 `[a,b)` 创建并在包含 c 时刻所有
-结束事件后仍存活。
+`window` 保留请求的 `a_ns`、可空的 `b_ns`、截断后的 `effective_b_ns`、可空的 `requested_c_ns`、
+实际 `effective_c_ns`、c 是否采用 trace end，以及原始 `trace_end_monotonic_ticks`。窗口语义为在
+`[a,effective_b)` 创建并在包含 c 时刻所有结束事件后仍存活；`b` 缺省或超过 trace 终点时
+`effective_b_ns` 等于 trace 终点。
 
 `allocations` 中每项包含 generation kind、allocation/mapping/heap ID、heap handle、地址、size 和
 完整的 `created_by` Event。非 heap generation 的 `heap_handle` 为 `null`。summary 另外包含候选数、
 截至 c 已结束数、最终过滤数、outstanding 数以及两类 orphan end 计数。
+
+## 5.1 stacks 文档
+
+`--group-by` 的输出 `mode` 为 `stacks`，`dataset` 为 `events` 或 `leaks`。events 数据集的
+`window` 为 `{from_ns, to_ns|null}`，leaks 数据集沿用 leaks 窗口结构（含 `effective_b_ns`）。
+`groups` 按排序键降序排列：events 组包含 `rank`、`calls`、`alloc_calls`、`alloc_bytes`、
+`free_calls`、`free_bytes`、`net_bytes`，leaks 组包含 `rank`、`calls`、`bytes`；两者都带
+`stack_id` 与完整 `sample_event`（含调用栈）。events 数据集 summary 含 `groups`、`calls`、
+`alloc_bytes`、`free_bytes`、`net_bytes`、`aggregated_events` 和 `unmatched_frees`；leaks 数据集
+summary 含 `groups`、`calls` 和 `bytes`。
 
 ## 6. API、调用栈和符号
 

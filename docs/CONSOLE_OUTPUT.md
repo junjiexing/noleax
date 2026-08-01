@@ -43,13 +43,22 @@ stack status 使用 complete、truncated-by-depth、unwind-failed 或 unavailabl
 每种 Event 都输出规范化 payload 的全部关键字段；heap allocation、VM 和 mapping 的 ID 空间不会
 混用。size、地址和系统错误保留原始精度。
 
-## 4. outstanding 布局
+## 4. leaks 布局
 
-窗口显示 `[a,b)`、有效观察点 c、c 来自配置还是 trace end，以及原始 trace-end ticks。每个结果
-显示 generation kind、allocation/mapping ID、size、地址、heap 信息、创建事件和创建栈。summary
-分别显示候选数、截至 c 已结束数、最终过滤数和 outstanding 数。
+leaks（原 outstanding）报告标题为 `noleax leaks`。窗口显示 `[from,effective_to)`、有效观察点 c、
+c 来自配置还是 trace end，以及原始 trace-end ticks；`--to` 缺省或超过 trace 终点时按终点截断。
+每个结果显示 generation kind、allocation/mapping ID、size、地址、heap 信息、创建事件和创建栈。
+summary 分别显示候选数、截至 c 已结束数、最终过滤数和 outstanding 数。
 
-## 5. 完整性警告
+## 5. stacks 布局
+
+`--group-by` 产生按排名排序的分组报告。events 聚合（标题 `noleax event stacks`）每组一行
+`#rank calls=N alloc=C/B free=C/B net=B`，leaks 聚合（标题 `noleax leak stacks`）每组一行
+`#rank calls=N bytes=B`，均随附展开后的调用栈。summary 给出组数、合计计数与字节；events 聚合
+额外给出 aggregated-events 与 unmatched-frees（无法追踪到 allocation 的 free 数），leaks 聚合的
+窗口行与 leaks 报告一致。
+
+## 6. 完整性警告
 
 summary 同时显示 overall、lifecycle、stack-detail 和 understanding 状态。已知 issue 按稳定顺序列出：
 
@@ -66,7 +75,7 @@ summary 同时显示 overall、lifecycle、stack-detail 和 understanding 状态
 
 未来 issue bit 以 `unknown-issue-bits=0x...` 保留。任何 issue 仍对应推荐退出码 2。
 
-## 6. 颜色
+## 7. 颜色
 
 ConsoleOptions 只接受已经解析后的 `use_color`。调用方负责把用户的 auto/always/never 转换为布尔值；
 auto 仅在目标是交互终端时启用。颜色只使用 ANSI SGR：标题加粗，成功事件为绿色，失败事件为红色，

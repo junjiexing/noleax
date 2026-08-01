@@ -269,7 +269,7 @@ TEST_CASE("outstanding JSON pipeline emits its effective observation window", "[
 
   REQUIRE(result.outstanding.size() == 1U);
   const auto document = parse_and_validate(output.str());
-  CHECK(document.at("mode").scalar() == "outstanding");
+  CHECK(document.at("mode").scalar() == "leaks");
   CHECK(document.at("window").at("requested_c_ns").type() == noleax::testing::JsonType::kNull);
   CHECK(document.at("window").at("effective_c_ns").signed_value() == 40);
   CHECK(document.at("window").at("observation_uses_trace_end").boolean_value());

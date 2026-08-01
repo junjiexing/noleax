@@ -7,7 +7,7 @@
   "properties": {
     "schema": { "const": "noleax.analysis" },
     "schema_version": { "const": 1 },
-    "mode": { "enum": ["events", "outstanding"] },
+    "mode": { "enum": ["events", "leaks", "stacks"] },
     "metadata": { "$ref": "#/$defs/metadata" },
     "filters": { "$ref": "#/$defs/filters" },
     "events": {
@@ -19,7 +19,9 @@
         ]
       }
     },
-    "window": { "$ref": "#/$defs/window" },
+    "window": {
+      "oneOf": [{ "$ref": "#/$defs/window" }, { "$ref": "#/$defs/stacks_window" }]
+    },
     "allocations": {
       "type": "array",
       "items": { "$ref": "#/$defs/generation" }
@@ -36,7 +38,7 @@
     },
     {
       "properties": {
-        "mode": { "const": "outstanding" },
+        "mode": { "const": "leaks" },
         "summary": {
           "required": [
             "candidates",
@@ -49,6 +51,20 @@
         }
       },
       "required": ["window", "allocations"]
+    },
+    {
+      "properties": {
+        "mode": { "const": "stacks" },
+        "dataset": { "enum": ["events", "leaks"] },
+        "groups": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/stack_group" }
+        },
+        "summary": {
+          "required": ["groups", "calls"]
+        }
+      },
+      "required": ["dataset", "window", "groups"]
     }
   ],
   "additionalProperties": false,
@@ -487,11 +503,38 @@
       },
       "additionalProperties": false
     },
+    "stacks_window": {
+      "type": "object",
+      "required": ["from_ns", "to_ns"],
+      "properties": {
+        "from_ns": { "type": "integer" },
+        "to_ns": { "type": ["integer", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "stack_group": {
+      "type": "object",
+      "required": ["rank", "calls", "stack_id", "sample_event"],
+      "properties": {
+        "rank": { "type": "integer" },
+        "calls": { "type": "integer" },
+        "alloc_calls": { "type": "integer" },
+        "alloc_bytes": { "type": "integer" },
+        "free_calls": { "type": "integer" },
+        "free_bytes": { "type": "integer" },
+        "net_bytes": { "type": "integer" },
+        "bytes": { "type": "integer" },
+        "stack_id": { "type": ["integer", "null"] },
+        "sample_event": { "$ref": "#/$defs/event" }
+      },
+      "additionalProperties": false
+    },
     "window": {
       "type": "object",
       "required": [
         "a_ns",
         "b_ns",
+        "effective_b_ns",
         "requested_c_ns",
         "effective_c_ns",
         "observation_uses_trace_end",
@@ -499,7 +542,8 @@
       ],
       "properties": {
         "a_ns": { "type": "integer" },
-        "b_ns": { "type": "integer" },
+        "b_ns": { "type": ["integer", "null"] },
+        "effective_b_ns": { "type": "integer" },
         "requested_c_ns": { "type": ["integer", "null"] },
         "effective_c_ns": { "type": "integer" },
         "observation_uses_trace_end": { "type": "boolean" },

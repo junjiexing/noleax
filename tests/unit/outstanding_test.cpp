@@ -204,10 +204,11 @@ TEST_CASE("outstanding analysis validates its window against itself and the trac
                     noleax::analyzer::OutstandingAnalysisError);
   }
 
-  SECTION("b after trace end") {
-    std::istringstream input{encoded, std::ios::binary};
-    CHECK_THROWS_AS(noleax::analyzer::analyze_outstanding(input, {10ns, 11ns, 11ns}),
-                    noleax::analyzer::OutstandingAnalysisError);
+  SECTION("b after trace end clamps to the trace end") {
+    const auto result = analyze(encoded, {0ns, 1'000'000ns, std::nullopt});
+    CHECK(result.effective_b == result.effective_c);
+    REQUIRE(result.outstanding.size() == 1U);
+    CHECK(result.outstanding.front().allocation_id == noleax::trace::AllocationId{1U});
   }
 
   SECTION("empty window") {

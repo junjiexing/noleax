@@ -194,9 +194,11 @@ generation 和机器输出 schema 在实现前不做猜测式拼接。
 | --mode MODE | analysis.mode | events |
 | --format FORMAT | analysis.format | console |
 | --output PATH | analysis.output | stdout |
-| --a TIME | analysis.a | 无 |
-| --b TIME | analysis.b | 无 |
-| --c TIME | analysis.c | trace end |
+| --from TIME | analysis.from | trace 起点 |
+| --to TIME | analysis.to | trace 终点 |
+| --end TIME | analysis.end | trace 终点 |
+| --group-by DIM | analysis.group_by | 不聚合 |
+| --sort KEY | analysis.sort | events 聚合 alloc-bytes,leaks 聚合 bytes |
 | --min-size SIZE | filters.min_size | 无 |
 | --max-size SIZE | filters.max_size | 无 |
 | --event TYPE | filters.events | 全部 |
@@ -212,8 +214,27 @@ generation 和机器输出 schema 在实现前不做猜测式拼接。
 
 mode：
 
-- events
-- outstanding
+- events：查看事件。`--from`/`--to` 限定事件时间窗（半开区间，缺省为全部）。
+- leaks：泄露分析，列出在 `[from,to)` 内创建、到 `--end` 时刻仍未释放的对象（即原
+  outstanding 语义）。三个窗口参数全部可选，裸 `--mode leaks` 即“任何时间申请、trace 结束时
+  仍未释放”。
+
+时间一律相对 trace 起点。`--to`/`--end` 超过 trace 终点时按终点截断，不再报错；要求
+`from <= to`、`to <= end`。events 模式不接受 `--end`。
+
+--group-by：按指定维度聚合结果，当前唯一取值 `stack`（按调用栈）。events 下聚合成功的
+alloc/realloc/free：每组输出
+总调用次数、alloc 次数与请求字节合计、free 次数与释放字节合计（free 尺寸经 generation 追踪，
+未被追踪的 free 计入 unmatched-frees）及净字节。leaks 下聚合存活的 heap allocation：每组输出
+存活分配个数与存活字节合计。聚合文档的 JSON `mode` 字段为 `stacks`，并以 `dataset`
+区分 `events`/`leaks`。
+
+--sort（仅配合 --group-by）：
+
+- events 聚合：calls、alloc-bytes、free-bytes、net-bytes（默认 alloc-bytes）
+- leaks 聚合：calls、bytes（默认 bytes）
+
+均按降序，键值相同按 stack id 升序。不搭配 --group-by 使用 --sort 时配置校验报错。
 
 format：
 
@@ -232,7 +253,6 @@ symbols mode：
 
 - auto
 
-outstanding 模式要求 a 和 b。c 可省略。时间默认相对 trace 起点；未来若支持 sequence 表达式，将使用明确前缀，避免与时间混淆。
 同一过滤类别的重复选项为 OR，不同类别为 AND；大小范围包含端点。模块 pattern 支持 `*` 和
 `?`，ASCII 大小写及 `/`、`\` 路径分隔符不敏感。API 名称区分大小写。
 
@@ -315,10 +335,22 @@ noleax attach --pid 1234 --inject-method remote-thread --trace app.nlx
 noleax analyze --mode events --format console app.nlx
 ~~~
 
-分析时间窗口：
+列出任何时间申请、trace 结束时仍未释放的对象：
 
 ~~~powershell
-noleax analyze --mode outstanding --a 5s --b 20s --c 60s --min-size 1KiB --max-size 1MiB --format json --output leaks.json app.nlx
+noleax analyze --mode leaks app.nlx
+~~~
+
+分析时间窗口并聚合调用栈：
+
+~~~powershell
+noleax analyze --mode leaks --from 5s --to 20s --end 60s --group-by stack --sort bytes --min-size 1KiB --max-size 1MiB --format json --output leaks.json app.nlx
+~~~
+
+按调用栈聚合全部 alloc/realloc/free 并按净字节排序：
+
+~~~powershell
+noleax analyze --mode events --group-by stack --sort net-bytes app.nlx
 ~~~
 
 等价 TOML 和从捕获到分析的完整流程见 [QUICKSTART.md](QUICKSTART.md) 与

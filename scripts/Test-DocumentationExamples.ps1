@@ -126,7 +126,7 @@ try {
         -ExpectedExitCodes @(0, 2) -CommandArguments @("--config", $outstandingConfiguration)
     $outstandingOutput = Join-Path $workspace "outstanding.json"
     $outstanding = Get-Content -LiteralPath $outstandingOutput -Raw | ConvertFrom-Json
-    if ($outstanding.mode -ne "outstanding" -or $outstanding.summary.outstanding -lt 1) {
+    if ($outstanding.mode -ne "leaks" -or $outstanding.summary.outstanding -lt 1) {
         throw "outstanding example did not find the test allocation"
     }
 

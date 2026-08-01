@@ -73,6 +73,18 @@ enum class AnalysisMode : std::uint8_t {
   kOutstanding,
 };
 
+enum class AnalysisSort : std::uint8_t {
+  kCalls,
+  kAllocBytes,
+  kFreeBytes,
+  kNetBytes,
+  kBytes,
+};
+
+enum class AnalysisGroupBy : std::uint8_t {
+  kStack,
+};
+
 enum class OutputFormat : std::uint8_t {
   kConsole,
   kJson,
@@ -189,8 +201,27 @@ struct EnumTraits<AnalysisMode> {
   inline static constexpr std::string_view kind = "analysis mode";
   inline static constexpr auto values = std::array{
       NamedEnumValue{std::string_view{"events"}, AnalysisMode::kEvents},
-      NamedEnumValue{std::string_view{"outstanding"}, AnalysisMode::kOutstanding},
+      NamedEnumValue{std::string_view{"leaks"}, AnalysisMode::kOutstanding},
   };
+};
+
+template <>
+struct EnumTraits<AnalysisSort> {
+  inline static constexpr std::string_view kind = "analysis sort";
+  inline static constexpr auto values = std::array{
+      NamedEnumValue{std::string_view{"calls"}, AnalysisSort::kCalls},
+      NamedEnumValue{std::string_view{"alloc-bytes"}, AnalysisSort::kAllocBytes},
+      NamedEnumValue{std::string_view{"free-bytes"}, AnalysisSort::kFreeBytes},
+      NamedEnumValue{std::string_view{"net-bytes"}, AnalysisSort::kNetBytes},
+      NamedEnumValue{std::string_view{"bytes"}, AnalysisSort::kBytes},
+  };
+};
+
+template <>
+struct EnumTraits<AnalysisGroupBy> {
+  inline static constexpr std::string_view kind = "analysis grouping";
+  inline static constexpr auto values =
+      std::array{NamedEnumValue{std::string_view{"stack"}, AnalysisGroupBy::kStack}};
 };
 
 template <>
@@ -308,9 +339,11 @@ struct AnalysisSettings {
   Setting<AnalysisMode> mode;
   Setting<OutputFormat> format;
   Setting<std::optional<std::filesystem::path>> output;
-  Setting<std::optional<std::chrono::nanoseconds>> a;
-  Setting<std::optional<std::chrono::nanoseconds>> b;
-  Setting<std::optional<std::chrono::nanoseconds>> c;
+  Setting<std::optional<std::chrono::nanoseconds>> from;
+  Setting<std::optional<std::chrono::nanoseconds>> to;
+  Setting<std::optional<std::chrono::nanoseconds>> end;
+  Setting<std::optional<AnalysisGroupBy>> group_by;
+  Setting<AnalysisSort> sort;
 };
 
 struct FilterSettings {
@@ -396,9 +429,11 @@ struct AnalysisOverrides {
   SettingOverride<AnalysisMode> mode;
   SettingOverride<OutputFormat> format;
   SettingOverride<std::optional<std::filesystem::path>> output;
-  SettingOverride<std::optional<std::chrono::nanoseconds>> a;
-  SettingOverride<std::optional<std::chrono::nanoseconds>> b;
-  SettingOverride<std::optional<std::chrono::nanoseconds>> c;
+  SettingOverride<std::optional<std::chrono::nanoseconds>> from;
+  SettingOverride<std::optional<std::chrono::nanoseconds>> to;
+  SettingOverride<std::optional<std::chrono::nanoseconds>> end;
+  SettingOverride<std::optional<AnalysisGroupBy>> group_by;
+  SettingOverride<AnalysisSort> sort;
 };
 
 struct FilterOverrides {

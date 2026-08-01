@@ -70,13 +70,21 @@ allocation id 过滤。例如：
 
 ## 5. 查找时间窗口内仍存活的 allocation
 
-outstanding 模式选择在半开区间 `[a,b)` 内发生的 allocation/reallocation，并只保留到时间点 c 仍未
-释放的对象。省略 c，或 c 晚于 trace 结束时间时，使用 trace 结束时间。
+leaks 模式选择在半开区间 `[from,to)` 内发生的 allocation/reallocation，并只保留到观察点 end 仍
+未释放的对象。三个窗口参数全部可选；end 省略或晚于 trace 结束时间时使用 trace 结束时间，to
+超过结束时间时按结束时间截断。
 
 ~~~powershell
-.\noleax.exe analyze --mode outstanding --a 0s --b 10s `
+.\noleax.exe analyze --mode leaks --from 0s --to 10s `
   --min-size 1KiB --max-size 1MiB --format json `
   --output .\outstanding.json .\capture.nlx
+~~~
+
+省略全部窗口参数时列出整个 trace 中任何时间申请、结束时仍未释放的对象。追加 `--group-by stack`
+可按调用栈聚合存活对象：
+
+~~~powershell
+.\noleax.exe analyze --mode leaks --group-by stack --sort bytes .\capture.nlx
 ~~~
 
 这是一份候选集合，不等同于程序语义上的泄漏证明。应重复 workload、缩小时间窗口，并结合调用栈

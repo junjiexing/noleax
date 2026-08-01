@@ -16,7 +16,7 @@ DLL 注入目标进程，hook 内存分配 API，将 alloc/realloc/free、heap l
 - `noleax patch` 生成静态 patch 副本，配合 `static-pe-patch` 方式捕获，无需启动期远程注入。
 - 基于 Hoox v0.1.1 的 hook profile 覆盖 Windows NT Heap 与 NT virtual memory 共九个逻辑 API。
 - 有界 trace：大小上限、定期 flush、lz4/zstd 压缩、Module/Stack 字典去重，损坏时可部分恢复。
-- 离线分析：events/outstanding 两种模式，多维过滤，console/JSON/CSV 输出，离线符号解析。
+- 离线分析：events/leaks 两种模式加调用栈聚合，多维过滤，console/JSON/CSV 输出，离线符号解析。
 - TOML 配置与 CLI 等价，优先级为 built-in defaults < TOML < CLI。
 - 只读 `doctor` 环境诊断，不执行注入。
 
@@ -88,10 +88,18 @@ GitHub Releases 的滚动预发布 `ci-latest`；推送 `v*` 标签则创建对�
    .\noleax.exe analyze --mode events --format console .\capture.nlx
    ~~~
 
-4. 查找时间窗口 `[a,b)` 内分配、到时刻 c 仍未释放的对象：
+4. 查找时间窗口内创建、到观察点仍未释放的对象：
 
    ~~~powershell
-   .\noleax.exe analyze --mode outstanding --a 0s --b 10s --min-size 1KiB .\capture.nlx
+   .\noleax.exe analyze --mode leaks --from 0s --to 10s --min-size 1KiB .\capture.nlx
+   ~~~
+
+   省略窗口参数即"任何时间申请、trace 结束时仍未释放"。按调用栈聚合（alloc/realloc/free 的
+   调用次数与字节数，或存活对象的个数与字节数）：
+
+   ~~~powershell
+   .\noleax.exe analyze --mode events --group-by stack --sort alloc-bytes .\capture.nlx
+   .\noleax.exe analyze --mode leaks --group-by stack --sort bytes .\capture.nlx
    ~~~
 
 常见失败的定位方法见 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)。
@@ -191,17 +199,23 @@ noleax analyze [options] trace.nlx
 
 当前每次执行接受一个 trace。两种模式：
 
-- `events`：输出（过滤后的）全部事件，每个事件引用去重后的 stack id，analyzer 展开为调用栈。
-- `outstanding`：选择在半开区间 `[a,b)` 内发生的 allocation/reallocation，只保留到时刻 c 仍未
-  释放的对象；c 省略或晚于 trace 结束时使用 trace 结束时间。这是一份候选集合，不等同于语义上
-  的泄漏证明，应重复 workload、缩小时间窗口并结合调用栈判断。
+- `events`：输出（过滤后的）全部事件，每个事件引用去重后的 stack id，analyzer 展开为调用栈；
+  可用 `--from`/`--to` 限定时间窗。
+- `leaks`：泄露分析，选择在 `[from,to)` 内创建、到观察点 `--end` 仍未释放的对象；窗口全部可选，
+  裸命令即"任何时间申请、trace 结束时仍未释放"。这是一份候选集合，不等同于语义上的泄漏证明，
+  应重复 workload、缩小时间窗口并结合调用栈判断。
+- 两个模式都可加 `--group-by stack` 按调用栈聚合：events 下统计成功 alloc/realloc/free 的调用次数与
+  分配/释放字节，leaks 下统计存活分配的个数与字节；`--sort` 选择排序键。
 
 | 选项 | 默认值 | 说明 |
 |---|---|---|
-| `--mode MODE` | events | events、outstanding |
+| `--mode MODE` | events | events、leaks |
 | `--format FORMAT` | console | console、json、csv |
 | `--output PATH` | stdout | 输出文件 |
-| `--a TIME` / `--b TIME` / `--c TIME` | 无 / 无 / trace end | outstanding 时间窗（相对 trace 起点） |
+| `--from TIME` / `--to TIME` | trace 起点 / trace 终点 | 创建时间窗（相对 trace 起点，超过终点截断） |
+| `--end TIME` | trace 终点 | leaks 观察点（超过终点截断） |
+| `--group-by DIM` | 不聚合 | 聚合维度，当前唯一取值 stack |
+| `--sort KEY` | events 聚合 alloc-bytes,leaks 聚合 bytes | 聚合排序键 |
 | `--min-size SIZE` / `--max-size SIZE` | 无 | 大小过滤，包含端点 |
 | `--event TYPE` | 全部 | 事件类型 |
 | `--thread TID` | 全部 | 线程 |

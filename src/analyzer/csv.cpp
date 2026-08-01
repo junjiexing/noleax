@@ -883,6 +883,148 @@ void set_outstanding_presentation(OutstandingRow& row, const noleax::trace::Even
   set(row, OutstandingColumn::kStackFrames, stack_frames_value(presentation, header));
 }
 
+enum class EventStacksColumn : std::uint8_t {
+  kCsvSchemaVersion,
+  kRecordType,
+  kRank,
+  kCalls,
+  kAllocCalls,
+  kAllocBytes,
+  kFreeCalls,
+  kFreeBytes,
+  kNetBytes,
+  kStackId,
+  kStackStatus,
+  kStackFrames,
+  kWindowFromNs,
+  kWindowToNs,
+  kGroups,
+  kAggregatedEvents,
+  kUnmatchedFrees,
+  kTraceEvents,
+  kLossRecords,
+  kBytesRead,
+  kTruncated,
+  kPartiallyUnderstood,
+  kCompletenessMask,
+  kCompletenessOverall,
+  kCompletenessLifecycle,
+  kCompletenessStackDetail,
+  kCompletenessUnderstanding,
+  kCompletenessIssues,
+  kNormalStop,
+  kTargetExitCode,
+  kCount,
+};
+
+constexpr std::size_t kEventStacksColumnCount = static_cast<std::size_t>(EventStacksColumn::kCount);
+using EventStacksRow = std::array<std::string, kEventStacksColumnCount>;
+
+constexpr std::array<std::string_view, kEventStacksColumnCount> kEventStacksHeader{
+    "csv_schema_version",
+    "record_type",
+    "rank",
+    "calls",
+    "alloc_calls",
+    "alloc_bytes",
+    "free_calls",
+    "free_bytes",
+    "net_bytes",
+    "stack_id",
+    "stack_status",
+    "stack_frames",
+    "window_from_ns",
+    "window_to_ns",
+    "groups",
+    "aggregated_events",
+    "unmatched_frees",
+    "trace_events",
+    "loss_records",
+    "bytes_read",
+    "truncated",
+    "partially_understood",
+    "completeness_mask",
+    "completeness_overall",
+    "completeness_lifecycle",
+    "completeness_stack_detail",
+    "completeness_understanding",
+    "completeness_issues",
+    "normal_stop",
+    "target_exit_code",
+};
+
+void set(EventStacksRow& row, EventStacksColumn column, std::string value) {
+  row[column_index(column)] = std::move(value);
+}
+
+enum class LeakStacksColumn : std::uint8_t {
+  kCsvSchemaVersion,
+  kRecordType,
+  kRank,
+  kCalls,
+  kBytes,
+  kStackId,
+  kStackStatus,
+  kStackFrames,
+  kWindowANs,
+  kWindowBNs,
+  kRequestedCNs,
+  kEffectiveCNs,
+  kObservationUsesTraceEnd,
+  kGroups,
+  kTraceEvents,
+  kLossRecords,
+  kBytesRead,
+  kTruncated,
+  kPartiallyUnderstood,
+  kCompletenessMask,
+  kCompletenessOverall,
+  kCompletenessLifecycle,
+  kCompletenessStackDetail,
+  kCompletenessUnderstanding,
+  kCompletenessIssues,
+  kNormalStop,
+  kTargetExitCode,
+  kCount,
+};
+
+constexpr std::size_t kLeakStacksColumnCount = static_cast<std::size_t>(LeakStacksColumn::kCount);
+using LeakStacksRow = std::array<std::string, kLeakStacksColumnCount>;
+
+constexpr std::array<std::string_view, kLeakStacksColumnCount> kLeakStacksHeader{
+    "csv_schema_version",
+    "record_type",
+    "rank",
+    "calls",
+    "bytes",
+    "stack_id",
+    "stack_status",
+    "stack_frames",
+    "window_a_ns",
+    "window_b_ns",
+    "requested_c_ns",
+    "effective_c_ns",
+    "observation_uses_trace_end",
+    "groups",
+    "trace_events",
+    "loss_records",
+    "bytes_read",
+    "truncated",
+    "partially_understood",
+    "completeness_mask",
+    "completeness_overall",
+    "completeness_lifecycle",
+    "completeness_stack_detail",
+    "completeness_understanding",
+    "completeness_issues",
+    "normal_stop",
+    "target_exit_code",
+};
+
+void set(LeakStacksRow& row, LeakStacksColumn column, std::string value) {
+  row[column_index(column)] = std::move(value);
+}
+
 void set_common_outstanding_summary(OutstandingRow& row, const EventStreamResult& trace) {
   set(row, OutstandingColumn::kTraceEvents, decimal(trace.event_count));
   set(row, OutstandingColumn::kLossRecords, decimal(trace.loss_record_count));
@@ -1077,7 +1219,11 @@ void CsvWriter::write_outstanding_summary(const OutstandingResult& result) {
   set(row, OutstandingColumn::kCsvSchemaVersion, decimal(kAnalysisCsvSchemaVersion));
   set(row, OutstandingColumn::kRecordType, "summary");
   set(row, OutstandingColumn::kWindowANs, decimal(result.requested_window.a.count()));
-  set(row, OutstandingColumn::kWindowBNs, decimal(result.requested_window.b.count()));
+  if (result.requested_window.b.has_value()) {
+    set(row, OutstandingColumn::kWindowBNs, decimal(result.requested_window.b->count()));
+  } else {
+    set(row, OutstandingColumn::kWindowBNs, decimal(result.effective_b.count()));
+  }
   if (result.requested_window.c.has_value()) {
     set(row, OutstandingColumn::kRequestedCNs, decimal(result.requested_window.c->count()));
   }
@@ -1095,6 +1241,185 @@ void CsvWriter::write_outstanding_summary(const OutstandingResult& result) {
   set(row, OutstandingColumn::kOrphanedMappingEnds, decimal(result.orphaned_mapping_end_count));
   set_common_outstanding_summary(row, result.trace);
   CsvEmitter{output_}.row(row);
+}
+
+void CsvWriter::write_event_stacks_row(const EventsStacksGroup& group, std::uint64_t rank,
+                                       const EventPresentation& presentation) {
+  EventStacksRow row;
+  set(row, EventStacksColumn::kCsvSchemaVersion, decimal(kAnalysisCsvSchemaVersion));
+  set(row, EventStacksColumn::kRecordType, "group");
+  set(row, EventStacksColumn::kRank, decimal(rank));
+  set(row, EventStacksColumn::kCalls, decimal(group.calls));
+  set(row, EventStacksColumn::kAllocCalls, decimal(group.alloc_calls));
+  set(row, EventStacksColumn::kAllocBytes, decimal(group.alloc_bytes));
+  set(row, EventStacksColumn::kFreeCalls, decimal(group.free_calls));
+  set(row, EventStacksColumn::kFreeBytes, decimal(group.free_bytes));
+  set(row, EventStacksColumn::kNetBytes, decimal(group.net_bytes()));
+  const auto& event = group.sample_event;
+  validate_stack_presentation(event, presentation);
+  set(row, EventStacksColumn::kStackId, identifier_value(event.header.stack_id));
+  if (!event.header.stack_id.is_valid()) {
+    set(row, EventStacksColumn::kStackStatus, "unavailable");
+  } else if (presentation.stack_status.has_value()) {
+    set(row, EventStacksColumn::kStackStatus, stack_status_name(*presentation.stack_status));
+  }
+  set(row, EventStacksColumn::kStackFrames, stack_frames_value(presentation, header_));
+  CsvEmitter{output_}.row(row);
+}
+
+void CsvWriter::write_event_stacks_summary(const EventsStacksResult& result) {
+  EventStacksRow row;
+  set(row, EventStacksColumn::kCsvSchemaVersion, decimal(kAnalysisCsvSchemaVersion));
+  set(row, EventStacksColumn::kRecordType, "summary");
+  set(row, EventStacksColumn::kWindowFromNs, decimal(result.window.from.count()));
+  if (result.window.to.has_value()) {
+    set(row, EventStacksColumn::kWindowToNs, decimal(result.window.to->count()));
+  }
+  std::uint64_t total_calls = 0U;
+  std::uint64_t total_alloc_bytes = 0U;
+  std::uint64_t total_free_bytes = 0U;
+  for (const auto& group : result.groups) {
+    total_calls += group.calls;
+    total_alloc_bytes += group.alloc_bytes;
+    total_free_bytes += group.free_bytes;
+  }
+  set(row, EventStacksColumn::kGroups, decimal(static_cast<std::uint64_t>(result.groups.size())));
+  set(row, EventStacksColumn::kCalls, decimal(total_calls));
+  set(row, EventStacksColumn::kAllocBytes, decimal(total_alloc_bytes));
+  set(row, EventStacksColumn::kFreeBytes, decimal(total_free_bytes));
+  set(row, EventStacksColumn::kNetBytes,
+      decimal(static_cast<std::int64_t>(total_alloc_bytes) -
+              static_cast<std::int64_t>(total_free_bytes)));
+  set(row, EventStacksColumn::kAggregatedEvents, decimal(result.aggregated_event_count));
+  set(row, EventStacksColumn::kUnmatchedFrees, decimal(result.unmatched_free_count));
+  set(row, EventStacksColumn::kTraceEvents, decimal(result.trace.event_count));
+  set(row, EventStacksColumn::kLossRecords, decimal(result.trace.loss_record_count));
+  set(row, EventStacksColumn::kBytesRead, decimal(result.trace.bytes_read));
+  set(row, EventStacksColumn::kTruncated, result.trace.truncated ? "true" : "false");
+  set(row, EventStacksColumn::kPartiallyUnderstood,
+      result.trace.partially_understood ? "true" : "false");
+  set(row, EventStacksColumn::kCompletenessMask, hex_value(result.trace.completeness.mask()));
+  set(row, EventStacksColumn::kCompletenessOverall,
+      completeness_state_name(result.trace.completeness.overall_state()));
+  set(row, EventStacksColumn::kCompletenessLifecycle,
+      completeness_state_name(result.trace.completeness.lifecycle_state()));
+  set(row, EventStacksColumn::kCompletenessStackDetail,
+      completeness_state_name(result.trace.completeness.stack_detail_state()));
+  set(row, EventStacksColumn::kCompletenessUnderstanding,
+      understanding_state_name(result.trace.completeness.understanding_state()));
+  set(row, EventStacksColumn::kCompletenessIssues, completeness_issues(result.trace.completeness));
+  if (result.trace.end_of_trace.has_value()) {
+    const auto& end = *result.trace.end_of_trace;
+    set(row, EventStacksColumn::kNormalStop, end.normal_stop ? "true" : "false");
+    if (end.target_exit_code.has_value()) {
+      set(row, EventStacksColumn::kTargetExitCode, decimal(*end.target_exit_code));
+    }
+  }
+  CsvEmitter{output_}.row(row);
+}
+
+void CsvWriter::write_event_stacks(const EventsStacksResult& result,
+                                   const EventPresentationResolver& resolver) {
+  require_state(State::kReady, "write event stacks report");
+  header_ = result.trace.file_header;
+  capture_scope_ = result.trace.capture_scope;
+  CsvEmitter{output_}.row(kEventStacksHeader);
+  std::uint64_t rank = 0U;
+  for (const auto& group : result.groups) {
+    ++rank;
+    write_event_stacks_row(group, rank,
+                           resolver ? resolver(group.sample_event) : EventPresentation{});
+  }
+  write_event_stacks_summary(result);
+  state_ = State::kFinished;
+  ensure_output();
+}
+
+void CsvWriter::write_leak_stacks_row(const LeaksStacksGroup& group, std::uint64_t rank,
+                                      const EventPresentation& presentation) {
+  LeakStacksRow row;
+  set(row, LeakStacksColumn::kCsvSchemaVersion, decimal(kAnalysisCsvSchemaVersion));
+  set(row, LeakStacksColumn::kRecordType, "group");
+  set(row, LeakStacksColumn::kRank, decimal(rank));
+  set(row, LeakStacksColumn::kCalls, decimal(group.calls));
+  set(row, LeakStacksColumn::kBytes, decimal(group.bytes));
+  const auto& event = group.sample_event;
+  validate_stack_presentation(event, presentation);
+  set(row, LeakStacksColumn::kStackId, identifier_value(event.header.stack_id));
+  if (!event.header.stack_id.is_valid()) {
+    set(row, LeakStacksColumn::kStackStatus, "unavailable");
+  } else if (presentation.stack_status.has_value()) {
+    set(row, LeakStacksColumn::kStackStatus, stack_status_name(*presentation.stack_status));
+  }
+  set(row, LeakStacksColumn::kStackFrames, stack_frames_value(presentation, header_));
+  CsvEmitter{output_}.row(row);
+}
+
+void CsvWriter::write_leak_stacks_summary(const LeaksStacksResult& result) {
+  const OutstandingResult& outstanding = result.outstanding;
+  LeakStacksRow row;
+  set(row, LeakStacksColumn::kCsvSchemaVersion, decimal(kAnalysisCsvSchemaVersion));
+  set(row, LeakStacksColumn::kRecordType, "summary");
+  set(row, LeakStacksColumn::kWindowANs, decimal(outstanding.requested_window.a.count()));
+  if (outstanding.requested_window.b.has_value()) {
+    set(row, LeakStacksColumn::kWindowBNs, decimal(outstanding.requested_window.b->count()));
+  }
+  if (outstanding.requested_window.c.has_value()) {
+    set(row, LeakStacksColumn::kRequestedCNs, decimal(outstanding.requested_window.c->count()));
+  }
+  set(row, LeakStacksColumn::kEffectiveCNs, decimal(outstanding.effective_c.count()));
+  set(row, LeakStacksColumn::kObservationUsesTraceEnd,
+      outstanding.observation_uses_trace_end ? "true" : "false");
+  std::uint64_t total_calls = 0U;
+  std::uint64_t total_bytes = 0U;
+  for (const auto& group : result.groups) {
+    total_calls += group.calls;
+    total_bytes += group.bytes;
+  }
+  set(row, LeakStacksColumn::kGroups, decimal(static_cast<std::uint64_t>(result.groups.size())));
+  set(row, LeakStacksColumn::kCalls, decimal(total_calls));
+  set(row, LeakStacksColumn::kBytes, decimal(total_bytes));
+  const auto& trace = outstanding.trace;
+  set(row, LeakStacksColumn::kTraceEvents, decimal(trace.event_count));
+  set(row, LeakStacksColumn::kLossRecords, decimal(trace.loss_record_count));
+  set(row, LeakStacksColumn::kBytesRead, decimal(trace.bytes_read));
+  set(row, LeakStacksColumn::kTruncated, trace.truncated ? "true" : "false");
+  set(row, LeakStacksColumn::kPartiallyUnderstood, trace.partially_understood ? "true" : "false");
+  set(row, LeakStacksColumn::kCompletenessMask, hex_value(trace.completeness.mask()));
+  set(row, LeakStacksColumn::kCompletenessOverall,
+      completeness_state_name(trace.completeness.overall_state()));
+  set(row, LeakStacksColumn::kCompletenessLifecycle,
+      completeness_state_name(trace.completeness.lifecycle_state()));
+  set(row, LeakStacksColumn::kCompletenessStackDetail,
+      completeness_state_name(trace.completeness.stack_detail_state()));
+  set(row, LeakStacksColumn::kCompletenessUnderstanding,
+      understanding_state_name(trace.completeness.understanding_state()));
+  set(row, LeakStacksColumn::kCompletenessIssues, completeness_issues(trace.completeness));
+  if (trace.end_of_trace.has_value()) {
+    const auto& end = *trace.end_of_trace;
+    set(row, LeakStacksColumn::kNormalStop, end.normal_stop ? "true" : "false");
+    if (end.target_exit_code.has_value()) {
+      set(row, LeakStacksColumn::kTargetExitCode, decimal(*end.target_exit_code));
+    }
+  }
+  CsvEmitter{output_}.row(row);
+}
+
+void CsvWriter::write_leak_stacks(const LeaksStacksResult& result,
+                                  const EventPresentationResolver& resolver) {
+  require_state(State::kReady, "write leak stacks report");
+  header_ = result.outstanding.trace.file_header;
+  capture_scope_ = result.outstanding.trace.capture_scope;
+  CsvEmitter{output_}.row(kLeakStacksHeader);
+  std::uint64_t rank = 0U;
+  for (const auto& group : result.groups) {
+    ++rank;
+    write_leak_stacks_row(group, rank,
+                          resolver ? resolver(group.sample_event) : EventPresentation{});
+  }
+  write_leak_stacks_summary(result);
+  state_ = State::kFinished;
+  ensure_output();
 }
 
 void CsvWriter::require_state(State expected, const char* operation) const {
@@ -1146,6 +1471,28 @@ OutstandingResult analyze_outstanding_to_csv(std::istream& input, std::ostream& 
       analyze_filtered_outstanding(input, window, filter, filter_resolver, stream_options);
   CsvWriter writer{output};
   writer.write_outstanding(result, presentation_resolver);
+  return result;
+}
+
+EventsStacksResult analyze_event_stacks_to_csv(
+    std::istream& input, std::ostream& output, StacksWindow window, StacksSort sort,
+    const AnalysisFilter& filter, const EventMetadataResolver& filter_resolver,
+    const EventPresentationResolver& presentation_resolver, EventStreamOptions stream_options) {
+  auto result = analyze_event_stacks(input, window, sort, filter, filter_resolver, stream_options);
+  CsvWriter writer{output};
+  writer.write_event_stacks(result, presentation_resolver);
+  return result;
+}
+
+LeaksStacksResult analyze_leak_stacks_to_csv(std::istream& input, std::ostream& output,
+                                             OutstandingWindow window, StacksSort sort,
+                                             const AnalysisFilter& filter,
+                                             const EventMetadataResolver& filter_resolver,
+                                             const EventPresentationResolver& presentation_resolver,
+                                             EventStreamOptions stream_options) {
+  auto result = analyze_leak_stacks(input, window, sort, filter, filter_resolver, stream_options);
+  CsvWriter writer{output};
+  writer.write_leak_stacks(result, presentation_resolver);
   return result;
 }
 

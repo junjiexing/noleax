@@ -22,6 +22,7 @@
 #include "noleax/analyzer/filter.hpp"
 #include "noleax/analyzer/json.hpp"
 #include "noleax/analyzer/outstanding.hpp"
+#include "noleax/analyzer/stacks.hpp"
 #include "noleax/analyzer/symbolizer.hpp"
 #include "noleax/analyzer/trace_metadata.hpp"
 #include "noleax/config/config_io.hpp"
@@ -183,7 +184,46 @@ struct AnalysisResult {
       [&metadata](const noleax::trace::Event& event) { return metadata.presentation(event); };
 
   try {
+    const auto stacks_sort = [](noleax::config::AnalysisSort value) {
+      switch (value) {
+        case noleax::config::AnalysisSort::kCalls:
+          return noleax::analyzer::StacksSort::kCalls;
+        case noleax::config::AnalysisSort::kFreeBytes:
+          return noleax::analyzer::StacksSort::kFreeBytes;
+        case noleax::config::AnalysisSort::kNetBytes:
+          return noleax::analyzer::StacksSort::kNetBytes;
+        case noleax::config::AnalysisSort::kBytes:
+          return noleax::analyzer::StacksSort::kBytes;
+        case noleax::config::AnalysisSort::kAllocBytes:
+          return noleax::analyzer::StacksSort::kAllocBytes;
+      }
+      return noleax::analyzer::StacksSort::kAllocBytes;
+    };
+    const bool group_by = configuration.analysis.group_by.value.has_value();
     if (configuration.analysis.mode.value == noleax::config::AnalysisMode::kEvents) {
+      if (group_by) {
+        noleax::analyzer::StacksWindow window;
+        window.from = configuration.analysis.from.value.value_or(std::chrono::nanoseconds{0});
+        window.to = configuration.analysis.to.value;
+        const auto sort = stacks_sort(configuration.analysis.sort.value);
+        noleax::analyzer::EventsStacksResult result;
+        switch (configuration.analysis.format.value) {
+          case noleax::config::OutputFormat::kConsole:
+            result = noleax::analyzer::analyze_event_stacks_to_console(
+                input, output, window, sort, filter, filter_resolver, presentation_resolver,
+                {console_color_enabled(configuration, writing_stdout)});
+            break;
+          case noleax::config::OutputFormat::kJson:
+            result = noleax::analyzer::analyze_event_stacks_to_json(
+                input, output, window, sort, filter, filter_resolver, presentation_resolver);
+            break;
+          case noleax::config::OutputFormat::kCsv:
+            result = noleax::analyzer::analyze_event_stacks_to_csv(
+                input, output, window, sort, filter, filter_resolver, presentation_resolver);
+            break;
+        }
+        return {result.trace.completeness};
+      }
       noleax::analyzer::FilteredEventsResult result;
       switch (configuration.analysis.format.value) {
         case noleax::config::OutputFormat::kConsole:
@@ -204,9 +244,32 @@ struct AnalysisResult {
     }
 
     noleax::analyzer::OutstandingWindow window;
-    window.a = *configuration.analysis.a.value;
-    window.b = *configuration.analysis.b.value;
-    window.c = configuration.analysis.c.value;
+    window.a = configuration.analysis.from.value.value_or(std::chrono::nanoseconds{0});
+    window.b = configuration.analysis.to.value;
+    window.c = configuration.analysis.end.value;
+    if (group_by) {
+      auto sort = stacks_sort(configuration.analysis.sort.value);
+      if (configuration.analysis.sort.source == noleax::config::ValueSource::kDefault) {
+        sort = noleax::analyzer::StacksSort::kBytes;
+      }
+      noleax::analyzer::LeaksStacksResult result;
+      switch (configuration.analysis.format.value) {
+        case noleax::config::OutputFormat::kConsole:
+          result = noleax::analyzer::analyze_leak_stacks_to_console(
+              input, output, window, sort, filter, filter_resolver, presentation_resolver,
+              {console_color_enabled(configuration, writing_stdout)});
+          break;
+        case noleax::config::OutputFormat::kJson:
+          result = noleax::analyzer::analyze_leak_stacks_to_json(
+              input, output, window, sort, filter, filter_resolver, presentation_resolver);
+          break;
+        case noleax::config::OutputFormat::kCsv:
+          result = noleax::analyzer::analyze_leak_stacks_to_csv(
+              input, output, window, sort, filter, filter_resolver, presentation_resolver);
+          break;
+      }
+      return {result.outstanding.trace.completeness};
+    }
     noleax::analyzer::OutstandingResult result;
     switch (configuration.analysis.format.value) {
       case noleax::config::OutputFormat::kConsole:
@@ -226,6 +289,9 @@ struct AnalysisResult {
     return {result.trace.completeness};
   } catch (const noleax::analyzer::OutstandingAnalysisError& error) {
     throw ApplicationError{1, "invalid outstanding analysis window for '" +
+                                  noleax::config::path_to_utf8(input_path) + "': " + error.what()};
+  } catch (const noleax::analyzer::StacksAnalysisError& error) {
+    throw ApplicationError{1, "invalid stacks analysis window for '" +
                                   noleax::config::path_to_utf8(input_path) + "': " + error.what()};
   } catch (const noleax::analyzer::AnalysisFilterError& error) {
     throw ApplicationError{1, "invalid analysis filter: " + std::string{error.what()}};

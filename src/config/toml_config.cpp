@@ -391,7 +391,8 @@ void load_trace(const toml::table& table, ConfigurationOverrides& result,
 
 void load_analysis(const toml::table& table, ConfigurationOverrides& result,
                    const std::filesystem::path& base_directory) {
-  constexpr std::array allowed{"inputs", "mode", "format", "output", "a", "b", "c"};
+  constexpr std::array allowed{"inputs", "mode", "format",   "output", "from",
+                               "to",     "end",  "group_by", "sort"};
   reject_unknown_keys(table, allowed, "analysis");
 
   if (const auto* node = optional_node(table, "inputs")) {
@@ -408,14 +409,23 @@ void load_analysis(const toml::table& table, ConfigurationOverrides& result,
     result.analysis.output.set(
         read_optional_path(*node, "analysis.output", "--output", base_directory));
   }
-  if (const auto* node = optional_node(table, "a")) {
-    result.analysis.a.set(read_optional_duration(*node, "analysis.a", "--a"));
+  if (const auto* node = optional_node(table, "from")) {
+    result.analysis.from.set(read_optional_duration(*node, "analysis.from", "--from"));
   }
-  if (const auto* node = optional_node(table, "b")) {
-    result.analysis.b.set(read_optional_duration(*node, "analysis.b", "--b"));
+  if (const auto* node = optional_node(table, "to")) {
+    result.analysis.to.set(read_optional_duration(*node, "analysis.to", "--to"));
   }
-  if (const auto* node = optional_node(table, "c")) {
-    result.analysis.c.set(read_optional_duration(*node, "analysis.c", "--c"));
+  if (const auto* node = optional_node(table, "end")) {
+    result.analysis.end.set(read_optional_duration(*node, "analysis.end", "--end"));
+  }
+  if (const auto* node = optional_node(table, "group_by")) {
+    if (const auto text = node->value<std::string>(); !text.has_value() || !text->empty()) {
+      result.analysis.group_by.set(
+          read_enum<AnalysisGroupBy>(*node, "analysis.group_by", "--group-by"));
+    }
+  }
+  if (const auto* node = optional_node(table, "sort")) {
+    result.analysis.sort.set(read_enum<AnalysisSort>(*node, "analysis.sort", "--sort"));
   }
 }
 

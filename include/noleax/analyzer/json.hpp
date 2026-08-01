@@ -7,6 +7,7 @@
 #include "noleax/analyzer/filter.hpp"
 #include "noleax/analyzer/outstanding.hpp"
 #include "noleax/analyzer/presentation.hpp"
+#include "noleax/analyzer/stacks.hpp"
 #include "noleax/trace/completeness.hpp"
 #include "noleax/trace/event.hpp"
 #include "noleax/trace/wire_format.hpp"
@@ -36,6 +37,11 @@ class JsonWriter {
   void finish_events(const FilteredEventsResult& result);
 
   void write_outstanding(const OutstandingResult& result, const AnalysisFilter& filter,
+                         const EventPresentationResolver& resolver = {});
+
+  void write_event_stacks(const EventsStacksResult& result, const AnalysisFilter& filter,
+                          const EventPresentationResolver& resolver = {});
+  void write_leak_stacks(const LeaksStacksResult& result, const AnalysisFilter& filter,
                          const EventPresentationResolver& resolver = {});
 
  private:
@@ -74,6 +80,18 @@ class JsonWriter {
 
 [[nodiscard]] OutstandingResult analyze_outstanding_to_json(
     std::istream& input, std::ostream& output, OutstandingWindow window,
+    const AnalysisFilter& filter, const EventMetadataResolver& filter_resolver = {},
+    const EventPresentationResolver& presentation_resolver = {},
+    EventStreamOptions stream_options = {});
+
+[[nodiscard]] EventsStacksResult analyze_event_stacks_to_json(
+    std::istream& input, std::ostream& output, StacksWindow window, StacksSort sort,
+    const AnalysisFilter& filter, const EventMetadataResolver& filter_resolver = {},
+    const EventPresentationResolver& presentation_resolver = {},
+    EventStreamOptions stream_options = {});
+
+[[nodiscard]] LeaksStacksResult analyze_leak_stacks_to_json(
+    std::istream& input, std::ostream& output, OutstandingWindow window, StacksSort sort,
     const AnalysisFilter& filter, const EventMetadataResolver& filter_resolver = {},
     const EventPresentationResolver& presentation_resolver = {},
     EventStreamOptions stream_options = {});

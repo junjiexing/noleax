@@ -3,12 +3,11 @@ operation = "analyze"
 
 [analysis]
 inputs = ["capture.nlx"]
-mode = "outstanding"
+mode = "leaks"
 format = "json"
 output = "outstanding.json"
-a = "0s"
-b = "900ms"
-c = ""
+from = "0s"
+to = "900ms"
 
 [filters]
 min_size = "1KiB"

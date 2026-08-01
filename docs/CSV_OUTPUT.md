@@ -64,14 +64,15 @@ events 文件的 `record_type` 为：
 时为 requested size；VM free 为 region size；map 为 view size；没有独立 size 的事件留空。具体 payload
 原始 size 仍保留在对应专用列。
 
-## 4. outstanding 表
+## 4. leaks 表
 
-outstanding 文件的 `record_type` 为 `allocation` 或固定末行 `summary`。固定列顺序分组如下：
+leaks（原 outstanding）文件的 `record_type` 为 `allocation` 或固定末行 `summary`。固定列顺序分组如下：
 
 1. generation：`csv_schema_version, record_type, generation_kind, allocation_id, mapping_id, heap_id,
    heap_handle, address, size`
 2. summary 窗口：`window_a_ns, window_b_ns, requested_c_ns, effective_c_ns,
-   observation_uses_trace_end, trace_end_monotonic_ticks`
+   observation_uses_trace_end, trace_end_monotonic_ticks`。`window_b_ns` 填写请求的 `--to`，缺省时
+   填写按 trace 终点截断的 effective 值。
 3. 创建事件：`creation_sequence, creation_relative_time_ns, creation_monotonic_ticks, thread_id,
    api_id, api_name, api_module, operation, status, event_flags, error_domain, error_code, stack_id,
    stack_status, stack_frames`
@@ -83,6 +84,24 @@ outstanding 文件的 `record_type` 为 `allocation` 或固定末行 `summary`�
 
 窗口列只在 summary 行填写；allocation 行包含 generation 和创建 Event。即使没有 outstanding
 allocation，也仍输出 header 和 summary，因此窗口及“结果为空”不会丢失。
+
+## 4.1 stacks 表
+
+`--group-by` 的 CSV 输出按数据集选择两种 header。`record_type` 为 `group` 或固定末行
+`summary`。events 数据集的列为：
+
+`csv_schema_version, record_type, rank, calls, alloc_calls, alloc_bytes, free_calls, free_bytes,
+net_bytes, stack_id, stack_status, stack_frames, window_from_ns, window_to_ns, groups,
+aggregated_events, unmatched_frees`，后接与 leaks 表相同的 trace/完整性/终止列。
+
+leaks 数据集的列为：
+
+`csv_schema_version, record_type, rank, calls, bytes, stack_id, stack_status, stack_frames,
+window_a_ns, window_b_ns, requested_c_ns, effective_c_ns, observation_uses_trace_end, groups`，
+后接同一组 trace/完整性/终止列。
+
+events 数据集的窗口列和 leaks 数据集的窗口列均只在 summary 行填写；summary 行的 `calls` 与各字节
+列为全组合计。
 
 ## 5. stack_frames 子格式
 

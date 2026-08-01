@@ -137,17 +137,21 @@ TEST_CASE("analyze CLI replaces arrays and maps all filters", "[cli][config]") {
   const auto current_directory = std::filesystem::current_path();
   const auto parsed = parse({"analyze",
                              "--mode",
-                             "outstanding",
+                             "leaks",
                              "--format",
                              "csv",
                              "--output",
                              "result.csv",
-                             "--a",
+                             "--from",
                              "1s",
-                             "--b",
+                             "--to",
                              "2s",
-                             "--c",
+                             "--end",
                              "3s",
+                             "--group-by",
+                             "stack",
+                             "--sort",
+                             "calls",
                              "--min-size",
                              "16B",
                              "--max-size",
@@ -190,9 +194,11 @@ TEST_CASE("analyze CLI replaces arrays and maps all filters", "[cli][config]") {
   CHECK(overrides.analysis.mode.value == noleax::config::AnalysisMode::kOutstanding);
   CHECK(overrides.analysis.format.value == noleax::config::OutputFormat::kCsv);
   CHECK(overrides.analysis.output.value == current_directory / "result.csv");
-  CHECK(overrides.analysis.a.value == 1s);
-  CHECK(overrides.analysis.b.value == 2s);
-  CHECK(overrides.analysis.c.value == 3s);
+  CHECK(overrides.analysis.from.value == 1s);
+  CHECK(overrides.analysis.to.value == 2s);
+  CHECK(overrides.analysis.end.value == 3s);
+  CHECK(overrides.analysis.group_by.value == noleax::config::AnalysisGroupBy::kStack);
+  CHECK(overrides.analysis.sort.value == noleax::config::AnalysisSort::kCalls);
   CHECK(overrides.filters.min_size.value == 16U);
   CHECK(overrides.filters.max_size.value == 1024U * 1024U);
   CHECK(overrides.filters.events.value ==
