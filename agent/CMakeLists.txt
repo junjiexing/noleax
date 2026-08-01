@@ -54,8 +54,13 @@ target_link_libraries(noleax-agent
   PRIVATE
     noleax::hook-backend
     noleax::core
+    noleax::config
     noleax::ipc
 )
+
+if(WIN32)
+  target_link_libraries(noleax-agent PRIVATE bcrypt)
+endif()
 
 target_compile_definitions(noleax-agent PRIVATE NOLEAX_AGENT_BUILD)
 noleax_set_project_warnings(noleax-agent)

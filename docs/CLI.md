@@ -161,6 +161,7 @@ noleax patch --input INPUT --output OUTPUT [options]
 | --agent-name NAME | patch.agent_name | noleax-agent.dll |
 | --allow-break-signature / --no-allow-break-signature | patch.allow_break_signature | false |
 | --verify / --no-verify | patch.verify | true |
+| --standalone / --no-standalone | patch.standalone | false |
 
 规则：
 
@@ -170,6 +171,9 @@ noleax patch --input INPUT --output OUTPUT [options]
 - 签名文件默认拒绝，`--allow-break-signature` 时从输出中剥离签名。
 - managed、driver、EFI、packed 或结构异常文件拒绝。
 - patch 只生成输出副本；写临时文件并重新解析验证后才改名。
+- `--standalone` 时把 standalone 激活参数烧进参数区，patched 副本可直接运行自插装
+  （agent 读配置直写 trace，无需控制器）；语义见 [STATIC_PE_PATCH.md](STATIC_PE_PATCH.md)
+  第 8 节。
 - 产物通过 `noleax run --inject-method static-pe-patch` 捕获；直接运行与未打补丁行为一致。
 - patch 会改变文件哈希并通常破坏签名；agent DLL（--agent-name）需与产物同目录部署。
 

@@ -168,6 +168,7 @@ method = "entrypoint-section"
 agent_name = "custom-agent.dll"
 allow_break_signature = true
 verify = false
+standalone = true
 
 [diagnostics]
 log_level = "debug"
@@ -224,6 +225,7 @@ color = "always"
   CHECK(overrides.patch.agent_name.specified);
   CHECK(overrides.patch.allow_break_signature.specified);
   CHECK(overrides.patch.verify.specified);
+  CHECK(overrides.patch.standalone.specified);
   CHECK(overrides.diagnostics.log_level.specified);
   CHECK(overrides.diagnostics.color.specified);
 

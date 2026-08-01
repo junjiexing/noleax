@@ -136,6 +136,51 @@ TEST_CASE("patch produces a verifiable image and patch info", "[controller][pe-p
   }
 }
 
+TEST_CASE("standalone patch bakes the magic parameters while plain patch zeroes them",
+          "[controller][pe-patch]") {
+  const auto directory = make_temp_dir();
+  const auto input = directory / "target.exe";
+  write_all(input, read_all(NOLEAX_TEST_CONTROLLER_TARGET_PATH));
+
+  const auto read_params = [](const std::filesystem::path& image_path) {
+    const auto data = read_all(image_path);
+    const LayoutInfo layout = layout_of(data);
+    noleax::agent::windows::BootstrapParameters parameters;
+    bool found = false;
+    for (std::uint16_t index = 0U; index < layout.number_of_sections && !found; ++index) {
+      const std::uint64_t entry = layout.section_table_offset + index * 40ULL;
+      char name[9]{};
+      std::memcpy(name, data.data() + entry, 8U);
+      if (std::string_view{name} != ".nlxboot") {
+        continue;
+      }
+      std::uint32_t raw_offset = 0U;
+      std::memcpy(&raw_offset, data.data() + entry + 20U, sizeof(raw_offset));
+      REQUIRE(raw_offset + pepatch::kParamsOffset + sizeof(parameters) <= data.size());
+      std::memcpy(&parameters, data.data() + raw_offset + pepatch::kParamsOffset,
+                  sizeof(parameters));
+      found = true;
+    }
+    REQUIRE(found);
+    return parameters;
+  };
+
+  auto plain_options = options_for(input, directory / "plain-patched.exe");
+  static_cast<void>(noleax::controller::windows::patch_pe_image(plain_options));
+  const auto plain = read_params(directory / "plain-patched.exe");
+  CHECK(plain.session_token != noleax::agent::windows::kStandaloneMagic);
+  CHECK(plain.pipe_name.front() == L'\0');
+
+  auto standalone_options = options_for(input, directory / "standalone-patched.exe");
+  standalone_options.standalone = true;
+  static_cast<void>(noleax::controller::windows::patch_pe_image(standalone_options));
+  const auto standalone = read_params(directory / "standalone-patched.exe");
+  CHECK(standalone.structure_size == sizeof(standalone));
+  CHECK(standalone.version == noleax::agent::windows::kBootstrapVersion);
+  CHECK(standalone.session_token == noleax::agent::windows::kStandaloneMagic);
+  CHECK(standalone.pipe_name.front() != L'\0');
+}
+
 TEST_CASE("patch rejects unsupported and malformed inputs", "[controller][pe-patch]") {
   const auto directory = make_temp_dir();
   const auto source = read_all(NOLEAX_TEST_CONTROLLER_TARGET_PATH);

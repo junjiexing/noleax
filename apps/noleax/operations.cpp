@@ -610,6 +610,7 @@ void validate_capture_support(const noleax::config::Configuration& configuration
   options.agent_name = configuration.patch.agent_name.value;
   options.allow_break_signature = configuration.patch.allow_break_signature.value;
   options.verify = configuration.patch.verify.value;
+  options.standalone = configuration.patch.standalone.value;
   try {
     const auto result = noleax::controller::windows::patch_pe_image(options);
     std::cout << "patched: input=" << noleax::config::path_to_utf8(options.input)
@@ -619,6 +620,9 @@ void validate_capture_support(const noleax::config::Configuration& configuration
               << std::dec << std::noshowbase << " bytes=" << result.output_size;
     if (result.signature_removed) {
       std::cout << " signature=removed";
+    }
+    if (options.standalone) {
+      std::cout << " standalone=1";
     }
     std::cout << '\n';
     return 0;

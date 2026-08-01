@@ -87,6 +87,11 @@ class RtlAllocateHeapTraceWriter final {
 
   void begin_capture();
   [[nodiscard]] RtlAllocateHeapTraceWriterResult finish();
+  // Finalizes the trace when the background worker can no longer run (for example
+  // during DLL_PROCESS_DETACH, where ExitProcess has already killed it). Runs the
+  // final drain inline on the calling thread without joining or waking the worker.
+  // Callers must stop the memory hooks' recording first, exactly as for finish().
+  [[nodiscard]] RtlAllocateHeapTraceWriterResult finish_after_worker_exit();
   [[nodiscard]] bool is_running() const noexcept;
 
  private:

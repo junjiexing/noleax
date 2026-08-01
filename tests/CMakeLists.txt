@@ -276,6 +276,30 @@ if(WIN32)
   noleax_set_project_warnings(noleax-pe-patch-e2e-test)
   add_dependencies(noleax-pe-patch-e2e-test noleax-agent noleax-controller-target)
 
+  add_executable(noleax-standalone-capture-test
+    integration/standalone_capture_test.cpp
+  )
+  target_link_libraries(noleax-standalone-capture-test PRIVATE
+    noleax::analyzer
+    noleax::controller
+  )
+  noleax_set_project_warnings(noleax-standalone-capture-test)
+  add_dependencies(noleax-standalone-capture-test noleax-agent noleax-controller-target)
+
+  add_test(NAME agent.standalone-capture
+    COMMAND noleax-standalone-capture-test
+      "$<TARGET_FILE:noleax-agent>"
+      "$<TARGET_FILE:noleax-controller-target>"
+      "$<TARGET_FILE_DIR:noleax-standalone-capture-test>/standalone"
+      "$<TARGET_FILE_DIR:noleax-standalone-capture-test>/standalone-pipe.nlx"
+  )
+  set_tests_properties(agent.standalone-capture PROPERTIES
+    LABELS "agent;capture;static-pe-patch;standalone;trace;windows"
+    PASS_REGULAR_EXPRESSION "status=ok standalone=1 sibling=1 env=1 disabled=1 pipe=1"
+    RUN_SERIAL TRUE
+    TIMEOUT 120
+  )
+
   add_test(NAME controller.static-pe-patch
     COMMAND noleax-pe-patch-e2e-test
       "$<TARGET_FILE:noleax-agent>"

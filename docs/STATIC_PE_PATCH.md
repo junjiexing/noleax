@@ -126,6 +126,41 @@ jmp     rax
 - 磁盘上的 patched 副本入口始终保持 E9 跳转；stub 在每次进程启动时于内存中恢复原始字节。
 - trace 内不记录 patch 事件本身。
 
+## 8. standalone 独立记录
+
+`noleax patch --standalone` 在 patch 时把 standalone 激活参数烧进 `.nlxboot` 的参数区
+（`structure_size`/`version` 不变，`session_token` 为共享 magic 常量，stub 与 ASM 不需要任何
+改动）。此后**直接运行 patched 副本**即可自插装：stub 照常加载 agent，agent 识别 magic 后
+不连接任何控制器管道，自行读取 TOML 配置并把事件写入 trace。适用于无法由 noleax 启动注入
+也无法 attach 的目标。
+
+### 配置发现
+
+1. 环境变量 `NOLEAX_AGENT_CONFIG`（TOML 的完整路径）。
+2. 可执行文件同目录的 `noleax-agent.toml`。
+
+两者都没有或配置非法时捕获禁用：目标正常运行、不产出 trace，并向 stderr（有控制台时）与
+`OutputDebugString` 输出一行原因。TOML 沿用现有 schema 的 `[capture]` 与 `[trace]` 段
+（`hook_profile`、`max_stack_depth`、`min_size`、`path`、`buffer_size`、`max_file_size`、
+`flush_interval`、`compression`、`compression_level`），缺省值与 CLI 默认一致；`trace.path`
+省略时写到可执行文件同目录的 `<exe 主名>.nlx`。相对 `trace.path` 相对配置文件目录解析。
+
+### 退出收尾
+
+- 正常退出（main 返回、`exit()`、`ExitProcess`）:standalone 模式额外 hook
+  `ntdll!RtlExitUserProcess`（forced 重定位），在 writer 后台线程仍存活时完成 quiescence、
+  drain 并写出 end-of-trace，trace 完整（`normal_stop=true`）。
+- hook 安装失败或直接调用 `TerminateProcess` 时由 `DLL_PROCESS_DETACH` 路径兜底：此时
+  writer 线程已被 ExitProcess 杀死，agent 在 loader lock 约束下单线程内联 drain；若线程
+  恰好死在写块中途，trace 可能缺少尾记录，analyzer 按可恢复不完整处理（退出码 2），损失
+  以 flush interval 为界。
+- 崩溃或 `TerminateProcess` 没有任何收尾机会，同样只剩 flush interval 边界内的数据。
+
+### 与管道模式的关系
+
+`run --inject-method static-pe-patch` 启动 standalone 镜像时，控制器仍在进程内存中覆盖
+参数区，按普通管道捕获工作；standalone 烘焙只影响"直接运行"的场景。
+
 ## 附录 A：stub 完整参考汇编（ml64）
 
 ```asm
