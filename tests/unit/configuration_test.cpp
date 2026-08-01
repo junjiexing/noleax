@@ -123,6 +123,7 @@ hook_profile = "windows-nt-heap"
 max_stack_depth = 128
 min_size = "4KiB"
 duration = "3m"
+live = true
 
 [trace]
 path = "traces/app.nlx"
@@ -190,6 +191,7 @@ color = "always"
   CHECK(overrides.capture.max_stack_depth.specified);
   CHECK(overrides.capture.min_size.specified);
   CHECK(overrides.capture.duration.specified);
+  CHECK(overrides.capture.live.specified);
   CHECK(overrides.trace.path.specified);
   CHECK(overrides.trace.buffer_size.specified);
   CHECK(overrides.trace.max_file_size.specified);

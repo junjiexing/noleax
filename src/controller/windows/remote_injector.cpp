@@ -111,10 +111,12 @@ InjectionResult inject_remote_thread(void* process_handle, std::uint32_t process
   if (!std::filesystem::is_regular_file(agent_path, path_error) || path_error) {
     throw InjectionError{"agent DLL does not exist or is not a regular file", ERROR_FILE_NOT_FOUND};
   }
+  const bool standalone = bootstrap.session_token == noleax::agent::windows::kStandaloneMagic;
   if (bootstrap.structure_size != sizeof(bootstrap) ||
       bootstrap.version != noleax::agent::windows::kBootstrapVersion ||
       bootstrap.pipe_name.front() == L'\0' || bootstrap.pipe_name.back() != L'\0' ||
-      bootstrap.connect_timeout_ms == 0U || bootstrap.controller_process_id == 0U) {
+      (!standalone &&
+       (bootstrap.connect_timeout_ms == 0U || bootstrap.controller_process_id == 0U))) {
     throw InjectionError{"agent bootstrap parameters are invalid", ERROR_INVALID_PARAMETER};
   }
   if (find_remote_module_resilient(process, process_id, agent_path.filename().native())

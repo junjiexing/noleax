@@ -64,6 +64,7 @@ void require_default_capture(const Configuration& configuration, const Configura
                   operation);
   require_default(configuration.capture.duration, defaults.capture.duration, "capture.duration",
                   operation);
+  require_default(configuration.capture.live, defaults.capture.live, "capture.live", operation);
 }
 
 void require_default_trace(const Configuration& configuration, const Configuration& defaults,

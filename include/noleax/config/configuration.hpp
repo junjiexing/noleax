@@ -321,6 +321,7 @@ struct CaptureSettings {
   Setting<std::uint16_t> max_stack_depth;
   Setting<std::uint64_t> min_size;
   Setting<std::optional<std::chrono::nanoseconds>> duration;
+  Setting<bool> live;
 };
 
 struct TraceSettings {
@@ -412,6 +413,7 @@ struct CaptureOverrides {
   SettingOverride<std::uint16_t> max_stack_depth;
   SettingOverride<std::uint64_t> min_size;
   SettingOverride<std::optional<std::chrono::nanoseconds>> duration;
+  SettingOverride<bool> live;
 };
 
 struct TraceOverrides {

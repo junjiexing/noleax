@@ -30,10 +30,11 @@
   --trace .\capture.nlx -- C:\apps\demo.exe --workload sample
 ~~~
 
-目标退出、达到 `--capture-duration` 或按 Ctrl+C 时，Noleax 会停止捕获、drain writer 并输出统计。
-达到 duration 或 Ctrl+C 不会终止仍在运行的目标。如果目标在捕获停止前自行退出，agent 随进程
-消失，无法完成 drain：命令保留已落盘的 trace（缺少尾部记录），输出 target_exit_code 并以退出
-码 2 结束。先用短时、可重复 workload 建立未注入基线，再对长期进程使用 attach。
+默认模式（agent 直写）下，注入后 agent 自行记录并直写 trace：`--capture-duration` 由 agent
+到点自行收尾，目标继续以未插装状态运行；无 duration 时 agent 在目标退出时完成收尾，正常退出
+的 trace 带 end-of-trace。汇总统计从 trace 回读，退出码由 trace 完整性驱动（0 完整、2 不完整）。
+Ctrl+C 不再驱动收尾：控制器改为 detached 等待（退出码 2），agent 继续到 duration 或目标退出。
+需要实时控制（查询状态、Ctrl+C 驱动 drain）时加 `--live` 恢复管道会话。
 
 默认 profile `windows-native` 同时捕获 NT Heap 与 NT virtual-memory API。只关注 heap 时显式使用
 `windows-nt-heap` 可减少事件量和干扰。

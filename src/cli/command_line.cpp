@@ -56,6 +56,7 @@ struct CaptureBindings {
   TextOption compression_level;
   TextOption trace_path;
   TextOption duration;
+  BooleanOption live;
 };
 
 struct RunBindings {
@@ -165,6 +166,8 @@ void add_capture_options(CLI::App& app, CaptureBindings& bindings) {
                   "Maximum captured stack depth");
   add_text_option(app, bindings.min_size, "--capture-min-size",
                   "Minimum allocation size to capture");
+  add_boolean_option(app, bindings.live, "--live", "--no-live",
+                     "Keep the controller attached with a live pipe session");
   add_text_option(app, bindings.buffer_size, "--buffer-size", "In-process trace buffer size");
   add_text_option(app, bindings.max_trace_size, "--max-trace-size", "Maximum trace file size");
   add_text_option(app, bindings.max_trace_files, "--max-trace-files",
@@ -290,6 +293,9 @@ void apply_injection_bindings(const InjectionBindings& bindings,
 void apply_capture_bindings(const CaptureBindings& bindings, config::CaptureOverrides& capture,
                             config::TraceOverrides& trace,
                             const std::filesystem::path& current_directory) {
+  if (const auto value = boolean_value(bindings.live)) {
+    capture.live.set(*value);
+  }
   if (was_set(bindings.hook_profile)) {
     capture.hook_profile.set(
         parse_cli_enum<config::HookProfile>(bindings.hook_profile.value, "--hook-profile"));

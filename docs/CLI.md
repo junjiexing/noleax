@@ -68,11 +68,20 @@ noleax run [capture-options] [injection-options] -- target [args...]
 P7C Windows x64 全部方法均已实现。`static-pe-patch` 要求目标是 `noleax patch` 生成的副本；
 未打补丁的目标在执行前以退出码 1 拒绝，patched 副本的捕获语义见
 [STATIC_PE_PATCH.md](STATIC_PE_PATCH.md) 与 [ADR 0004](adr/0004-static-pe-patch-run-semantics.md)。
-控制器创建 suspended 目标，只有 agent ready 后才恢复目标主线程。达到
-`--capture-duration` 或收到 Ctrl+C 时完成 writer drain 和物理 hook revert；若此时目标仍运行，
-不终止目标。若目标先于捕获停止自行退出，agent 随进程消失，无法执行 drain 与 revert：noleax
-结束会话并保留已按 flush 间隔落盘的 trace（缺少尾部记录），输出 target_exit_code 并以退出码 2
-报告结果不完整。`thread-hijack` 的安全语义见
+
+**默认（agent 直写）**：控制器把有效捕获配置写成会话 TOML 经 bootstrap 参数传入，注入后
+agent 自行启动记录并直写 trace；`--capture-duration` 由 agent 到点自行 finalize（quiescence、
+writer drain、物理 revert），目标继续以未插装状态运行。无 duration 时 agent 在目标退出
+（`RtlExitUserProcess` hook，失败时 `DLL_PROCESS_DETACH` 兜底）时完成收尾，正常退出的 trace
+带 end-of-trace。Ctrl+C 不再驱动收尾：控制器改为 detached 等待（退出码 2），agent 继续到
+duration 或目标退出。汇总统计从 trace 回读，退出码由 trace 完整性驱动（0 完整、2 不完整、
+3 注入失败）。
+
+**`--live`**：恢复旧的管道会话——控制器创建 suspended 目标并在 agent ready 后才恢复主线程，
+达到 duration 或 Ctrl+C 时驱动 drain 与 revert；若此时目标仍运行，不终止目标。live 下若目标
+先于捕获停止自行退出，agent 随进程消失，无法执行 drain 与 revert：noleax 结束会话并保留已
+按 flush 间隔落盘的 trace（缺少尾部记录），输出 target_exit_code 并以退出码 2 报告结果不
+完整。`thread-hijack` 的安全语义见
 [THREAD_HIJACK_INJECTION.md](THREAD_HIJACK_INJECTION.md)，`entrypoint-code` 的入口补丁与恢复
 语义见 [ENTRYPOINT_INJECTION.md](ENTRYPOINT_INJECTION.md)。
 
@@ -99,7 +108,9 @@ noleax attach --pid PID [capture-options] [injection-options]
 
 P7B Windows x64 已实现两者（`entrypoint-code` 仅适用于 launch，attach 选择它会被配置校验
 拒绝），且 `--unload-on-stop` 当前只接受 false。attach 成功不表示
-trace 完整；分析输出必须标记注入前分配未知。
+trace 完整；分析输出必须标记注入前分配未知。默认模式（agent 直写）下
+`--capture-duration` 由 agent 自行执行，无 duration 时记录到目标退出；attach 的退出码同样由
+trace 完整性驱动（preexisting 盲点使结果为 2）。`--live` 恢复管道会话语义（见 run 一节）。
 
 ## 6. Capture options
 
@@ -108,6 +119,7 @@ trace 完整；分析输出必须标记注入前分配未知。
 | --hook-profile PROFILE | capture.hook_profile | windows-native |
 | --max-stack-depth N | capture.max_stack_depth | 64 |
 | --capture-min-size SIZE | capture.min_size | 0B |
+| --live / --no-live | capture.live | false（agent 直写） |
 | --buffer-size SIZE | trace.buffer_size | 16MiB |
 | --max-trace-size SIZE | trace.max_file_size | 256MiB |
 | --max-trace-files N | trace.max_files | 1 |

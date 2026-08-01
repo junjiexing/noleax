@@ -11,7 +11,8 @@ DLL 注入目标进程，hook 内存分配 API，将 alloc/realloc/free、heap l
 ## 功能特性
 
 - 四种启动注入：`remote-thread`、`thread-hijack`、`entrypoint-code`、`static-pe-patch`，均在目标
-  入口点之前完成注入。
+  入口点之前完成注入。默认 agent 直写模式：注入后 agent 自行记录并写出 trace，
+  无需管道编排；`--live` 可恢复管道实时会话。
 - 两种 attach 注入：`remote-thread`、`thread-hijack`，连接运行中的进程。
 - `noleax patch` 生成静态 patch 副本，配合 `static-pe-patch` 方式捕获，无需启动期远程注入；
   `patch --standalone` 更进一步，patched 副本可直接运行，agent 读配置自写 trace，
@@ -82,7 +83,8 @@ GitHub Releases 的滚动预发布 `ci-latest`；推送 `v*` 标签则创建对�
    .\noleax.exe run --hook-profile windows-nt-heap --trace .\capture.nlx -- C:\apps\demo.exe
    ~~~
 
-   目标退出、达到 `--capture-duration` 或按 Ctrl+C 时停止捕获；后两者不会终止仍在运行的目标。
+   目标退出或达到 `--capture-duration` 时 agent 自行收尾并写出完整 trace；Ctrl+C 时控制器
+   detached 等待，agent 继续到 duration 或目标退出。需要实时控制时加 `--live` 恢复管道会话。
 
 3. 查看全部事件：
 
@@ -140,10 +142,13 @@ noleax run [capture-options] [injection-options] -- target [args...]
 | `--trace PATH` | 按目标名与时间生成 | trace 输出路径 |
 | `--capture-duration DURATION` | 直到目标退出或手动停止 | 捕获时长 |
 | `--working-directory PATH` | 目标文件目录 | 目标工作目录 |
+| `--live` / `--no-live` | 关闭（agent 直写） | 恢复管道实时会话 |
 
-控制器以 suspended 方式创建目标，agent ready 后才恢复主线程，因此四种方法都能在目标入口点前
-完成注入。`static-pe-patch` 要求目标是 `noleax patch` 生成的副本，未打补丁的目标会以退出码 1
-拒绝。
+默认模式（agent 直写）：控制器把捕获配置经 bootstrap 参数交给 agent，注入后 agent 自行记录并
+直写 trace；`--capture-duration` 由 agent 到点自行 finalize，无 duration 时在目标退出时收尾
+（正常退出带 end-of-trace）。汇总统计从 trace 回读，退出码由 trace 完整性驱动。四种方法都能在
+目标入口点前完成注入。`static-pe-patch` 要求目标是 `noleax patch` 生成的副本，未打补丁的目标
+会以退出码 1 拒绝。
 
 ### attach：连接运行中的进程
 

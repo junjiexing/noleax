@@ -19,6 +19,7 @@
 
 #include "noleax/analyzer/console.hpp"
 #include "noleax/analyzer/csv.hpp"
+#include "noleax/analyzer/event_stream.hpp"
 #include "noleax/analyzer/filter.hpp"
 #include "noleax/analyzer/json.hpp"
 #include "noleax/analyzer/outstanding.hpp"
@@ -534,6 +535,151 @@ void validate_capture_support(const noleax::config::Configuration& configuration
   return final.dropped_events == 0U ? 0 : 2;
 }
 
+// ---- agent-capture mode (default): the controller passes a session TOML through the
+// bootstrap parameters and the agent records autonomously; --live selects the pipe session.
+
+[[nodiscard]] std::filesystem::path write_agent_session_config(
+    const noleax::config::Configuration& configuration, const std::filesystem::path& trace_path) {
+  static std::atomic<std::uint32_t> session_counter{0U};
+  const std::uint32_t ordinal = session_counter.fetch_add(1U, std::memory_order_relaxed);
+  std::ostringstream name;
+  name << "noleax-" << std::hex << GetCurrentProcessId() << '-' << ordinal << ".toml";
+  const auto config_path = std::filesystem::temp_directory_path() / name.str();
+
+  std::ofstream output{config_path, std::ios::binary | std::ios::trunc};
+  if (!output) {
+    throw ApplicationError{1, "cannot create the agent session configuration '" +
+                                  noleax::config::path_to_utf8(config_path) + "'"};
+  }
+  const auto trace_utf8 = std::filesystem::absolute(trace_path).generic_u8string();
+  output << "schema_version = 1\n\n";
+  if (configuration.target.pid.value.has_value()) {
+    output << "[target]\npid = " << *configuration.target.pid.value << "\n\n";
+  }
+  output << "[capture]\n"
+         << "hook_profile = \""
+         << noleax::config::enum_value_name(configuration.capture.hook_profile.value) << "\"\n"
+         << "max_stack_depth = " << configuration.capture.max_stack_depth.value << "\n"
+         << "min_size = \"" << configuration.capture.min_size.value << "B\"\n";
+  if (configuration.capture.duration.value.has_value()) {
+    output << "duration = \"" << configuration.capture.duration.value->count() << "ns\"\n";
+  }
+  output << "\n[trace]\n"
+         << "path = \"" << std::string{trace_utf8.begin(), trace_utf8.end()} << "\"\n"
+         << "buffer_size = \"" << configuration.trace.buffer_size.value << "B\"\n"
+         << "max_file_size = \"" << configuration.trace.max_file_size.value << "B\"\n"
+         << "flush_interval = \"" << configuration.trace.flush_interval.value.count() << "ns\"\n"
+         << "compression = \""
+         << noleax::config::enum_value_name(configuration.trace.compression.value) << "\"\n"
+         << "compression_level = " << configuration.trace.compression_level.value << "\n";
+  if (!output) {
+    throw ApplicationError{1, "cannot write the agent session configuration '" +
+                                  noleax::config::path_to_utf8(config_path) + "'"};
+  }
+  return config_path;
+}
+
+void remove_quietly(const std::filesystem::path& path) noexcept {
+  std::error_code error;
+  static_cast<void>(std::filesystem::remove(path, error));
+}
+
+[[nodiscard]] int print_agent_capture_summary(const std::filesystem::path& trace_path,
+                                              std::uint32_t pid, bool target_exited,
+                                              const std::optional<std::uint32_t>& exit_code,
+                                              bool interrupted) {
+  if (interrupted) {
+    std::cout << "capture detached: trace=" << noleax::config::path_to_utf8(trace_path)
+              << " pid=" << pid
+              << " note=controller stopped waiting; the agent continues until its duration or "
+                 "the target exits\n";
+    return 2;
+  }
+  std::ifstream input{trace_path, std::ios::binary};
+  if (!input) {
+    std::cout << "capture produced no trace: trace=" << noleax::config::path_to_utf8(trace_path)
+              << " pid=" << pid << " note=the agent may have been disabled or failed to start\n";
+    return 2;
+  }
+  const auto analyzed = noleax::analyzer::analyze_event_stream(input);
+  std::cout << "capture finalized: trace=" << noleax::config::path_to_utf8(trace_path)
+            << " pid=" << pid;
+  if (analyzed.statistics.has_value()) {
+    const auto& statistics = *analyzed.statistics;
+    std::cout << " observed=" << statistics.observed_calls << " written="
+              << statistics.observed_calls - statistics.filtered_before_queue -
+                     statistics.dropped_events
+              << " filtered=" << statistics.filtered_before_queue
+              << " dropped=" << statistics.dropped_events
+              << " bytes=" << statistics.written_stored_bytes;
+  }
+  if (target_exited && exit_code.has_value()) {
+    std::cout << " target_exit_code=" << *exit_code;
+  } else if (!target_exited) {
+    std::cout << " target_state=running";
+  }
+  std::cout << '\n';
+  return analyzed.completeness.recommended_exit_code();
+}
+
+[[nodiscard]] int execute_agent_capture(
+    const noleax::config::Configuration& configuration, const std::filesystem::path& trace_path,
+    const noleax::controller::windows::CaptureOptions& capture) {
+  const auto agent_config = write_agent_session_config(configuration, trace_path);
+  std::uint32_t pid = 0U;
+  HANDLE target = nullptr;
+  std::optional<noleax::controller::windows::SuspendedProcess> launched;
+  noleax::controller::windows::AgentProcessHandle attached;
+  try {
+    if (*configuration.operation.value == noleax::config::Operation::kRun) {
+      noleax::controller::windows::LaunchOptions launch;
+      launch.executable = *configuration.target.path.value;
+      launch.arguments = configuration.target.args.value;
+      launch.working_directory =
+          configuration.target.working_directory.value.value_or(launch.executable.parent_path());
+      launched = noleax::controller::windows::launch_agent_capture(launch, capture, agent_config);
+      pid = launched->process_id();
+      target = static_cast<HANDLE>(launched->process_handle());
+    } else {
+      pid = *configuration.target.pid.value;
+      attached = noleax::controller::windows::attach_agent_capture(pid, capture, agent_config);
+      target = static_cast<HANDLE>(attached.get());
+    }
+  } catch (const std::exception& error) {
+    remove_quietly(agent_config);
+    throw ApplicationError{3, std::string{"capture injection failed: "} + error.what()};
+  }
+
+  const auto duration = configuration.capture.duration.value;
+  const auto deadline = std::chrono::steady_clock::now() +
+                        duration.value_or(std::chrono::nanoseconds::zero()) +
+                        std::chrono::milliseconds{2'000};
+  bool target_exited = false;
+  bool interrupted = false;
+  for (;;) {
+    if (WaitForSingleObject(target, 25U) == WAIT_OBJECT_0) {
+      target_exited = true;
+      break;
+    }
+    if (stop_requested.load(std::memory_order_relaxed)) {
+      interrupted = true;
+      break;
+    }
+    if (duration.has_value() && std::chrono::steady_clock::now() >= deadline) {
+      break;
+    }
+  }
+  std::optional<std::uint32_t> exit_code;
+  if (target_exited) {
+    DWORD code = 0U;
+    if (GetExitCodeProcess(target, &code) != FALSE) {
+      exit_code = code;
+    }
+  }
+  remove_quietly(agent_config);
+  return print_agent_capture_summary(trace_path, pid, target_exited, exit_code, interrupted);
+}
+
 [[nodiscard]] int execute_capture(const noleax::config::Configuration& configuration) {
   validate_capture_support(configuration);
   const std::filesystem::path trace_path =
@@ -542,6 +688,9 @@ void validate_capture_support(const noleax::config::Configuration& configuration
   const auto capture = capture_options(configuration, trace_path);
   ConsoleControlGuard controls;
   try {
+    if (!configuration.capture.live.value) {
+      return execute_agent_capture(configuration, trace_path, capture);
+    }
     if (*configuration.operation.value == noleax::config::Operation::kRun) {
       if (capture.method == noleax::controller::windows::InjectionMethod::kStaticPePatch &&
           !noleax::controller::windows::read_static_patch_info(*configuration.target.path.value)
