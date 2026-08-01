@@ -627,12 +627,18 @@ void JsonWriter::write_outstanding(const OutstandingResult& result, const Analys
 
   header_ = result.trace.file_header;
   capture_scope_ = result.trace.capture_scope;
-  write_document_prefix("outstanding", header_, capture_scope_, filter);
+  write_document_prefix("leaks", header_, capture_scope_, filter);
   JsonEmitter json{output_};
   json.raw(",\"window\":{\"a_ns\":");
   json.signed_number(result.requested_window.a.count());
   json.raw(",\"b_ns\":");
-  json.signed_number(result.requested_window.b.count());
+  if (result.requested_window.b.has_value()) {
+    json.signed_number(result.requested_window.b->count());
+  } else {
+    json.null();
+  }
+  json.raw(",\"effective_b_ns\":");
+  json.signed_number(result.effective_b.count());
   json.raw(",\"requested_c_ns\":");
   if (result.requested_window.c.has_value()) {
     json.signed_number(result.requested_window.c->count());
@@ -692,6 +698,152 @@ void JsonWriter::write_outstanding(const OutstandingResult& result, const Analys
   json.unsigned_number(result.orphaned_mapping_end_count);
   json.raw(",");
   write_summary(result.trace);
+  json.raw("}}\n");
+  state_ = State::kFinished;
+  ensure_output();
+}
+
+void JsonWriter::write_event_stacks(const EventsStacksResult& result, const AnalysisFilter& filter,
+                                    const EventPresentationResolver& resolver) {
+  require_state(State::kReady, "write event stacks report");
+  header_ = result.trace.file_header;
+  capture_scope_ = result.trace.capture_scope;
+  write_document_prefix("stacks", header_, capture_scope_, filter);
+  JsonEmitter json{output_};
+  json.raw(",\"dataset\":\"events\",\"window\":{\"from_ns\":");
+  json.signed_number(result.window.from.count());
+  json.raw(",\"to_ns\":");
+  if (result.window.to.has_value()) {
+    json.signed_number(result.window.to->count());
+  } else {
+    json.null();
+  }
+  json.raw("},\"groups\":[");
+
+  bool first = true;
+  std::uint64_t rank = 0U;
+  std::uint64_t total_calls = 0U;
+  std::uint64_t total_alloc_bytes = 0U;
+  std::uint64_t total_free_bytes = 0U;
+  for (const auto& group : result.groups) {
+    ++rank;
+    total_calls += group.calls;
+    total_alloc_bytes += group.alloc_bytes;
+    total_free_bytes += group.free_bytes;
+    if (!first) {
+      json.raw(",");
+    }
+    first = false;
+    const EventPresentation presentation =
+        resolver ? resolver(group.sample_event) : EventPresentation{};
+    json.raw("{\"rank\":");
+    json.unsigned_number(rank);
+    json.raw(",\"calls\":");
+    json.unsigned_number(group.calls);
+    json.raw(",\"alloc_calls\":");
+    json.unsigned_number(group.alloc_calls);
+    json.raw(",\"alloc_bytes\":");
+    json.unsigned_number(group.alloc_bytes);
+    json.raw(",\"free_calls\":");
+    json.unsigned_number(group.free_calls);
+    json.raw(",\"free_bytes\":");
+    json.unsigned_number(group.free_bytes);
+    json.raw(",\"net_bytes\":");
+    json.signed_number(group.net_bytes());
+    json.raw(",\"stack_id\":");
+    write_identifier(json, group.stack_id);
+    json.raw(",\"sample_event\":");
+    write_event_object(group.sample_event, presentation);
+    json.raw("}");
+  }
+
+  json.raw("],\"summary\":{\"groups\":");
+  json.unsigned_number(static_cast<std::uint64_t>(result.groups.size()));
+  json.raw(",\"calls\":");
+  json.unsigned_number(total_calls);
+  json.raw(",\"alloc_bytes\":");
+  json.unsigned_number(total_alloc_bytes);
+  json.raw(",\"free_bytes\":");
+  json.unsigned_number(total_free_bytes);
+  json.raw(",\"net_bytes\":");
+  json.signed_number(static_cast<std::int64_t>(total_alloc_bytes) -
+                     static_cast<std::int64_t>(total_free_bytes));
+  json.raw(",\"aggregated_events\":");
+  json.unsigned_number(result.aggregated_event_count);
+  json.raw(",\"unmatched_frees\":");
+  json.unsigned_number(result.unmatched_free_count);
+  json.raw(",");
+  write_summary(result.trace);
+  json.raw("}}\n");
+  state_ = State::kFinished;
+  ensure_output();
+}
+
+void JsonWriter::write_leak_stacks(const LeaksStacksResult& result, const AnalysisFilter& filter,
+                                   const EventPresentationResolver& resolver) {
+  require_state(State::kReady, "write leak stacks report");
+  const OutstandingResult& outstanding = result.outstanding;
+  header_ = outstanding.trace.file_header;
+  capture_scope_ = outstanding.trace.capture_scope;
+  write_document_prefix("stacks", header_, capture_scope_, filter);
+  JsonEmitter json{output_};
+  json.raw(",\"dataset\":\"leaks\",\"window\":{\"a_ns\":");
+  json.signed_number(outstanding.requested_window.a.count());
+  json.raw(",\"b_ns\":");
+  if (outstanding.requested_window.b.has_value()) {
+    json.signed_number(outstanding.requested_window.b->count());
+  } else {
+    json.null();
+  }
+  json.raw(",\"effective_b_ns\":");
+  json.signed_number(outstanding.effective_b.count());
+  json.raw(",\"requested_c_ns\":");
+  if (outstanding.requested_window.c.has_value()) {
+    json.signed_number(outstanding.requested_window.c->count());
+  } else {
+    json.null();
+  }
+  json.raw(",\"effective_c_ns\":");
+  json.signed_number(outstanding.effective_c.count());
+  json.raw(",\"observation_uses_trace_end\":");
+  json.boolean(outstanding.observation_uses_trace_end);
+  json.raw("},\"groups\":[");
+
+  bool first = true;
+  std::uint64_t rank = 0U;
+  std::uint64_t total_calls = 0U;
+  std::uint64_t total_bytes = 0U;
+  for (const auto& group : result.groups) {
+    ++rank;
+    total_calls += group.calls;
+    total_bytes += group.bytes;
+    if (!first) {
+      json.raw(",");
+    }
+    first = false;
+    const EventPresentation presentation =
+        resolver ? resolver(group.sample_event) : EventPresentation{};
+    json.raw("{\"rank\":");
+    json.unsigned_number(rank);
+    json.raw(",\"calls\":");
+    json.unsigned_number(group.calls);
+    json.raw(",\"bytes\":");
+    json.unsigned_number(group.bytes);
+    json.raw(",\"stack_id\":");
+    write_identifier(json, group.stack_id);
+    json.raw(",\"sample_event\":");
+    write_event_object(group.sample_event, presentation);
+    json.raw("}");
+  }
+
+  json.raw("],\"summary\":{\"groups\":");
+  json.unsigned_number(static_cast<std::uint64_t>(result.groups.size()));
+  json.raw(",\"calls\":");
+  json.unsigned_number(total_calls);
+  json.raw(",\"bytes\":");
+  json.unsigned_number(total_bytes);
+  json.raw(",");
+  write_summary(outstanding.trace);
   json.raw("}}\n");
   state_ = State::kFinished;
   ensure_output();
@@ -1072,6 +1224,26 @@ OutstandingResult analyze_outstanding_to_json(
       analyze_filtered_outstanding(input, window, filter, filter_resolver, stream_options);
   JsonWriter writer{output};
   writer.write_outstanding(result, filter, presentation_resolver);
+  return result;
+}
+
+EventsStacksResult analyze_event_stacks_to_json(
+    std::istream& input, std::ostream& output, StacksWindow window, StacksSort sort,
+    const AnalysisFilter& filter, const EventMetadataResolver& filter_resolver,
+    const EventPresentationResolver& presentation_resolver, EventStreamOptions stream_options) {
+  auto result = analyze_event_stacks(input, window, sort, filter, filter_resolver, stream_options);
+  JsonWriter writer{output};
+  writer.write_event_stacks(result, filter, presentation_resolver);
+  return result;
+}
+
+LeaksStacksResult analyze_leak_stacks_to_json(
+    std::istream& input, std::ostream& output, OutstandingWindow window, StacksSort sort,
+    const AnalysisFilter& filter, const EventMetadataResolver& filter_resolver,
+    const EventPresentationResolver& presentation_resolver, EventStreamOptions stream_options) {
+  auto result = analyze_leak_stacks(input, window, sort, filter, filter_resolver, stream_options);
+  JsonWriter writer{output};
+  writer.write_leak_stacks(result, filter, presentation_resolver);
   return result;
 }
 

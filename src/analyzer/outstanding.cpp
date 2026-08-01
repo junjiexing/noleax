@@ -28,14 +28,14 @@ struct CandidateState {
 };
 
 void validate_window(const OutstandingWindow& window) {
-  if (window.a.count() < 0 || window.b.count() < 0 ||
+  if (window.a.count() < 0 || (window.b.has_value() && window.b->count() < 0) ||
       (window.c.has_value() && window.c->count() < 0)) {
     throw OutstandingAnalysisError{"outstanding window times must not be negative"};
   }
-  if (window.a > window.b) {
+  if (window.b.has_value() && window.a > *window.b) {
     throw OutstandingAnalysisError{"outstanding window requires a <= b"};
   }
-  if (window.c.has_value() && window.b > *window.c) {
+  if (window.b.has_value() && window.c.has_value() && *window.b > *window.c) {
     throw OutstandingAnalysisError{"outstanding window requires b <= c"};
   }
 }
@@ -79,9 +79,11 @@ class OutstandingCollector {
             ? result.trace.end_of_trace->final_monotonic_ticks
             : std::max(result.trace.known_monotonic_end, header.monotonic_origin);
     result.trace_end_monotonic_ticks = trace_end;
-    if (compare_trace_time(trace_end, header, window_.b) == std::strong_ordering::less) {
-      throw OutstandingAnalysisError{"outstanding window b exceeds the trace end"};
-    }
+    result.effective_b =
+        window_.b.has_value() &&
+                compare_trace_time(trace_end, header, *window_.b) != std::strong_ordering::less
+            ? *window_.b
+            : trace_time_floor(trace_end, header);
 
     const bool omitted_c = !window_.c.has_value();
     const bool c_exceeds_trace =
@@ -125,7 +127,8 @@ class OutstandingCollector {
     }
     const auto ticks = generation.created_by.header.monotonic_ticks;
     if (compare_trace_time(ticks, *file_header_, window_.a) == std::strong_ordering::less ||
-        compare_trace_time(ticks, *file_header_, window_.b) != std::strong_ordering::less) {
+        (window_.b.has_value() &&
+         compare_trace_time(ticks, *file_header_, *window_.b) != std::strong_ordering::less)) {
       return;
     }
 

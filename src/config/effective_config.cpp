@@ -262,12 +262,16 @@ std::string serialize_effective_config(const Configuration& configuration) {
                  configuration.analysis.format.source);
   append_setting(output, "output", format_path(configuration.analysis.output.value),
                  configuration.analysis.output.source);
-  append_setting(output, "a", format_optional_duration(configuration.analysis.a.value),
-                 configuration.analysis.a.source);
-  append_setting(output, "b", format_optional_duration(configuration.analysis.b.value),
-                 configuration.analysis.b.source);
-  append_setting(output, "c", format_optional_duration(configuration.analysis.c.value),
-                 configuration.analysis.c.source);
+  append_setting(output, "from", format_optional_duration(configuration.analysis.from.value),
+                 configuration.analysis.from.source);
+  append_setting(output, "to", format_optional_duration(configuration.analysis.to.value),
+                 configuration.analysis.to.source);
+  append_setting(output, "end", format_optional_duration(configuration.analysis.end.value),
+                 configuration.analysis.end.source);
+  append_setting(output, "group_by", configuration.analysis.group_by.value ? "true" : "false",
+                 configuration.analysis.group_by.source);
+  append_setting(output, "sort", quote_toml(enum_value_name(configuration.analysis.sort.value)),
+                 configuration.analysis.sort.source);
 
   append_table(output, "filters");
   append_setting(output, "min_size", format_optional_size(configuration.filters.min_size.value),

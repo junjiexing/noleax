@@ -4,7 +4,8 @@
 
 - `run-nt-heap.toml`：启动 x64 目标，只捕获 NT Heap，30 秒后停止捕获。
 - `analyze-events.toml`：把成功的 alloc/realloc/free 事件输出为 JSON。
-- `analyze-outstanding.toml`：查找 `[0s,900ms)` 创建且 trace 结束时仍存活的 1 KiB 到 1 MiB 对象。
+- `analyze-outstanding.toml`：查找 `[0s,900ms)` 创建且 trace 结束时仍存活的 1 KiB 到 1 MiB 对象
+  （leaks 模式）。
 
 使用前把 `run-nt-heap.toml` 中的 `application.exe` 和参数改为实际目标。三份文件使用相对路径，所以
 `capture.nlx` 和分析输出都位于配置文件所在目录。先验证，再执行：

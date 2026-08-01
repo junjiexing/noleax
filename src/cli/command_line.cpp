@@ -85,9 +85,11 @@ struct AnalyzeBindings {
   TextOption mode;
   TextOption format;
   TextOption output;
-  TextOption a;
-  TextOption b;
-  TextOption c;
+  TextOption from;
+  TextOption to;
+  TextOption end;
+  BooleanOption group_by;
+  TextOption sort;
   TextOption min_size;
   TextOption max_size;
   ListOption events;
@@ -412,14 +414,21 @@ void apply_analyze_bindings(const AnalyzeBindings& bindings,
     overrides.analysis.output.set(
         parse_cli_path(bindings.output.value, "--output", current_directory));
   }
-  if (was_set(bindings.a)) {
-    overrides.analysis.a.set(parse_cli_duration(bindings.a.value, "--a"));
+  if (was_set(bindings.from)) {
+    overrides.analysis.from.set(parse_cli_duration(bindings.from.value, "--from"));
   }
-  if (was_set(bindings.b)) {
-    overrides.analysis.b.set(parse_cli_duration(bindings.b.value, "--b"));
+  if (was_set(bindings.to)) {
+    overrides.analysis.to.set(parse_cli_duration(bindings.to.value, "--to"));
   }
-  if (was_set(bindings.c)) {
-    overrides.analysis.c.set(parse_cli_duration(bindings.c.value, "--c"));
+  if (was_set(bindings.end)) {
+    overrides.analysis.end.set(parse_cli_duration(bindings.end.value, "--end"));
+  }
+  if (const auto value = boolean_value(bindings.group_by)) {
+    overrides.analysis.group_by.set(*value);
+  }
+  if (was_set(bindings.sort)) {
+    overrides.analysis.sort.set(
+        parse_cli_enum<config::AnalysisSort>(bindings.sort.value, "--sort"));
   }
   if (was_set(bindings.min_size)) {
     overrides.filters.min_size.set(parse_cli_size(bindings.min_size.value, "--min-size"));
@@ -580,9 +589,12 @@ ParsedCommandLine parse_command_line(int argc, const char* const* argv,
   add_text_option(*analyze, analyze_bindings.mode, "--mode", "Analysis mode");
   add_text_option(*analyze, analyze_bindings.format, "--format", "Output format");
   add_text_option(*analyze, analyze_bindings.output, "--output", "Output path");
-  add_text_option(*analyze, analyze_bindings.a, "--a", "Allocation window start time");
-  add_text_option(*analyze, analyze_bindings.b, "--b", "Allocation window end time");
-  add_text_option(*analyze, analyze_bindings.c, "--c", "Outstanding state time");
+  add_text_option(*analyze, analyze_bindings.from, "--from", "Allocation window start time");
+  add_text_option(*analyze, analyze_bindings.to, "--to", "Allocation window end time");
+  add_text_option(*analyze, analyze_bindings.end, "--end", "Observation time for leaks");
+  add_boolean_option(*analyze, analyze_bindings.group_by, "--group-by", "--no-group-by",
+                     "Group results by call stack");
+  add_text_option(*analyze, analyze_bindings.sort, "--sort", "Group sort order");
   add_text_option(*analyze, analyze_bindings.min_size, "--min-size", "Minimum allocation size");
   add_text_option(*analyze, analyze_bindings.max_size, "--max-size", "Maximum allocation size");
   add_list_option(*analyze, analyze_bindings.events, "--event", "Event type filter");

@@ -189,6 +189,7 @@ TEST_CASE("console outstanding output has a stable snapshot", "[analyzer][consol
   result.trace = trace_result(false);
   result.trace.event_count = 3U;
   result.requested_window = {10ns, 20ns, 30ns};
+  result.effective_b = 20ns;
   result.effective_c = 30ns;
   result.trace_end_monotonic_ticks = 140U;
   result.candidate_count = 3U;
@@ -210,7 +211,7 @@ TEST_CASE("console outstanding output has a stable snapshot", "[analyzer][consol
   writer.write_outstanding(result,
                            [](const noleax::trace::Event&) { return allocation_metadata(); });
 
-  const std::string expected = R"(noleax outstanding
+  const std::string expected = R"(noleax leaks
 trace: platform=windows architecture=x64 pointer-width=64 file-index=0
 clock: frequency=1000000000Hz origin=100 utc-origin-ns=1000
 capture: process-start

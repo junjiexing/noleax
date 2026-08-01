@@ -59,9 +59,11 @@ inputs = ["example.nlx"]
 mode = "events"
 format = "console"
 output = ""
-a = ""
-b = ""
-c = ""
+from = ""
+to = ""
+end = ""
+group_by = false
+sort = "alloc-bytes"
 
 [filters]
 min_size = ""
@@ -191,10 +193,11 @@ patch：
 analyze：
 
 - analysis.inputs 至少一个。
-- outstanding 模式必须设置 a、b。
-- events 模式不得设置 a、b、c。
-- a 小于等于 b。
-- c 若设置，必须大于等于 b；超过 trace 结束时间时由 analyzer clamp。
+- events 模式不得设置 analysis.end。
+- analysis.sort 必须搭配 analysis.group_by；events 聚合接受 calls、alloc-bytes、free-bytes 和
+  net-bytes，leaks 聚合接受 calls 和 bytes。
+- from 小于等于 to；end 若设置，必须大于等于 to。
+- to 和 end 超过 trace 结束时间时由 analyzer 按结束时间截断，不再报错。
 - min_size 不得大于 max_size。
 - filters.statuses 接受 success、failure、unmatched 和 preexisting。
 - filters.events、threads、apis、modules、stack_modules、allocation_ids 和 statuses 中，同一数组的

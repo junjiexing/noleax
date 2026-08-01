@@ -7,6 +7,7 @@
 #include "noleax/analyzer/filter.hpp"
 #include "noleax/analyzer/outstanding.hpp"
 #include "noleax/analyzer/presentation.hpp"
+#include "noleax/analyzer/stacks.hpp"
 #include "noleax/trace/completeness.hpp"
 #include "noleax/trace/event.hpp"
 #include "noleax/trace/wire_format.hpp"
@@ -45,6 +46,11 @@ class ConsoleWriter {
   void write_outstanding(const OutstandingResult& result,
                          const ConsoleMetadataResolver& resolver = {});
 
+  void write_event_stacks(const EventsStacksResult& result,
+                          const ConsoleMetadataResolver& resolver = {});
+  void write_leak_stacks(const LeaksStacksResult& result,
+                         const ConsoleMetadataResolver& resolver = {});
+
  private:
   enum class State : std::uint8_t {
     kReady,
@@ -79,6 +85,18 @@ class ConsoleWriter {
 
 [[nodiscard]] OutstandingResult analyze_outstanding_to_console(
     std::istream& input, std::ostream& output, OutstandingWindow window,
+    const AnalysisFilter& filter, const EventMetadataResolver& filter_resolver = {},
+    const ConsoleMetadataResolver& console_resolver = {}, ConsoleOptions console_options = {},
+    EventStreamOptions stream_options = {});
+
+[[nodiscard]] EventsStacksResult analyze_event_stacks_to_console(
+    std::istream& input, std::ostream& output, StacksWindow window, StacksSort sort,
+    const AnalysisFilter& filter, const EventMetadataResolver& filter_resolver = {},
+    const ConsoleMetadataResolver& console_resolver = {}, ConsoleOptions console_options = {},
+    EventStreamOptions stream_options = {});
+
+[[nodiscard]] LeaksStacksResult analyze_leak_stacks_to_console(
+    std::istream& input, std::ostream& output, OutstandingWindow window, StacksSort sort,
     const AnalysisFilter& filter, const EventMetadataResolver& filter_resolver = {},
     const ConsoleMetadataResolver& console_resolver = {}, ConsoleOptions console_options = {},
     EventStreamOptions stream_options = {});

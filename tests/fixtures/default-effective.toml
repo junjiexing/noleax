@@ -34,9 +34,11 @@ inputs = [] # source: default
 mode = "events" # source: default
 format = "console" # source: default
 output = "" # source: default
-a = "" # source: default
-b = "" # source: default
-c = "" # source: default
+from = "" # source: default
+to = "" # source: default
+end = "" # source: default
+group_by = false # source: default
+sort = "alloc-bytes" # source: default
 
 [filters]
 min_size = "" # source: default

@@ -409,9 +409,9 @@ void ConsoleWriter::write_outstanding(const OutstandingResult& result,
 
   header_ = result.trace.file_header;
   capture_scope_ = result.trace.capture_scope;
-  write_preamble("noleax outstanding", *header_, *capture_scope_);
+  write_preamble("noleax leaks", *header_, *capture_scope_);
   output_ << "window: [" << result.requested_window.a.count() << "ns, "
-          << result.requested_window.b.count() << "ns) observed-at=" << result.effective_c.count()
+          << result.effective_b.count() << "ns) observed-at=" << result.effective_c.count()
           << "ns (" << (result.observation_uses_trace_end ? "trace-end" : "configured") << ")\n"
           << "trace-end: " << trace_time_floor(result.trace_end_monotonic_ticks, *header_).count()
           << "ns [ticks=" << result.trace_end_monotonic_ticks << "]\n"
@@ -442,6 +442,92 @@ void ConsoleWriter::write_outstanding(const OutstandingResult& result,
           << "  filtered-out: " << result.filtered_out_count << '\n'
           << "  outstanding: " << result.outstanding.size() << '\n';
   write_common_summary(result.trace);
+  state_ = State::kFinished;
+  ensure_output();
+}
+
+void ConsoleWriter::write_event_stacks(const EventsStacksResult& result,
+                                       const ConsoleMetadataResolver& resolver) {
+  require_state(State::kReady, "write event stacks report");
+  header_ = result.trace.file_header;
+  capture_scope_ = result.trace.capture_scope;
+  write_preamble("noleax event stacks", *header_, *capture_scope_);
+  output_ << "window: [" << result.window.from.count() << "ns, ";
+  if (result.window.to.has_value()) {
+    output_ << result.window.to->count();
+  } else {
+    output_ << "trace-end";
+  }
+  output_ << "ns)\ngroups:\n";
+
+  std::uint64_t rank = 0U;
+  std::uint64_t total_calls = 0U;
+  std::uint64_t total_alloc_bytes = 0U;
+  std::uint64_t total_free_bytes = 0U;
+  if (result.groups.empty()) {
+    output_ << "  none\n";
+  }
+  for (const auto& group : result.groups) {
+    ++rank;
+    total_calls += group.calls;
+    total_alloc_bytes += group.alloc_bytes;
+    total_free_bytes += group.free_bytes;
+    output_ << "#" << rank << " calls=" << group.calls << " alloc=" << group.alloc_calls << "/"
+            << group.alloc_bytes << "B free=" << group.free_calls << "/" << group.free_bytes
+            << "B net=" << group.net_bytes() << "B\n";
+    const auto metadata = resolver ? resolver(group.sample_event) : ConsoleEventMetadata{};
+    write_stack(group.sample_event, metadata);
+  }
+
+  output_ << "\nsummary:\n"
+          << "  groups: " << result.groups.size() << '\n'
+          << "  calls: " << total_calls << '\n'
+          << "  alloc-bytes: " << total_alloc_bytes << '\n'
+          << "  free-bytes: " << total_free_bytes << '\n'
+          << "  net-bytes: "
+          << static_cast<std::int64_t>(total_alloc_bytes) -
+                 static_cast<std::int64_t>(total_free_bytes)
+          << '\n'
+          << "  aggregated-events: " << result.aggregated_event_count << '\n'
+          << "  unmatched-frees: " << result.unmatched_free_count << '\n';
+  write_common_summary(result.trace);
+  state_ = State::kFinished;
+  ensure_output();
+}
+
+void ConsoleWriter::write_leak_stacks(const LeaksStacksResult& result,
+                                      const ConsoleMetadataResolver& resolver) {
+  require_state(State::kReady, "write leak stacks report");
+  const OutstandingResult& outstanding = result.outstanding;
+  header_ = outstanding.trace.file_header;
+  capture_scope_ = outstanding.trace.capture_scope;
+  write_preamble("noleax leak stacks", *header_, *capture_scope_);
+  output_ << "window: [" << outstanding.requested_window.a.count() << "ns, "
+          << outstanding.effective_b.count()
+          << "ns) observed-at=" << outstanding.effective_c.count() << "ns ("
+          << (outstanding.observation_uses_trace_end ? "trace-end" : "configured")
+          << ")\ngroups:\n";
+
+  std::uint64_t rank = 0U;
+  std::uint64_t total_calls = 0U;
+  std::uint64_t total_bytes = 0U;
+  if (result.groups.empty()) {
+    output_ << "  none\n";
+  }
+  for (const auto& group : result.groups) {
+    ++rank;
+    total_calls += group.calls;
+    total_bytes += group.bytes;
+    output_ << "#" << rank << " calls=" << group.calls << " bytes=" << group.bytes << "B\n";
+    const auto metadata = resolver ? resolver(group.sample_event) : ConsoleEventMetadata{};
+    write_stack(group.sample_event, metadata);
+  }
+
+  output_ << "\nsummary:\n"
+          << "  groups: " << result.groups.size() << '\n'
+          << "  calls: " << total_calls << '\n'
+          << "  bytes: " << total_bytes << '\n';
+  write_common_summary(outstanding.trace);
   state_ = State::kFinished;
   ensure_output();
 }
@@ -726,6 +812,32 @@ OutstandingResult analyze_outstanding_to_console(std::istream& input, std::ostre
       analyze_filtered_outstanding(input, window, filter, filter_resolver, stream_options);
   ConsoleWriter writer{output, console_options};
   writer.write_outstanding(result, console_resolver);
+  return result;
+}
+
+EventsStacksResult analyze_event_stacks_to_console(std::istream& input, std::ostream& output,
+                                                   StacksWindow window, StacksSort sort,
+                                                   const AnalysisFilter& filter,
+                                                   const EventMetadataResolver& filter_resolver,
+                                                   const ConsoleMetadataResolver& console_resolver,
+                                                   ConsoleOptions console_options,
+                                                   EventStreamOptions stream_options) {
+  auto result = analyze_event_stacks(input, window, sort, filter, filter_resolver, stream_options);
+  ConsoleWriter writer{output, console_options};
+  writer.write_event_stacks(result, console_resolver);
+  return result;
+}
+
+LeaksStacksResult analyze_leak_stacks_to_console(std::istream& input, std::ostream& output,
+                                                 OutstandingWindow window, StacksSort sort,
+                                                 const AnalysisFilter& filter,
+                                                 const EventMetadataResolver& filter_resolver,
+                                                 const ConsoleMetadataResolver& console_resolver,
+                                                 ConsoleOptions console_options,
+                                                 EventStreamOptions stream_options) {
+  auto result = analyze_leak_stacks(input, window, sort, filter, filter_resolver, stream_options);
+  ConsoleWriter writer{output, console_options};
+  writer.write_leak_stacks(result, console_resolver);
   return result;
 }
 

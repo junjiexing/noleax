@@ -6,6 +6,7 @@ add_library(noleax-analyzer STATIC
   generation_tracker.cpp
   json.cpp
   outstanding.cpp
+  stacks.cpp
   symbolizer.cpp
   time.cpp
   trace_metadata.cpp

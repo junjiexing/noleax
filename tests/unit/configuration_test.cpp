@@ -136,12 +136,14 @@ compression_level = 1
 
 [analysis]
 inputs = ["one.nlx", "two.nlx"]
-mode = "outstanding"
+mode = "leaks"
 format = "json"
 output = "result.json"
-a = "1s"
-b = "2s"
-c = "3s"
+from = "1s"
+to = "2s"
+end = "3s"
+group_by = true
+sort = "calls"
 
 [filters]
 min_size = "16B"
@@ -199,9 +201,11 @@ color = "always"
   CHECK(overrides.analysis.mode.specified);
   CHECK(overrides.analysis.format.specified);
   CHECK(overrides.analysis.output.specified);
-  CHECK(overrides.analysis.a.specified);
-  CHECK(overrides.analysis.b.specified);
-  CHECK(overrides.analysis.c.specified);
+  CHECK(overrides.analysis.from.specified);
+  CHECK(overrides.analysis.to.specified);
+  CHECK(overrides.analysis.end.specified);
+  CHECK(overrides.analysis.group_by.specified);
+  CHECK(overrides.analysis.sort.specified);
   CHECK(overrides.filters.min_size.specified);
   CHECK(overrides.filters.max_size.specified);
   CHECK(overrides.filters.events.specified);
@@ -339,7 +343,7 @@ TEST_CASE("operation validation checks capture, injection, and relevance rules",
   CHECK_THROWS_AS(noleax::config::validate_configuration(doctor), noleax::config::ConfigError);
 }
 
-TEST_CASE("analysis validation enforces a b c and size windows", "[config]") {
+TEST_CASE("analysis validation enforces window sort and group rules", "[config]") {
   using namespace std::chrono_literals;
   TemporaryDirectory temporary;
   const auto trace = temporary.path() / "input.nlx";
@@ -349,26 +353,49 @@ TEST_CASE("analysis validation enforces a b c and size windows", "[config]") {
   configuration.operation.value = noleax::config::Operation::kAnalyze;
   configuration.analysis.inputs.value = {trace};
   configuration.analysis.mode.value = noleax::config::AnalysisMode::kOutstanding;
-  CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
-                  noleax::config::ConfigError);
+  CHECK_NOTHROW(noleax::config::validate_configuration(configuration));
 
-  configuration.analysis.a.value = 1s;
-  configuration.analysis.b.value = 2s;
-  configuration.analysis.c.value = 3s;
+  configuration.analysis.from.value = 1s;
+  configuration.analysis.to.value = 2s;
+  configuration.analysis.end.value = 3s;
   configuration.filters.min_size.value = 16U;
   configuration.filters.max_size.value = 1024U;
   CHECK_NOTHROW(noleax::config::validate_configuration(configuration));
 
-  configuration.analysis.c.value = 1s;
+  configuration.analysis.from.value = 3s;
   CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
                   noleax::config::ConfigError);
-  configuration.analysis.c.value = 3s;
+  configuration.analysis.from.value = 1s;
+  configuration.analysis.end.value = 1s;
+  CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
+                  noleax::config::ConfigError);
+  configuration.analysis.end.value = 3s;
   configuration.filters.min_size.value = 2048U;
   CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
                   noleax::config::ConfigError);
 
   configuration.filters.min_size.value = 16U;
   configuration.analysis.mode.value = noleax::config::AnalysisMode::kEvents;
+  CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
+                  noleax::config::ConfigError);
+  configuration.analysis.end.value.reset();
+  CHECK_NOTHROW(noleax::config::validate_configuration(configuration));
+
+  configuration.analysis.sort.value = noleax::config::AnalysisSort::kCalls;
+  configuration.analysis.sort.source = noleax::config::ValueSource::kCommandLine;
+  CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
+                  noleax::config::ConfigError);
+
+  configuration.analysis.group_by.value = true;
+  CHECK_NOTHROW(noleax::config::validate_configuration(configuration));
+  configuration.analysis.sort.value = noleax::config::AnalysisSort::kBytes;
+  CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
+                  noleax::config::ConfigError);
+
+  configuration.analysis.mode.value = noleax::config::AnalysisMode::kOutstanding;
+  configuration.analysis.sort.value = noleax::config::AnalysisSort::kCalls;
+  CHECK_NOTHROW(noleax::config::validate_configuration(configuration));
+  configuration.analysis.sort.value = noleax::config::AnalysisSort::kAllocBytes;
   CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
                   noleax::config::ConfigError);
 }

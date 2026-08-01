@@ -16,6 +16,7 @@ add_executable(noleax-unit-tests
   unit/json_test.cpp
   unit/ipc_protocol_test.cpp
   unit/outstanding_test.cpp
+  unit/stacks_test.cpp
   unit/replacement_lifecycle_test.cpp
   unit/symbolizer_test.cpp
   unit/time_test.cpp
