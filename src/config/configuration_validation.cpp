@@ -333,10 +333,10 @@ void validate_analyze(const Configuration& configuration, const Configuration& d
     fail("analysis.end", "must be greater than or equal to analysis.to");
   }
   const bool sort_specified = configuration.analysis.sort.source != ValueSource::kDefault;
-  if (sort_specified && !configuration.analysis.group_by.value) {
+  if (sort_specified && !configuration.analysis.group_by.value.has_value()) {
     fail("analysis.sort", "requires --group-by");
   }
-  if (configuration.analysis.group_by.value) {
+  if (configuration.analysis.group_by.value.has_value()) {
     const AnalysisSort sort = configuration.analysis.sort.value;
     if (events_mode && sort == AnalysisSort::kBytes) {
       fail("analysis.sort", "bytes is only valid with --mode leaks");

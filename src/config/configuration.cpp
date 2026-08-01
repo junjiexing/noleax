@@ -55,7 +55,6 @@ Configuration make_default_configuration() {
 
   configuration.analysis.mode.value = AnalysisMode::kEvents;
   configuration.analysis.format.value = OutputFormat::kConsole;
-  configuration.analysis.group_by.value = false;
   configuration.analysis.sort.value = AnalysisSort::kAllocBytes;
 
   configuration.symbols.mode.value = SymbolMode::kAuto;

@@ -268,7 +268,10 @@ std::string serialize_effective_config(const Configuration& configuration) {
                  configuration.analysis.to.source);
   append_setting(output, "end", format_optional_duration(configuration.analysis.end.value),
                  configuration.analysis.end.source);
-  append_setting(output, "group_by", configuration.analysis.group_by.value ? "true" : "false",
+  append_setting(output, "group_by",
+                 quote_toml(configuration.analysis.group_by.value.has_value()
+                                ? enum_value_name(*configuration.analysis.group_by.value)
+                                : std::string_view{}),
                  configuration.analysis.group_by.source);
   append_setting(output, "sort", quote_toml(enum_value_name(configuration.analysis.sort.value)),
                  configuration.analysis.sort.source);

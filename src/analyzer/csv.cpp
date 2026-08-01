@@ -883,7 +883,7 @@ void set_outstanding_presentation(OutstandingRow& row, const noleax::trace::Even
   set(row, OutstandingColumn::kStackFrames, stack_frames_value(presentation, header));
 }
 
-enum class EventStacksColumn : std::size_t {
+enum class EventStacksColumn : std::uint8_t {
   kCsvSchemaVersion,
   kRecordType,
   kRank,
@@ -957,7 +957,7 @@ void set(EventStacksRow& row, EventStacksColumn column, std::string value) {
   row[column_index(column)] = std::move(value);
 }
 
-enum class LeakStacksColumn : std::size_t {
+enum class LeakStacksColumn : std::uint8_t {
   kCsvSchemaVersion,
   kRecordType,
   kRank,

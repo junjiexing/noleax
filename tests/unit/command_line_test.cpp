@@ -149,6 +149,7 @@ TEST_CASE("analyze CLI replaces arrays and maps all filters", "[cli][config]") {
                              "--end",
                              "3s",
                              "--group-by",
+                             "stack",
                              "--sort",
                              "calls",
                              "--min-size",
@@ -196,7 +197,7 @@ TEST_CASE("analyze CLI replaces arrays and maps all filters", "[cli][config]") {
   CHECK(overrides.analysis.from.value == 1s);
   CHECK(overrides.analysis.to.value == 2s);
   CHECK(overrides.analysis.end.value == 3s);
-  CHECK(overrides.analysis.group_by.value);
+  CHECK(overrides.analysis.group_by.value == noleax::config::AnalysisGroupBy::kStack);
   CHECK(overrides.analysis.sort.value == noleax::config::AnalysisSort::kCalls);
   CHECK(overrides.filters.min_size.value == 16U);
   CHECK(overrides.filters.max_size.value == 1024U * 1024U);

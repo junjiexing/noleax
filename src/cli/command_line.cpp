@@ -88,7 +88,7 @@ struct AnalyzeBindings {
   TextOption from;
   TextOption to;
   TextOption end;
-  BooleanOption group_by;
+  TextOption group_by;
   TextOption sort;
   TextOption min_size;
   TextOption max_size;
@@ -423,8 +423,9 @@ void apply_analyze_bindings(const AnalyzeBindings& bindings,
   if (was_set(bindings.end)) {
     overrides.analysis.end.set(parse_cli_duration(bindings.end.value, "--end"));
   }
-  if (const auto value = boolean_value(bindings.group_by)) {
-    overrides.analysis.group_by.set(*value);
+  if (was_set(bindings.group_by)) {
+    overrides.analysis.group_by.set(
+        parse_cli_enum<config::AnalysisGroupBy>(bindings.group_by.value, "--group-by"));
   }
   if (was_set(bindings.sort)) {
     overrides.analysis.sort.set(
@@ -592,8 +593,8 @@ ParsedCommandLine parse_command_line(int argc, const char* const* argv,
   add_text_option(*analyze, analyze_bindings.from, "--from", "Allocation window start time");
   add_text_option(*analyze, analyze_bindings.to, "--to", "Allocation window end time");
   add_text_option(*analyze, analyze_bindings.end, "--end", "Observation time for leaks");
-  add_boolean_option(*analyze, analyze_bindings.group_by, "--group-by", "--no-group-by",
-                     "Group results by call stack");
+  add_text_option(*analyze, analyze_bindings.group_by, "--group-by",
+                  "Group results by this dimension");
   add_text_option(*analyze, analyze_bindings.sort, "--sort", "Group sort order");
   add_text_option(*analyze, analyze_bindings.min_size, "--min-size", "Minimum allocation size");
   add_text_option(*analyze, analyze_bindings.max_size, "--max-size", "Maximum allocation size");

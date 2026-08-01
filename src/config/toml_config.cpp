@@ -419,7 +419,10 @@ void load_analysis(const toml::table& table, ConfigurationOverrides& result,
     result.analysis.end.set(read_optional_duration(*node, "analysis.end", "--end"));
   }
   if (const auto* node = optional_node(table, "group_by")) {
-    result.analysis.group_by.set(read_boolean(*node, "analysis.group_by", "--group-by"));
+    if (const auto text = node->value<std::string>(); !text.has_value() || !text->empty()) {
+      result.analysis.group_by.set(
+          read_enum<AnalysisGroupBy>(*node, "analysis.group_by", "--group-by"));
+    }
   }
   if (const auto* node = optional_node(table, "sort")) {
     result.analysis.sort.set(read_enum<AnalysisSort>(*node, "analysis.sort", "--sort"));

@@ -81,6 +81,10 @@ enum class AnalysisSort : std::uint8_t {
   kBytes,
 };
 
+enum class AnalysisGroupBy : std::uint8_t {
+  kStack,
+};
+
 enum class OutputFormat : std::uint8_t {
   kConsole,
   kJson,
@@ -214,6 +218,13 @@ struct EnumTraits<AnalysisSort> {
 };
 
 template <>
+struct EnumTraits<AnalysisGroupBy> {
+  inline static constexpr std::string_view kind = "analysis grouping";
+  inline static constexpr auto values =
+      std::array{NamedEnumValue{std::string_view{"stack"}, AnalysisGroupBy::kStack}};
+};
+
+template <>
 struct EnumTraits<OutputFormat> {
   inline static constexpr std::string_view kind = "output format";
   inline static constexpr auto values = std::array{
@@ -331,7 +342,7 @@ struct AnalysisSettings {
   Setting<std::optional<std::chrono::nanoseconds>> from;
   Setting<std::optional<std::chrono::nanoseconds>> to;
   Setting<std::optional<std::chrono::nanoseconds>> end;
-  Setting<bool> group_by;
+  Setting<std::optional<AnalysisGroupBy>> group_by;
   Setting<AnalysisSort> sort;
 };
 
@@ -421,7 +432,7 @@ struct AnalysisOverrides {
   SettingOverride<std::optional<std::chrono::nanoseconds>> from;
   SettingOverride<std::optional<std::chrono::nanoseconds>> to;
   SettingOverride<std::optional<std::chrono::nanoseconds>> end;
-  SettingOverride<bool> group_by;
+  SettingOverride<std::optional<AnalysisGroupBy>> group_by;
   SettingOverride<AnalysisSort> sort;
 };
 

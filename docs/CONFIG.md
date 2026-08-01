@@ -62,7 +62,7 @@ output = ""
 from = ""
 to = ""
 end = ""
-group_by = false
+group_by = ""
 sort = "alloc-bytes"
 
 [filters]
@@ -194,7 +194,7 @@ analyze：
 
 - analysis.inputs 至少一个。
 - events 模式不得设置 analysis.end。
-- analysis.sort 必须搭配 analysis.group_by；events 聚合接受 calls、alloc-bytes、free-bytes 和
+- analysis.sort 必须搭配 analysis.group_by（当前唯一取值 "stack"）；events 聚合接受 calls、alloc-bytes、free-bytes 和
   net-bytes，leaks 聚合接受 calls 和 bytes。
 - from 小于等于 to；end 若设置，必须大于等于 to。
 - to 和 end 超过 trace 结束时间时由 analyzer 按结束时间截断，不再报错。

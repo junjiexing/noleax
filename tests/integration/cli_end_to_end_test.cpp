@@ -304,12 +304,12 @@ int main(int argc, char* argv[]) {
     for (const auto& path : {stacks_json, leak_stacks_json}) {
       remove_file(path);
     }
-    const ChildResult event_stacks =
-        run_child(noleax,
-                  {"analyze", "--mode", "events", "--group-by", "--sort", "alloc-bytes", "--format",
-                   "json", "--output", utf8_path(stacks_json), "--api", "RtlAllocateHeap",
-                   "--stack-module", "noleax-cli-e2e-target.exe", utf8_path(run_trace)},
-                  run_log);
+    const ChildResult event_stacks = run_child(
+        noleax,
+        {"analyze", "--mode", "events", "--group-by", "stack", "--sort", "alloc-bytes", "--format",
+         "json", "--output", utf8_path(stacks_json), "--api", "RtlAllocateHeap", "--stack-module",
+         "noleax-cli-e2e-target.exe", utf8_path(run_trace)},
+        run_log);
     const auto event_stacks_document = noleax::testing::parse_json(read_file(stacks_json));
     const auto& event_groups = event_stacks_document.at("groups").array_items();
     if (!analysis_completed(event_stacks.exit_code) ||
@@ -321,7 +321,7 @@ int main(int argc, char* argv[]) {
     }
 
     auto leak_stacks_args = outstanding_arguments(run_trace, leak_stacks_json, "json");
-    leak_stacks_args.insert(leak_stacks_args.end() - 1, {"--group-by", "--sort", "bytes"});
+    leak_stacks_args.insert(leak_stacks_args.end() - 1, {"--group-by", "stack", "--sort", "bytes"});
     const ChildResult leak_stacks = run_child(noleax, leak_stacks_args, run_log);
     const auto leak_stacks_document = noleax::testing::parse_json(read_file(leak_stacks_json));
     const auto& leak_groups = leak_stacks_document.at("groups").array_items();

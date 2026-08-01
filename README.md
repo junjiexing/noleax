@@ -98,8 +98,8 @@ GitHub Releases 的滚动预发布 `ci-latest`；推送 `v*` 标签则创建对�
    调用次数与字节数，或存活对象的个数与字节数）：
 
    ~~~powershell
-   .\noleax.exe analyze --mode events --group-by --sort alloc-bytes .\capture.nlx
-   .\noleax.exe analyze --mode leaks --group-by --sort bytes .\capture.nlx
+   .\noleax.exe analyze --mode events --group-by stack --sort alloc-bytes .\capture.nlx
+   .\noleax.exe analyze --mode leaks --group-by stack --sort bytes .\capture.nlx
    ~~~
 
 常见失败的定位方法见 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)。
@@ -204,7 +204,7 @@ noleax analyze [options] trace.nlx
 - `leaks`：泄露分析，选择在 `[from,to)` 内创建、到观察点 `--end` 仍未释放的对象；窗口全部可选，
   裸命令即"任何时间申请、trace 结束时仍未释放"。这是一份候选集合，不等同于语义上的泄漏证明，
   应重复 workload、缩小时间窗口并结合调用栈判断。
-- 两个模式都可加 `--group-by` 按调用栈聚合：events 下统计成功 alloc/realloc/free 的调用次数与
+- 两个模式都可加 `--group-by stack` 按调用栈聚合：events 下统计成功 alloc/realloc/free 的调用次数与
   分配/释放字节，leaks 下统计存活分配的个数与字节；`--sort` 选择排序键。
 
 | 选项 | 默认值 | 说明 |
@@ -214,7 +214,7 @@ noleax analyze [options] trace.nlx
 | `--output PATH` | stdout | 输出文件 |
 | `--from TIME` / `--to TIME` | trace 起点 / trace 终点 | 创建时间窗（相对 trace 起点，超过终点截断） |
 | `--end TIME` | trace 终点 | leaks 观察点（超过终点截断） |
-| `--group-by` | 关 | 按调用栈聚合 |
+| `--group-by DIM` | 不聚合 | 聚合维度，当前唯一取值 stack |
 | `--sort KEY` | events 聚合 alloc-bytes,leaks 聚合 bytes | 聚合排序键 |
 | `--min-size SIZE` / `--max-size SIZE` | 无 | 大小过滤，包含端点 |
 | `--event TYPE` | 全部 | 事件类型 |

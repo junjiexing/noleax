@@ -199,7 +199,7 @@ struct AnalysisResult {
       }
       return noleax::analyzer::StacksSort::kAllocBytes;
     };
-    const bool group_by = configuration.analysis.group_by.value;
+    const bool group_by = configuration.analysis.group_by.value.has_value();
     if (configuration.analysis.mode.value == noleax::config::AnalysisMode::kEvents) {
       if (group_by) {
         noleax::analyzer::StacksWindow window;

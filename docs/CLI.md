@@ -197,7 +197,7 @@ generation 和机器输出 schema 在实现前不做猜测式拼接。
 | --from TIME | analysis.from | trace 起点 |
 | --to TIME | analysis.to | trace 终点 |
 | --end TIME | analysis.end | trace 终点 |
-| --group-by / --no-group-by | analysis.group_by | false |
+| --group-by DIM | analysis.group_by | 不聚合 |
 | --sort KEY | analysis.sort | events 聚合 alloc-bytes,leaks 聚合 bytes |
 | --min-size SIZE | filters.min_size | 无 |
 | --max-size SIZE | filters.max_size | 无 |
@@ -222,7 +222,8 @@ mode：
 时间一律相对 trace 起点。`--to`/`--end` 超过 trace 终点时按终点截断，不再报错；要求
 `from <= to`、`to <= end`。events 模式不接受 `--end`。
 
---group-by：按调用栈聚合（当前唯一分组维度）。events 下聚合成功的 alloc/realloc/free：每组输出
+--group-by：按指定维度聚合结果，当前唯一取值 `stack`（按调用栈）。events 下聚合成功的
+alloc/realloc/free：每组输出
 总调用次数、alloc 次数与请求字节合计、free 次数与释放字节合计（free 尺寸经 generation 追踪，
 未被追踪的 free 计入 unmatched-frees）及净字节。leaks 下聚合存活的 heap allocation：每组输出
 存活分配个数与存活字节合计。聚合文档的 JSON `mode` 字段为 `stacks`，并以 `dataset`
@@ -343,13 +344,13 @@ noleax analyze --mode leaks app.nlx
 分析时间窗口并聚合调用栈：
 
 ~~~powershell
-noleax analyze --mode leaks --from 5s --to 20s --end 60s --group-by --sort bytes --min-size 1KiB --max-size 1MiB --format json --output leaks.json app.nlx
+noleax analyze --mode leaks --from 5s --to 20s --end 60s --group-by stack --sort bytes --min-size 1KiB --max-size 1MiB --format json --output leaks.json app.nlx
 ~~~
 
 按调用栈聚合全部 alloc/realloc/free 并按净字节排序：
 
 ~~~powershell
-noleax analyze --mode events --group-by --sort net-bytes app.nlx
+noleax analyze --mode events --group-by stack --sort net-bytes app.nlx
 ~~~
 
 等价 TOML 和从捕获到分析的完整流程见 [QUICKSTART.md](QUICKSTART.md) 与

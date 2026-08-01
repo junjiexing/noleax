@@ -142,7 +142,7 @@ output = "result.json"
 from = "1s"
 to = "2s"
 end = "3s"
-group_by = true
+group_by = "stack"
 sort = "calls"
 
 [filters]
@@ -386,7 +386,7 @@ TEST_CASE("analysis validation enforces window sort and group rules", "[config]"
   CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
                   noleax::config::ConfigError);
 
-  configuration.analysis.group_by.value = true;
+  configuration.analysis.group_by.value = noleax::config::AnalysisGroupBy::kStack;
   CHECK_NOTHROW(noleax::config::validate_configuration(configuration));
   configuration.analysis.sort.value = noleax::config::AnalysisSort::kBytes;
   CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),

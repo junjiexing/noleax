@@ -96,7 +96,7 @@ class EventsStacksCollector {
     result.unmatched_free_count = unmatched_free_count_;
     result.groups.reserve(groups_.size());
     for (auto& entry : groups_) {
-      result.groups.push_back(std::move(entry.second));
+      result.groups.push_back(entry.second);
     }
     return result;
   }
@@ -225,7 +225,7 @@ LeaksStacksResult analyze_leak_stacks(std::istream& input, OutstandingWindow win
   }
   result.groups.reserve(groups.size());
   for (auto& entry : groups) {
-    result.groups.push_back(std::move(entry.second));
+    result.groups.push_back(entry.second);
   }
   sort_leak_groups(result.groups, sort);
   return result;

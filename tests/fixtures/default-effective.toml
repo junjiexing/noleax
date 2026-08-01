@@ -37,7 +37,7 @@ output = "" # source: default
 from = "" # source: default
 to = "" # source: default
 end = "" # source: default
-group_by = false # source: default
+group_by = "" # source: default
 sort = "alloc-bytes" # source: default
 
 [filters]
