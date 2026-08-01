@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "noleax/controller/windows/process.hpp"
 #include "noleax/ipc/protocol.hpp"
 
 namespace noleax::controller::windows {
@@ -70,5 +71,34 @@ class CaptureSession final {
 
   std::unique_ptr<Impl> implementation_;
 };
+
+// A minimal owned process handle for agent-capture sessions (no pipe channel).
+class AgentProcessHandle final {
+ public:
+  AgentProcessHandle() noexcept = default;
+  explicit AgentProcessHandle(void* handle) noexcept : handle_{handle} {}
+  ~AgentProcessHandle();
+
+  AgentProcessHandle(const AgentProcessHandle&) = delete;
+  AgentProcessHandle& operator=(const AgentProcessHandle&) = delete;
+  AgentProcessHandle(AgentProcessHandle&& other) noexcept;
+  AgentProcessHandle& operator=(AgentProcessHandle&& other) noexcept;
+
+  [[nodiscard]] void* get() const noexcept { return handle_; }
+  [[nodiscard]] bool valid() const noexcept { return handle_ != nullptr; }
+
+ private:
+  void* handle_{nullptr};
+};
+
+// Injects the agent with a bootstrap configuration file (agent_config) instead of a pipe
+// handshake, and waits for the agent's named ready event where the injection method does
+// not already gate the main thread on capture readiness.
+[[nodiscard]] SuspendedProcess launch_agent_capture(const LaunchOptions& launch,
+                                                    const CaptureOptions& capture,
+                                                    const std::filesystem::path& agent_config);
+[[nodiscard]] AgentProcessHandle attach_agent_capture(std::uint32_t process_id,
+                                                      const CaptureOptions& capture,
+                                                      const std::filesystem::path& agent_config);
 
 }  // namespace noleax::controller::windows

@@ -301,6 +301,21 @@ class CaptureRuntime final {
     state_ = noleax::ipc::AgentState::kFinalized;
   }
 
+  // Stops a duration-bounded standalone capture while the process stays alive: graceful
+  // drain, then physical hook revert and backend shutdown.
+  void finalize_timed() {
+    finalize_graceful();
+    if (hooks_ != nullptr) {
+      static_cast<void>(hooks_->uninstall(1'000'000U));
+      hooks_.reset();
+    }
+    if (backend_ != nullptr) {
+      static_cast<void>(backend_->shutdown());
+      backend_.reset();
+    }
+    output_.reset();
+  }
+
   [[nodiscard]] noleax::agent::HookBackend& backend() noexcept { return *backend_; }
 
   void release_finalize_gate() noexcept {
@@ -571,7 +586,9 @@ void standalone_report(const std::string& message) noexcept {
 [[nodiscard]] noleax::ipc::StartCaptureRequest standalone_capture_request(
     const noleax::config::Configuration& configuration, const std::filesystem::path& executable) {
   noleax::ipc::StartCaptureRequest request;
-  request.capture_kind = noleax::ipc::CaptureKind::kLaunch;
+  request.capture_kind = configuration.target.pid.value.has_value()
+                             ? noleax::ipc::CaptureKind::kAttach
+                             : noleax::ipc::CaptureKind::kLaunch;
   request.hook_profile = ipc_hook_profile(configuration.capture.hook_profile.value);
   request.maximum_stack_depth = configuration.capture.max_stack_depth.value;
   request.minimum_capture_size = configuration.capture.min_size.value;
@@ -589,30 +606,86 @@ void standalone_report(const std::string& message) noexcept {
 
 void install_exit_process_hook(noleax::agent::HookBackend& backend) noexcept;
 
-DWORD WINAPI standalone_worker(void*) noexcept {
+// Returns the configuration path: the sentinel pipe name means patch-style discovery
+// (environment or sibling file); any other bootstrap pipe name is the controller-provided
+// configuration file and also requests the named ready event handshake.
+[[nodiscard]] std::optional<std::filesystem::path> standalone_config_path(
+    const BootstrapParameters& parameters, bool& from_bootstrap) {
+  const std::wstring_view pipe_name{
+      parameters.pipe_name.data(),
+      wcsnlen(parameters.pipe_name.data(), parameters.pipe_name.size())};
+  if (pipe_name == L"standalone") {
+    from_bootstrap = false;
+    return discover_standalone_config();
+  }
+  from_bootstrap = true;
+  std::error_code error;
+  std::filesystem::path provided{pipe_name};
+  if (!std::filesystem::is_regular_file(provided, error) || error) {
+    throw std::runtime_error{"the bootstrap capture configuration is missing"};
+  }
+  return provided;
+}
+
+DWORD WINAPI standalone_worker(void* parameter) noexcept {
+  std::unique_ptr<BootstrapParameters> parameters{static_cast<BootstrapParameters*>(parameter)};
+  HANDLE ready_event = nullptr;
+  const auto close_event = [&ready_event] {
+    if (ready_event != nullptr) {
+      static_cast<void>(CloseHandle(ready_event));
+      ready_event = nullptr;
+    }
+  };
   try {
-    const auto config_path = discover_standalone_config();
+    bool from_bootstrap = false;
+    const auto config_path = standalone_config_path(*parameters, from_bootstrap);
     if (!config_path.has_value()) {
       throw std::runtime_error{
           "no configuration found (NOLEAX_AGENT_CONFIG or "
           "noleax-agent.toml beside the executable)"};
     }
+    if (from_bootstrap) {
+      const std::wstring event_name = L"Local\\noleax-ready-" + config_path->stem().wstring();
+      ready_event = OpenEventW(EVENT_MODIFY_STATE, FALSE, event_name.c_str());
+    }
+    const auto configuration = load_standalone_configuration(*config_path);
     const HookGuardRuntimeLease hook_guard_runtime;
     const noleax::agent::ReplacementGateCoordinatorScope finalize_coordinator;
     auto runtime = std::make_unique<CaptureRuntime>(random_session_token());
-    runtime->start(
-        standalone_capture_request(load_standalone_configuration(*config_path), executable_path()));
+    runtime->start(standalone_capture_request(configuration, executable_path()));
     standalone_runtime.store(runtime.get(), std::memory_order_release);
     install_exit_process_hook(runtime->backend());
+    if (ready_event != nullptr) {
+      static_cast<void>(SetEvent(ready_event));
+    }
+    const auto duration = configuration.capture.duration.value;
+    if (duration.has_value() && *duration > std::chrono::nanoseconds::zero()) {
+      const auto sleep_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+          *duration + std::chrono::milliseconds{1});
+      Sleep(sleep_ms.count() >= static_cast<long long>((std::numeric_limits<DWORD>::max)())
+                ? (std::numeric_limits<DWORD>::max)() - 1U
+                : static_cast<DWORD>(sleep_ms.count()));
+      runtime->finalize_timed();
+      static_cast<void>(standalone_runtime.exchange(nullptr, std::memory_order_acq_rel));
+    }
     static_cast<void>(runtime.release());
+    close_event();
     return 0U;
   } catch (const std::exception& error) {
     capture_ready.store(true, std::memory_order_release);  // unblock the bootstrap stub
+    if (ready_event != nullptr) {
+      static_cast<void>(SetEvent(ready_event));
+    }
     standalone_report(error.what());
+    close_event();
     return 1U;
   } catch (...) {
     capture_ready.store(true, std::memory_order_release);
+    if (ready_event != nullptr) {
+      static_cast<void>(SetEvent(ready_event));
+    }
     standalone_report("unknown standalone capture failure");
+    close_event();
     return 2U;
   }
 }
@@ -699,9 +772,15 @@ extern "C" __declspec(dllexport) DWORD WINAPI noleax_agent_bootstrap(void* param
     return static_cast<DWORD>(noleax::agent::windows::BootstrapResult::kAlreadyStarted);
   }
   if (copied.session_token == noleax::agent::windows::kStandaloneMagic) {
+    auto* standalone_parameters = new (std::nothrow) BootstrapParameters{copied};
+    if (standalone_parameters == nullptr) {
+      bootstrap_started.store(false, std::memory_order_release);
+      return static_cast<DWORD>(noleax::agent::windows::BootstrapResult::kAllocationFailed);
+    }
     const HANDLE standalone_thread =
-        CreateThread(nullptr, 0U, &standalone_worker, nullptr, 0U, nullptr);
+        CreateThread(nullptr, 0U, &standalone_worker, standalone_parameters, 0U, nullptr);
     if (standalone_thread == nullptr) {
+      delete standalone_parameters;
       bootstrap_started.store(false, std::memory_order_release);
       return static_cast<DWORD>(noleax::agent::windows::BootstrapResult::kThreadCreationFailed);
     }

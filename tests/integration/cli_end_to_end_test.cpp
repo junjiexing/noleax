@@ -252,7 +252,7 @@ int main(int argc, char* argv[]) {
 
     const ChildResult run =
         run_child(noleax,
-                  {"run", "--agent", utf8_path(agent), "--trace", utf8_path(run_trace),
+                  {"run", "--live", "--agent", utf8_path(agent), "--trace", utf8_path(run_trace),
                    "--capture-duration", "1s", "--hook-profile", "windows-nt-heap", "--compression",
                    "none", "--", utf8_path(target), utf8_path(run_marker), "1800", "launch"},
                   run_log);
@@ -347,12 +347,12 @@ int main(int argc, char* argv[]) {
       throw std::runtime_error{"attach target did not expose its pre-injection state"};
     }
 
-    const ChildResult attach =
-        run_child(noleax,
-                  {"attach", "--pid", std::to_string(target_process.process_id()), "--agent",
-                   utf8_path(agent), "--trace", utf8_path(attach_trace), "--capture-duration", "1s",
-                   "--hook-profile", "windows-nt-heap", "--compression", "none"},
-                  attach_log);
+    const ChildResult attach = run_child(
+        noleax,
+        {"attach", "--live", "--pid", std::to_string(target_process.process_id()), "--agent",
+         utf8_path(agent), "--trace", utf8_path(attach_trace), "--capture-duration", "1s",
+         "--hook-profile", "windows-nt-heap", "--compression", "none"},
+        attach_log);
     if (attach.exit_code != 0U || attach.log.find("capture finalized:") == std::string::npos ||
         !wait_for_marker(attach_marker, "ready=1", 2s)) {
       target_process.terminate(21U);
@@ -377,15 +377,85 @@ int main(int argc, char* argv[]) {
     for (const auto& path : {exit_trace, exit_marker, exit_log}) {
       remove_file(path);
     }
+    // Default (agent-capture) mode: the self-exiting target is finalized by the agent's own
+    // exit hook. The trace may still carry recoverable stack-detail warnings, so accept the
+    // completeness-driven exit codes 0 and 2 alike.
     const ChildResult exit_run =
         run_child(noleax,
                   {"run", "--agent", utf8_path(agent), "--trace", utf8_path(exit_trace),
                    "--hook-profile", "windows-nt-heap", "--compression", "none", "--",
                    utf8_path(target), utf8_path(exit_marker), "300", "launch"},
                   exit_log);
-    if (exit_run.exit_code != 2U || exit_run.log.find("target_exit_code=0") == std::string::npos ||
-        exit_run.log.find("cannot finalize capture") != std::string::npos) {
-      throw std::runtime_error{"noleax run did not handle a self-exiting target: " + exit_run.log};
+    if (!analysis_completed(exit_run.exit_code) ||
+        exit_run.log.find("capture finalized:") == std::string::npos ||
+        exit_run.log.find("target_exit_code=0") == std::string::npos) {
+      throw std::runtime_error{"agent-capture run did not finalize a self-exiting target: " +
+                               exit_run.log};
+    }
+
+    const auto live_exit_trace = output_directory / "cli-live-exit.nlx";
+    const auto live_exit_marker = output_directory / "cli-live-exit.ready";
+    for (const auto& path : {live_exit_trace, live_exit_marker}) {
+      remove_file(path);
+    }
+    const ChildResult live_exit_run =
+        run_child(noleax,
+                  {"run", "--live", "--agent", utf8_path(agent), "--trace",
+                   utf8_path(live_exit_trace), "--hook-profile", "windows-nt-heap", "--compression",
+                   "none", "--", utf8_path(target), utf8_path(live_exit_marker), "300", "launch"},
+                  exit_log);
+    if (live_exit_run.exit_code != 2U ||
+        live_exit_run.log.find("target_exit_code=0") == std::string::npos ||
+        live_exit_run.log.find("cannot finalize capture") != std::string::npos) {
+      throw std::runtime_error{"noleax run did not handle a self-exiting target: " +
+                               live_exit_run.log};
+    }
+
+    const auto default_run_trace = output_directory / "cli-default-run.nlx";
+    const auto default_run_marker = output_directory / "cli-default-run.ready";
+    const auto default_attach_trace = output_directory / "cli-default-attach.nlx";
+    const auto default_attach_marker = output_directory / "cli-default-attach.ready";
+    for (const auto& path :
+         {default_run_trace, default_run_marker, default_attach_trace, default_attach_marker}) {
+      remove_file(path);
+    }
+    const ChildResult default_run = run_child(
+        noleax,
+        {"run", "--agent", utf8_path(agent), "--trace", utf8_path(default_run_trace),
+         "--capture-duration", "1s", "--hook-profile", "windows-nt-heap", "--compression", "none",
+         "--", utf8_path(target), utf8_path(default_run_marker), "1800", "launch"},
+        run_log);
+    if (!analysis_completed(default_run.exit_code) ||
+        default_run.log.find("capture finalized:") == std::string::npos ||
+        (default_run.log.find("target_state=running") == std::string::npos &&
+         default_run.log.find("target_exit_code=0") == std::string::npos) ||
+        !wait_for_marker(default_run_marker, "ready=1", 2s)) {
+      throw std::runtime_error{"agent-capture run with duration failed: " + default_run.log};
+    }
+    wait_for_pid(marker_pid(default_run_marker));
+
+    auto default_attach_process = noleax::controller::windows::SuspendedProcess::create(
+        target, {utf8_path(default_attach_marker), "2200", "attach"}, target.parent_path());
+    default_attach_process.resume_main_thread();
+    if (!wait_for_marker(default_attach_marker, "ready=0", 2s)) {
+      default_attach_process.terminate(23U);
+      throw std::runtime_error{"default attach target did not expose its pre-injection state"};
+    }
+    const ChildResult default_attach = run_child(
+        noleax,
+        {"attach", "--pid", std::to_string(default_attach_process.process_id()), "--agent",
+         utf8_path(agent), "--trace", utf8_path(default_attach_trace), "--capture-duration", "1s",
+         "--hook-profile", "windows-nt-heap", "--compression", "none"},
+        attach_log);
+    if (default_attach.exit_code != 2U ||
+        default_attach.log.find("capture finalized:") == std::string::npos ||
+        !wait_for_marker(default_attach_marker, "ready=1", 2s)) {
+      default_attach_process.terminate(24U);
+      throw std::runtime_error{"agent-capture attach with duration failed: " + default_attach.log};
+    }
+    if (!default_attach_process.wait(5s) || default_attach_process.exit_code() != 0U) {
+      default_attach_process.terminate(25U);
+      throw std::runtime_error{"default attach target did not exit cleanly"};
     }
 
     const auto corrupt_trace = output_directory / "cli-corrupt.nlx";
@@ -469,8 +539,8 @@ int main(int argc, char* argv[]) {
       throw std::runtime_error{"unsupported attach injection method did not produce exit code 1"};
     }
 
-    std::cout << "status=ok run=1 attach=1 hijack=1 entrypoint=1 patch=1 static=1 outstanding=1 "
-                 "console=1 json=1 csv=1 stacks=1 errors=1\n";
+    std::cout << "status=ok run=1 attach=1 hijack=1 entrypoint=1 patch=1 static=1 agent=1 "
+                 "outstanding=1 console=1 json=1 csv=1 stacks=1 errors=1\n";
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "status=error message=" << error.what() << '\n';

@@ -18,6 +18,7 @@ hook_profile = "windows-native" # source: default
 max_stack_depth = 64 # source: default
 min_size = "0B" # source: default
 duration = "" # source: default
+live = false # source: default
 
 [trace]
 path = "" # source: default

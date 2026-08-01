@@ -451,6 +451,183 @@ CaptureSession CaptureSession::attach(std::uint32_t process_id, const CaptureOpt
                                                capture.timeout, std::nullopt)};
 }
 
+AgentProcessHandle::~AgentProcessHandle() {
+  if (handle_ != nullptr) {
+    static_cast<void>(CloseHandle(as_handle(handle_)));
+  }
+}
+
+AgentProcessHandle::AgentProcessHandle(AgentProcessHandle&& other) noexcept
+    : handle_{std::exchange(other.handle_, nullptr)} {}
+
+AgentProcessHandle& AgentProcessHandle::operator=(AgentProcessHandle&& other) noexcept {
+  if (this != &other) {
+    if (handle_ != nullptr) {
+      static_cast<void>(CloseHandle(as_handle(handle_)));
+    }
+    handle_ = std::exchange(other.handle_, nullptr);
+  }
+  return *this;
+}
+
+namespace {
+
+[[nodiscard]] noleax::agent::windows::BootstrapParameters make_agent_bootstrap(
+    const std::filesystem::path& agent_config) {
+  noleax::agent::windows::BootstrapParameters bootstrap;
+  bootstrap.session_token = noleax::agent::windows::kStandaloneMagic;
+  const std::wstring& path = agent_config.native();
+  if (path.empty() || path.size() >= noleax::agent::windows::kBootstrapPipeNameCapacity) {
+    throw ControllerError{"the agent configuration path exceeds the bootstrap ABI limit",
+                          ERROR_INVALID_PARAMETER};
+  }
+  std::ranges::copy(path, bootstrap.pipe_name.begin());
+  bootstrap.pipe_name[path.size()] = L'\0';
+  bootstrap.connect_timeout_ms = 0U;
+  bootstrap.controller_process_id = 0U;
+  return bootstrap;
+}
+
+class ReadyEvent final {
+ public:
+  explicit ReadyEvent(const std::filesystem::path& agent_config) {
+    const std::wstring name = L"Local\\noleax-ready-" + agent_config.stem().wstring();
+    handle_ = CreateEventW(nullptr, TRUE, FALSE, name.c_str());
+    if (handle_ == nullptr) {
+      const DWORD error = GetLastError();
+      throw ControllerError{
+          "CreateEventW(ready) failed with Windows error " + std::to_string(error), error};
+    }
+  }
+  ~ReadyEvent() { static_cast<void>(CloseHandle(handle_)); }
+
+  ReadyEvent(const ReadyEvent&) = delete;
+  ReadyEvent& operator=(const ReadyEvent&) = delete;
+
+  void wait(std::chrono::milliseconds timeout) {
+    const auto clamped = timeout.count() >= static_cast<long long>(INFINITE - 1U)
+                             ? INFINITE - 1U
+                             : static_cast<DWORD>(timeout.count());
+    if (WaitForSingleObject(handle_, clamped) != WAIT_OBJECT_0) {
+      throw ControllerError{"the agent did not become ready before the timeout", ERROR_TIMEOUT};
+    }
+  }
+
+ private:
+  HANDLE handle_{nullptr};
+};
+
+}  // namespace
+
+SuspendedProcess launch_agent_capture(const LaunchOptions& launch, const CaptureOptions& capture,
+                                      const std::filesystem::path& agent_config) {
+  validate_capture_options(capture);
+  SuspendedProcess process =
+      SuspendedProcess::create(launch.executable, launch.arguments, launch.working_directory);
+  const auto bootstrap = make_agent_bootstrap(agent_config);
+  if (capture.method == InjectionMethod::kThreadHijack) {
+    ReadyEvent ready{agent_config};
+    ThreadHijack hijack{process.process_handle(),
+                        process.process_id(),
+                        capture.agent_path,
+                        bootstrap,
+                        {process.main_thread_handle(), true}};
+    hijack.start();
+    try {
+      ready.wait(capture.timeout);
+    } catch (...) {
+      hijack.abort();
+      throw;
+    }
+    static_cast<void>(hijack.finish(capture.timeout));
+    process.note_main_thread_resumed();
+  } else if (capture.method == InjectionMethod::kEntrypointCode) {
+    EntrypointInjection injection{process.process_handle(), process.process_id(),
+                                  launch.executable.filename().native(), capture.agent_path,
+                                  bootstrap};
+    process.resume_main_thread();
+    process.note_main_thread_resumed();
+    static_cast<void>(injection.finish(capture.timeout));
+  } else if (capture.method == InjectionMethod::kStaticPePatch) {
+    const auto patch_info = read_static_patch_info(launch.executable);
+    if (!patch_info.has_value()) {
+      throw ControllerError{
+          "the target is not a noleax-patched executable; create one with 'noleax patch' first",
+          ERROR_BAD_EXE_FORMAT};
+    }
+    const auto image = injection::find_remote_image_by_memory(
+        static_cast<HANDLE>(process.process_handle()), launch.executable.filename().native());
+    if (!image.has_value()) {
+      throw ControllerError{"cannot locate the main image inside the target process",
+                            ERROR_MOD_NOT_FOUND};
+    }
+    const auto params_address =
+        injection::checked_remote_address(image->base, patch_info->params_rva);
+    SIZE_T written = 0U;
+    if (WriteProcessMemory(static_cast<HANDLE>(process.process_handle()),
+                           std::bit_cast<LPVOID>(params_address), &bootstrap, sizeof(bootstrap),
+                           &written) == FALSE ||
+        written != sizeof(bootstrap)) {
+      const DWORD error = GetLastError();
+      throw ControllerError{
+          "cannot pass bootstrap parameters to the patched target (Windows error " +
+              std::to_string(error) + ")",
+          error};
+    }
+    process.resume_main_thread();
+    process.note_main_thread_resumed();
+  } else if (capture.method == InjectionMethod::kRemoteThread) {
+    ReadyEvent ready{agent_config};
+    static_cast<void>(inject_remote_thread(process.process_handle(), process.process_id(),
+                                           capture.agent_path, bootstrap, capture.timeout));
+    ready.wait(capture.timeout);
+    process.resume_main_thread();
+  } else {
+    throw ControllerError{"the selected injection method is not implemented for launch",
+                          ERROR_NOT_SUPPORTED};
+  }
+  return process;
+}
+
+AgentProcessHandle attach_agent_capture(std::uint32_t process_id, const CaptureOptions& capture,
+                                        const std::filesystem::path& agent_config) {
+  validate_capture_options(capture);
+  if (process_id == 0U) {
+    throw ControllerError{"target.pid must be greater than zero", ERROR_INVALID_PARAMETER};
+  }
+  constexpr DWORD access = PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION |
+                           PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_OPERATION |
+                           PROCESS_VM_READ | PROCESS_VM_WRITE | SYNCHRONIZE;
+  AgentProcessHandle process{static_cast<void*>(OpenProcess(access, FALSE, process_id))};
+  if (!process.valid()) {
+    const DWORD error = GetLastError();
+    throw ControllerError{"OpenProcess failed with Windows error " + std::to_string(error), error};
+  }
+  const auto bootstrap = make_agent_bootstrap(agent_config);
+  if (capture.method == InjectionMethod::kThreadHijack) {
+    ReadyEvent ready{agent_config};
+    ThreadHijack hijack{
+        as_handle(process.get()), process_id, capture.agent_path, bootstrap, {nullptr, false}};
+    hijack.start();
+    try {
+      ready.wait(capture.timeout);
+    } catch (...) {
+      hijack.abort();
+      throw;
+    }
+    static_cast<void>(hijack.finish(capture.timeout));
+  } else if (capture.method == InjectionMethod::kRemoteThread) {
+    ReadyEvent ready{agent_config};
+    static_cast<void>(inject_remote_thread(as_handle(process.get()), process_id, capture.agent_path,
+                                           bootstrap, capture.timeout));
+    ready.wait(capture.timeout);
+  } else {
+    throw ControllerError{"the selected injection method is not supported for attach",
+                          ERROR_NOT_SUPPORTED};
+  }
+  return process;
+}
+
 noleax::ipc::CaptureStatus CaptureSession::query_status() {
   return implementation_->query_status();
 }

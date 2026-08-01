@@ -127,7 +127,7 @@ if(WIN32)
   set_tests_properties(cli.end-to-end-trace-analyze PROPERTIES
     LABELS "cli;controller;agent;run;attach;trace;analyzer;outstanding;windows"
     PASS_REGULAR_EXPRESSION
-      "^status=ok run=1 attach=1 hijack=1 entrypoint=1 patch=1 static=1 outstanding=1 console=1 json=1 csv=1 stacks=1 errors=1"
+      "^status=ok run=1 attach=1 hijack=1 entrypoint=1 patch=1 static=1 agent=1 outstanding=1 console=1 json=1 csv=1 stacks=1 errors=1"
     RUN_SERIAL TRUE
     TIMEOUT 90
   )

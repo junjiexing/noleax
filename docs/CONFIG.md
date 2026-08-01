@@ -43,6 +43,7 @@ hook_profile = "windows-native"
 max_stack_depth = 64
 min_size = "0B"
 duration = ""
+live = false
 
 [trace]
 path = "example.nlx"

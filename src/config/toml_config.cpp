@@ -330,7 +330,7 @@ void load_injection(const toml::table& table, ConfigurationOverrides& result,
 }
 
 void load_capture(const toml::table& table, ConfigurationOverrides& result) {
-  constexpr std::array allowed{"hook_profile", "max_stack_depth", "min_size", "duration"};
+  constexpr std::array allowed{"hook_profile", "max_stack_depth", "min_size", "duration", "live"};
   reject_unknown_keys(table, allowed, "capture");
 
   if (const auto* node = optional_node(table, "hook_profile")) {
@@ -348,6 +348,9 @@ void load_capture(const toml::table& table, ConfigurationOverrides& result) {
   if (const auto* node = optional_node(table, "duration")) {
     result.capture.duration.set(
         read_optional_duration(*node, "capture.duration", "--capture-duration"));
+  }
+  if (const auto* node = optional_node(table, "live")) {
+    result.capture.live.set(read_boolean(*node, "capture.live", "--live"));
   }
 }
 

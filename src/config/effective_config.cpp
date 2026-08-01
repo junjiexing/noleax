@@ -229,6 +229,8 @@ std::string serialize_effective_config(const Configuration& configuration) {
                  configuration.capture.min_size.source);
   append_setting(output, "duration", format_optional_duration(configuration.capture.duration.value),
                  configuration.capture.duration.source);
+  append_setting(output, "live", configuration.capture.live.value ? "true" : "false",
+                 configuration.capture.live.source);
 
   append_table(output, "trace");
   append_setting(output, "path", format_path(configuration.trace.path.value),
