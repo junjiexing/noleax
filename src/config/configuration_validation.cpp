@@ -335,11 +335,17 @@ void validate_analyze(const Configuration& configuration, const Configuration& d
       *configuration.analysis.end.value < *configuration.analysis.to.value) {
     fail("analysis.end", "must be greater than or equal to analysis.to");
   }
+  if (configuration.analysis.end.value.has_value() &&
+      !configuration.analysis.to.value.has_value() &&
+      configuration.analysis.from.value.has_value() &&
+      *configuration.analysis.from.value > *configuration.analysis.end.value) {
+    fail("analysis.end", "must be greater than or equal to analysis.from when --to is omitted");
+  }
   const bool sort_specified = configuration.analysis.sort.source != ValueSource::kDefault;
   if (sort_specified && !configuration.analysis.group_by.value.has_value()) {
     fail("analysis.sort", "requires --group-by");
   }
-  if (configuration.analysis.group_by.value.has_value()) {
+  if (configuration.analysis.group_by.value.has_value() && sort_specified) {
     const AnalysisSort sort = configuration.analysis.sort.value;
     if (events_mode && sort == AnalysisSort::kBytes) {
       fail("analysis.sort", "bytes is only valid with --mode leaks");

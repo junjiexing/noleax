@@ -276,6 +276,15 @@ struct LiveModule {
       options.trace.max_uncompressed_chunk_size < kMaximumEventAdditionSize) {
     throw std::invalid_argument{"trace writer limits cannot hold the largest raw stack event"};
   }
+  // Worst-case stored size of a full uncompressed chunk must fit, or an incompressible
+  // chunk would kill the capture with a writer error mid-run (LZ4: n + n/255 + 16; the
+  // +64 margin also covers zstd's small-chunk bound).
+  const std::uint64_t worst_stored = options.trace.max_uncompressed_chunk_size +
+                                     options.trace.max_uncompressed_chunk_size / 255U + 64U;
+  if (options.trace.max_stored_chunk_size < worst_stored) {
+    throw std::invalid_argument{
+        "trace writer stored chunk size cannot hold the largest compressed chunk"};
+  }
   options.trace.reserved_tail_size =
       (std::max)(options.trace.reserved_tail_size, kMinimumTerminalReserveSize);
   return options;
@@ -438,6 +447,7 @@ class RtlAllocateHeapTraceWriter::Implementation final {
     if (worker_.joinable()) {
       worker_.join();
     }
+    finalized_ = true;
     return result_;
   }
 
@@ -446,8 +456,7 @@ class RtlAllocateHeapTraceWriter::Implementation final {
   // touched here because the worker may have died while holding it.
   [[nodiscard]] RtlAllocateHeapTraceWriterResult finish_after_worker_exit() {
     require_hooks_logically_stopped();
-    stop_requested_.store(true, std::memory_order_release);
-    if (inline_finalize_done_) {
+    if (finalized_ || inline_finalize_done_) {
       return result_;
     }
     inline_finalize_done_ = true;
@@ -572,9 +581,14 @@ class RtlAllocateHeapTraceWriter::Implementation final {
       bool capture_begun = false;
       {
         std::unique_lock lock{state_mutex_};
-        state_changed_.wait(lock, [this] {
-          return capture_begun_ || stop_requested_.load(std::memory_order_acquire);
-        });
+        // Polling like capture_loop does: an unbounded wait here could miss a stop that
+        // lands between predicate evaluation and blocking (request_stop notifies without
+        // holding state_mutex_), deadlocking finish()/the destructor on join().
+        while (!capture_begun_ && !stop_requested_.load(std::memory_order_acquire)) {
+          state_changed_.wait_for(lock, kEmptyPollInterval, [this] {
+            return capture_begun_ || stop_requested_.load(std::memory_order_acquire);
+          });
+        }
         capture_begun = capture_begun_;
       }
       if (capture_begun) {
@@ -691,6 +705,10 @@ class RtlAllocateHeapTraceWriter::Implementation final {
   void process_module_event(const RawModuleEvent& raw_event) {
     if (raw_event.base_address == 0U || raw_event.monotonic_ticks < monotonic_origin_) {
       throw std::invalid_argument{"raw module event is invalid"};
+    }
+    if (raw_event.path_length > raw_event.path.size() ||
+        raw_event.pdb_path_length > raw_event.pdb_path.size()) {
+      throw std::invalid_argument{"raw module path lengths exceed their buffers"};
     }
     std::uint64_t ticks = raw_event.monotonic_ticks;
     if (ticks < last_module_ticks_) {
@@ -2016,6 +2034,7 @@ class RtlAllocateHeapTraceWriter::Implementation final {
   bool file_limit_reached_{false};
   bool initial_modules_processed_{false};
   bool inline_finalize_done_{false};
+  bool finalized_{false};
 
   RtlAllocateHeapTraceWriterResult result_;
   std::uint64_t next_allocation_id_{1U};

@@ -41,7 +41,13 @@ RtlHeapHookInstallResult RtlHeapHooks::install() {
   if (!create_hook_.is_installed() && !allocate_hook_.is_installed() &&
       !reallocate_hook_.is_installed() && !free_hook_.is_installed() &&
       !destroy_hook_.is_installed()) {
-    if (owned_event_queue_ != nullptr) {
+    // reset_quiescent requires that no producer or consumer is using the queue; a hook
+    // stuck in teardown-pending can still publish into it, so refuse to reset then.
+    const bool teardown_pending =
+        create_hook_.has_pending_teardown() || allocate_hook_.has_pending_teardown() ||
+        reallocate_hook_.has_pending_teardown() || free_hook_.has_pending_teardown() ||
+        destroy_hook_.has_pending_teardown();
+    if (!teardown_pending && owned_event_queue_ != nullptr) {
       event_queue_->reset_quiescent();
     }
   }
@@ -78,6 +84,12 @@ RtlHeapHookInstallResult RtlHeapHooks::install() {
     throw;
   }
   return result;
+}
+
+bool RtlHeapHooks::has_pending_teardown() const noexcept {
+  return create_hook_.has_pending_teardown() || allocate_hook_.has_pending_teardown() ||
+         reallocate_hook_.has_pending_teardown() || free_hook_.has_pending_teardown() ||
+         destroy_hook_.has_pending_teardown();
 }
 
 bool RtlHeapHooks::uninstall(std::uint32_t flush_attempts) noexcept {

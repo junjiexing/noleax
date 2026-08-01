@@ -38,6 +38,9 @@ void validate_window(const OutstandingWindow& window) {
   if (window.b.has_value() && window.c.has_value() && *window.b > *window.c) {
     throw OutstandingAnalysisError{"outstanding window requires b <= c"};
   }
+  if (!window.b.has_value() && window.c.has_value() && window.a > *window.c) {
+    throw OutstandingAnalysisError{"outstanding window requires a <= c"};
+  }
 }
 
 void checked_increment(std::uint64_t& value, const char* message) {

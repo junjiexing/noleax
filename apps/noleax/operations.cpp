@@ -688,18 +688,19 @@ void remove_quietly(const std::filesystem::path& path) noexcept {
   const auto capture = capture_options(configuration, trace_path);
   ConsoleControlGuard controls;
   try {
+    if (*configuration.operation.value == noleax::config::Operation::kRun &&
+        capture.method == noleax::controller::windows::InjectionMethod::kStaticPePatch &&
+        !noleax::controller::windows::read_static_patch_info(*configuration.target.path.value)
+             .has_value()) {
+      throw ApplicationError{
+          1,
+          "the target is not a noleax-patched executable; create one with 'noleax patch' "
+          "before using --inject-method static-pe-patch"};
+    }
     if (!configuration.capture.live.value) {
       return execute_agent_capture(configuration, trace_path, capture);
     }
     if (*configuration.operation.value == noleax::config::Operation::kRun) {
-      if (capture.method == noleax::controller::windows::InjectionMethod::kStaticPePatch &&
-          !noleax::controller::windows::read_static_patch_info(*configuration.target.path.value)
-               .has_value()) {
-        throw ApplicationError{
-            1,
-            "the target is not a noleax-patched executable; create one with 'noleax patch' "
-            "before using --inject-method static-pe-patch"};
-      }
       noleax::controller::windows::LaunchOptions launch;
       launch.executable = *configuration.target.path.value;
       launch.arguments = configuration.target.args.value;

@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdint>
 #include <iosfwd>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <vector>
@@ -28,6 +29,22 @@ struct StacksWindow {
   std::optional<std::chrono::nanoseconds> to;
 };
 
+// Saturating alloc-minus-free difference: the unsigned inputs may exceed INT64_MAX and a
+// naive signed subtraction can overflow (UB on extreme or malicious sizes).
+[[nodiscard]] inline std::int64_t saturating_net_bytes(std::uint64_t alloc_bytes,
+                                                       std::uint64_t free_bytes) noexcept {
+  constexpr std::uint64_t kMax =
+      static_cast<std::uint64_t>((std::numeric_limits<std::int64_t>::max)());
+  if (alloc_bytes >= free_bytes) {
+    const std::uint64_t difference = alloc_bytes - free_bytes;
+    return difference > kMax ? (std::numeric_limits<std::int64_t>::max)()
+                             : static_cast<std::int64_t>(difference);
+  }
+  const std::uint64_t difference = free_bytes - alloc_bytes;
+  return difference > kMax ? (std::numeric_limits<std::int64_t>::min)()
+                           : -static_cast<std::int64_t>(difference);
+}
+
 struct EventsStacksGroup {
   noleax::trace::StackId stack_id;
   noleax::trace::Event sample_event;
@@ -38,7 +55,7 @@ struct EventsStacksGroup {
   std::uint64_t free_bytes{0};
 
   [[nodiscard]] std::int64_t net_bytes() const noexcept {
-    return static_cast<std::int64_t>(alloc_bytes) - static_cast<std::int64_t>(free_bytes);
+    return saturating_net_bytes(alloc_bytes, free_bytes);
   }
 };
 

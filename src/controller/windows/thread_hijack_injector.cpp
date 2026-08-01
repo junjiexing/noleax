@@ -139,9 +139,17 @@ constexpr DWORD kThreadAccess = THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THR
                                 THREAD_QUERY_LIMITED_INFORMATION;
 
 [[nodiscard]] std::vector<std::uint32_t> enumerate_thread_ids(std::uint32_t process_id) {
-  Handle snapshot{CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0U)};
-  if (!snapshot.valid()) {
-    fail("CreateToolhelp32Snapshot(threads)", GetLastError());
+  Handle snapshot;
+  // Toolhelp snapshots race thread/process churn; ERROR_BAD_LENGTH is transient per MSDN.
+  for (std::uint32_t attempt = 0U; attempt < 8U; ++attempt) {
+    snapshot = Handle{CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0U)};
+    if (snapshot.valid()) {
+      break;
+    }
+    const DWORD error = GetLastError();
+    if (error != ERROR_BAD_LENGTH || attempt + 1U == 8U) {
+      fail("CreateToolhelp32Snapshot(threads)", error);
+    }
   }
   std::vector<std::uint32_t> result;
   THREADENTRY32 entry{};
@@ -165,15 +173,6 @@ constexpr DWORD kThreadAccess = THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THR
   return result;
 }
 
-// A hijacked thread runs the loader and the CRT on behalf of the stub, so it
-// must not hold the loader or the process heap lock when it is redirected.
-// Those locks are only ever held while the thread executes inside ntdll;
-// a thread suspended at a syscall return (the classic blocked-in-Nt* state)
-// holds none of them. ntdll frames are therefore accepted only when a
-// `syscall` instruction sits within a few bytes of RIP; interior ntdll frames
-// (heap, loader, string helpers) are always rejected.
-constexpr std::size_t kSyscallScanWindow = 0x18U;
-
 struct SystemModuleBases {
   std::uintptr_t ntdll{0U};
   std::uintptr_t kernel32{0U};
@@ -196,20 +195,63 @@ struct RipClassification {
   return module->base;
 }
 
-[[nodiscard]] bool rip_is_syscall_adjacent(HANDLE process, std::uintptr_t rip) {
-  if (rip < kSyscallScanWindow) {
+// A hijacked thread runs the loader and the CRT on behalf of the stub, so it
+// must not hold the loader or the process heap lock when it is redirected.
+// The only provably lock-free suspended state is a return address inside one of
+// the wait primitives below. Everything else in ntdll is rejected — notably the
+// heap-growth path, which blocks inside NtAllocateVirtualMemory while holding
+// the heap lock, and loader paths blocked on NtMapViewOfSection.
+[[nodiscard]] std::vector<std::uintptr_t> wait_stub_return_rvas() {
+  static const std::vector<std::uintptr_t> rvas = [] {
+    constexpr const char* kWaitExports[] = {
+        "NtWaitForSingleObject",
+        "NtWaitForMultipleObjects",
+        "NtDelayExecution",
+        "NtWaitForKeyedEvent",
+        "NtWaitForWorkViaWorkerFactory",
+        "NtRemoveIoCompletion",
+        "NtRemoveIoCompletionEx",
+        "NtWaitForAlertByThreadId",
+        "NtAlpcSendWaitReceivePort",
+        "NtReplyWaitReceivePort",
+        "NtWaitHigh",
+        "NtWaitLow",
+    };
+    std::vector<std::uintptr_t> result;
+    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    if (ntdll == nullptr) {
+      return result;
+    }
+    const auto base = reinterpret_cast<std::uintptr_t>(ntdll);
+    for (const char* name : kWaitExports) {
+      const FARPROC procedure = GetProcAddress(ntdll, name);
+      if (procedure == nullptr) {
+        continue;
+      }
+      const auto stub = reinterpret_cast<const std::uint8_t*>(procedure);
+      for (std::size_t index = 0U; index + 1U < 32U; ++index) {
+        if (stub[index] == 0x0FU && stub[index + 1U] == 0x05U) {
+          result.push_back(reinterpret_cast<std::uintptr_t>(procedure) - base + index + 2U);
+          break;
+        }
+      }
+    }
+    return result;
+  }();
+  return rvas;
+}
+
+// Usable only when the remote RIP is exactly the return address of a whitelisted
+// wait primitive's syscall instruction (image RVAs are identical in the local and
+// remote mappings of the same ntdll).
+[[nodiscard]] bool rip_is_syscall_adjacent(std::uintptr_t rip, std::uintptr_t remote_ntdll_base) {
+  if (rip < remote_ntdll_base) {
     return false;
   }
-  std::array<std::byte, kSyscallScanWindow + 2U> bytes{};
-  SIZE_T read = 0U;
-  if (ReadProcessMemory(process, std::bit_cast<LPCVOID>(rip - kSyscallScanWindow), bytes.data(),
-                        bytes.size(), &read) == FALSE ||
-      read != bytes.size()) {
-    return false;
-  }
-  for (std::size_t index = 0U; index + 1U < bytes.size(); ++index) {
-    if (bytes[index] == std::byte{0x0F} && bytes[index + 1U] == std::byte{0x05}) {
-      return true;  // at or immediately after `syscall`: the thread holds no user locks
+  const std::uintptr_t rva = rip - remote_ntdll_base;
+  for (const std::uintptr_t return_rva : wait_stub_return_rvas()) {
+    if (rva == return_rva) {
+      return true;
     }
   }
   return false;
@@ -227,7 +269,7 @@ struct RipClassification {
   RipClassification result;
   if (base == bases.ntdll) {
     result.ntdll = true;
-    result.usable = rip_is_syscall_adjacent(process, rip);
+    result.usable = rip_is_syscall_adjacent(rip, base);
     return result;
   }
   result.usable = true;
@@ -346,11 +388,11 @@ class ThreadHijack::Impl final {
     suspended_by_us_ = false;
     state_ = State::kFinished;
     if (!completed) {
-      if (data.module_handle != 0U && data.stage <= kStageLoaderReturned) {
-        // LdrLoadDll returned but the bootstrap export was never invoked, so
-        // no agent worker can exist and unloading is race-free.
-        try_unload_remote_module(process_, process_id_, data.module_handle, timeout);
-      }
+      // Never unload on timeout: the stub writes stage only after the bootstrap export
+      // returns, so no stage value proves the bootstrap was never entered. If the thread
+      // was slow (for example CreateThread delayed by AV scanning), an agent worker may
+      // already exist, and unloading the DLL would crash the target process. Leaking one
+      // module mapping is the safe trade-off.
       throw InjectionError{
           "hijacked thread did not finish the bootstrap stub before the timeout; its context "
           "was restored",

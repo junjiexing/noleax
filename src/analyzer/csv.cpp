@@ -1288,8 +1288,7 @@ void CsvWriter::write_event_stacks_summary(const EventsStacksResult& result) {
   set(row, EventStacksColumn::kAllocBytes, decimal(total_alloc_bytes));
   set(row, EventStacksColumn::kFreeBytes, decimal(total_free_bytes));
   set(row, EventStacksColumn::kNetBytes,
-      decimal(static_cast<std::int64_t>(total_alloc_bytes) -
-              static_cast<std::int64_t>(total_free_bytes)));
+      decimal(saturating_net_bytes(total_alloc_bytes, total_free_bytes)));
   set(row, EventStacksColumn::kAggregatedEvents, decimal(result.aggregated_event_count));
   set(row, EventStacksColumn::kUnmatchedFrees, decimal(result.unmatched_free_count));
   set(row, EventStacksColumn::kTraceEvents, decimal(result.trace.event_count));
@@ -1363,6 +1362,8 @@ void CsvWriter::write_leak_stacks_summary(const LeaksStacksResult& result) {
   set(row, LeakStacksColumn::kWindowANs, decimal(outstanding.requested_window.a.count()));
   if (outstanding.requested_window.b.has_value()) {
     set(row, LeakStacksColumn::kWindowBNs, decimal(outstanding.requested_window.b->count()));
+  } else {
+    set(row, LeakStacksColumn::kWindowBNs, decimal(outstanding.effective_b.count()));
   }
   if (outstanding.requested_window.c.has_value()) {
     set(row, LeakStacksColumn::kRequestedCNs, decimal(outstanding.requested_window.c->count()));

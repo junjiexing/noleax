@@ -40,19 +40,26 @@ ABI 中全部 YMM/ZMM 高位都是易失寄存器，但理论上线程可能恰�
 attach 模式没有现成主线程可用，选择规则（`classify_rip` + 评分）：
 
 - 候选线程必须位于 `MEM_IMAGE` 提交内存内（拒绝 JIT/私有内存中的 RIP）。
-- ntdll 帧只接受 RIP 紧邻 `syscall` 指令（前 0x18 字节窗口内存在 `0F 05`）的线程：这是典型的
-  阻塞在 `Nt*` 调用的状态，此时线程不持有任何用户态锁。
-- ntdll 内部其它帧（堆、loader、字符串辅助函数）一律拒绝：此时线程可能持有进程堆锁或
-  loader 锁，stub 里的 `LdrLoadDll`/CRT 初始化会递归进入同一堆管理器，造成堆损坏或死锁。
-  这也是初版实现的真实事故：`GetMappedFileNameW` 命名识别失效导致堆管理器内部帧被误判为
-  “应用帧”，劫持后主线程在 `RtlpAllocateHeapInternal` 中段被重定向，stub 分配同一堆直接
-  使进程以 `0xC0000005` 崩溃。现在分类完全基于 `VirtualQueryEx` 的 `AllocationBase` 与
-  ntdll/kernel32/kernelbase 模块基址比较，不依赖模块名解析。
-- 评分：应用/其它镜像帧（0）优于 kernel32/kernelbase（1）优于 ntdll syscall 帧（2）；不可用的
+- ntdll 帧只接受 RIP 精确等于白名单等待原语（`NtWaitForSingleObject`、`NtWaitForMultipleObjects`、
+  `NtDelayExecution`、`NtWaitForKeyedEvent`、`NtWaitForWorkViaWorkerFactory`、`NtRemoveIoCompletion(Ex)`、
+  `NtWaitForAlertByThreadId`、`NtAlpcSendWaitReceivePort`、`NtReplyWaitReceivePort`、`NtWaitHigh`、
+  `NtWaitLow`）`syscall` 指令返回点的线程：只有这种已被证明不持有用户态锁的状态才会被劫持。
+  白名单地址从本地 ntdll 导出逐个解析（与目标进程映射同一份镜像，RVA 一致），不做字节窗口扫描。
+- ntdll 内部其它帧一律拒绝：包括堆增长路径（持进程堆锁阻塞于 `NtAllocateVirtualMemory`）和
+  loader 路径（持 loader 锁阻塞于 `NtMapViewOfSection`）——这两种状态 RIP 同样紧邻 `syscall`，
+  早年的字节窗口启发式无法区分，stub 的 `LdrLoadDll`/CRT 初始化会递归进入同一把非递归锁造成
+  死锁，或递归进入堆管理器造成堆损坏。这也是初版实现的真实事故：`GetMappedFileNameW` 命名识别
+  失效导致堆管理器内部帧被误判为“应用帧”，劫持后主线程在 `RtlpAllocateHeapInternal` 中段被
+  重定向，stub 分配同一堆直接使进程以 `0xC0000005` 崩溃。现在分类完全基于 `VirtualQueryEx` 的
+  `AllocationBase` 与 ntdll/kernel32/kernelbase 模块基址比较，不依赖模块名解析。
+- 评分：应用/其它镜像帧（0）优于 kernel32/kernelbase（1）优于 ntdll 等待原语帧（2）；不可用的
   线程直接跳过。找到 0 分线程即止。
 
-stub 不触碰其它线程，交叉锁等待会随其它线程继续运行而自然解除；超时（默认注入超时）后
-控制器恢复线程并报错，目标不受影响。
+stub 不触碰其它线程，交叉锁等待会随其它线程继续运行而自然解除。超时（默认注入超时）后控制器
+恢复线程上下文并报错，**不卸载 agent**（stage 只写于 bootstrap 返回之后，无法证明 worker 不
+存在，卸载可能崩溃目标）；超时发生在 stub 持有 loader/堆锁窗口（`LdrLoadDll` 或 CRT 分配内部）
+时，恢复上下文会遗弃这些锁，后续相关 API 可能死锁——对稳定性要求高的目标请改用
+`remote-thread`。
 
 ## 4. launch 模式
 
@@ -127,9 +134,9 @@ jmp     spin                   ; 停在此循环，等待控制器恢复上下�
   影响。
 - stub 报告 `LdrLoadDll` NTSTATUS、bootstrap 结果码或 ready 超时（stage 1/2/4）时，
   `finish()` 恢复线程上下文后抛出带原始状态码的 `InjectionError`。
-- done 等待超时：恢复线程上下文；若 stub 尚未调用 bootstrap（stage ≤ 1 且模块句柄有效），
-  用 `LdrUnloadDll` 远程卸载 agent（无 worker 竞争）；stage ≥ 2 时 worker 可能已存在，不卸载，
-  错误信息保持可见。
+- done 等待超时：恢复线程上下文；**不卸载 agent**——stage 只写于 bootstrap 返回之后，任何
+  stage 值都不能证明 worker 不存在（`CreateThread` 被杀软/分页拖慢恰是触发超时的典型场景），
+  为避免崩溃目标进程，宁可泄漏一次模块映射。错误信息保持可见。
 - launch 失败沿用既有语义：终止 suspended 目标进程。attach 失败不终止目标。
 
 ## 7. 测试

@@ -484,9 +484,7 @@ void ConsoleWriter::write_event_stacks(const EventsStacksResult& result,
           << "  calls: " << total_calls << '\n'
           << "  alloc-bytes: " << total_alloc_bytes << '\n'
           << "  free-bytes: " << total_free_bytes << '\n'
-          << "  net-bytes: "
-          << static_cast<std::int64_t>(total_alloc_bytes) -
-                 static_cast<std::int64_t>(total_free_bytes)
+          << "  net-bytes: " << saturating_net_bytes(total_alloc_bytes, total_free_bytes) << '\n'
           << '\n'
           << "  aggregated-events: " << result.aggregated_event_count << '\n'
           << "  unmatched-frees: " << result.unmatched_free_count << '\n';

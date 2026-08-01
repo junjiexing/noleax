@@ -397,9 +397,25 @@ TEST_CASE("analysis validation enforces window sort and group rules", "[config]"
                   noleax::config::ConfigError);
 
   configuration.analysis.mode.value = noleax::config::AnalysisMode::kOutstanding;
+  configuration.analysis.end.value = 2s;
+  configuration.analysis.end.source = noleax::config::ValueSource::kCommandLine;
+  configuration.analysis.from.value = 3s;
+  configuration.analysis.to.value.reset();
+  CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
+                  noleax::config::ConfigError);
+  configuration.analysis.from.value = 1s;
+  configuration.analysis.end.value.reset();
+  configuration.analysis.to.value = 2s;
+
+  configuration.analysis.mode.value = noleax::config::AnalysisMode::kOutstanding;
   configuration.analysis.sort.value = noleax::config::AnalysisSort::kCalls;
   CHECK_NOTHROW(noleax::config::validate_configuration(configuration));
   configuration.analysis.sort.value = noleax::config::AnalysisSort::kAllocBytes;
   CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
                   noleax::config::ConfigError);
+
+  // leaks + group_by without an explicit sort must stay valid (defaults to bytes).
+  configuration.analysis.sort.value = noleax::config::AnalysisSort::kAllocBytes;
+  configuration.analysis.sort.source = noleax::config::ValueSource::kDefault;
+  CHECK_NOTHROW(noleax::config::validate_configuration(configuration));
 }

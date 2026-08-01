@@ -69,8 +69,8 @@ allocation_id 或 mapping_id 作为身份，不以可复用的地址作为身份
 `analyze_outstanding` 将 EventStream 与 GenerationTracker 组合，语义固定为：
 
 - 候选 creation time 满足 `a <= time < b`。
-- 要求 `0 <= a <= b <= c`；省略 c 时使用 trace end。
-- c 超过 trace end 时 clamp 到 trace end；clamp 后 b 若超过 trace end 则拒绝该窗口。
+- 要求 `0 <= a <= b <= c`（b 缺省时要求 `a <= c`）；b、c 省略或超过 trace end 时按 trace end
+  截断（effective_b/effective_c 写入结果），不再因超出终点报错。
 - 观察点包含 time 等于 c 的全部 end event，因此恰好在 c free/realloc/destroy/unmap 的候选不再
   outstanding。
 - c 之后才结束的候选仍在 c outstanding，即使读取完整 trace 后它已不在 tracker 的最终 live
@@ -109,8 +109,8 @@ API 名称按 ApiDefinition canonical name 做 UTF-8 精确、区分大小写匹
 否则只匹配 basename。多个 stack module pattern 中任意一个匹配任意一帧即可。元数据无法解析时，
 依赖该元数据的类别不匹配。
 
-当前 ApiDefinition、Module 和 StackDefinition codec 尚未进入 EventStream，因此过滤器通过
-EventMetadataResolver 注入解析结果；配置 API/module/stack-module 过滤而未提供 resolver 时明确
+当前 ApiDefinition、Module 和 StackDefinition 已由 EventStream 解码并通过 TraceMetadata 聚合；
+过滤器通过 EventMetadataResolver 注入解析结果；配置 API/module/stack-module 过滤而未提供 resolver 时明确
 报错，不会静默输出空结果。
 
 `analyze_filtered_events` 仍以流式方式逐事件回调，并分别统计 matched 与 filtered 数量。
