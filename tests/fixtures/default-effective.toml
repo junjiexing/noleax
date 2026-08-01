@@ -63,6 +63,7 @@ method = "entrypoint-section" # source: default
 agent_name = "noleax-agent.dll" # source: default
 allow_break_signature = false # source: default
 verify = true # source: default
+standalone = false # source: default
 
 [diagnostics]
 log_level = "info" # source: default

@@ -88,6 +88,7 @@ method = "entrypoint-section"
 agent_name = "noleax-agent.dll"
 allow_break_signature = false
 verify = true
+standalone = false
 
 [diagnostics]
 log_level = "info"
@@ -105,7 +106,11 @@ color = "auto"
 
 `operation = "patch"` 与 `[patch]` 表用于静态 PE patch（P7C 已实现）：input 只接受原生 x64 EXE，
 签名文件默认拒绝，输出总是新副本且不与输入相同。patched 副本通过 `run` 加
-`injection.method = "static-pe-patch"` 捕获。详见 [STATIC_PE_PATCH.md](STATIC_PE_PATCH.md)。
+`injection.method = "static-pe-patch"` 捕获。`patch.standalone = true` 时 patch 会把
+standalone 激活参数烧进镜像，patched 副本可直接运行：agent 读取
+`NOLEAX_AGENT_CONFIG` 环境变量或 exe 同目录的 `noleax-agent.toml`（沿用 `[capture]` 与
+`[trace]` 段），自行把事件写入 trace，无需控制器。详见
+[STATIC_PE_PATCH.md](STATIC_PE_PATCH.md) 第 8 节。
 
 `capture.min_size` 与 `--capture-min-size` 语义相同。Windows V1 只在入队前过滤严格小于阈值的
 `RtlAllocateHeap`、`NtAllocateVirtualMemory` 和 `NtMapViewOfSection`；realloc、free/unmap 与 heap

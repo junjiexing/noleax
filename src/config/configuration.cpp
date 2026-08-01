@@ -63,6 +63,7 @@ Configuration make_default_configuration() {
   configuration.patch.agent_name.value = "noleax-agent.dll";
   configuration.patch.allow_break_signature.value = false;
   configuration.patch.verify.value = true;
+  configuration.patch.standalone.value = false;
 
   configuration.diagnostics.log_level.value = LogLevel::kInfo;
   configuration.diagnostics.color.value = ColorMode::kAuto;
@@ -134,6 +135,7 @@ void apply_overrides(Configuration& configuration, const ConfigurationOverrides&
   apply_override(configuration.patch.allow_break_signature, overrides.patch.allow_break_signature,
                  source);
   apply_override(configuration.patch.verify, overrides.patch.verify, source);
+  apply_override(configuration.patch.standalone, overrides.patch.standalone, source);
 
   apply_override(configuration.diagnostics.log_level, overrides.diagnostics.log_level, source);
   apply_override(configuration.diagnostics.color, overrides.diagnostics.color, source);

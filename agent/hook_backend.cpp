@@ -59,6 +59,17 @@ class HookBackend::Impl {
 
   [[nodiscard]] FastHookResult install_fast(void* target, void* replacement,
                                             OriginalTrampolineSlot* original_slot) {
+    return install_with_policy(target, replacement, original_slot, HOOX_RELOCATION_CHECKED);
+  }
+
+  [[nodiscard]] FastHookResult install_fast_forced(void* target, void* replacement,
+                                                   OriginalTrampolineSlot* original_slot) {
+    return install_with_policy(target, replacement, original_slot, HOOX_RELOCATION_FORCED);
+  }
+
+  [[nodiscard]] FastHookResult install_with_policy(void* target, void* replacement,
+                                                   OriginalTrampolineSlot* original_slot,
+                                                   HooxRelocationPolicy relocation_policy) {
     std::scoped_lock lock{mutex_};
     if (interceptor_ == nullptr || stopping_) {
       return {HookInstallStatus::kBackendStopped, nullptr};
@@ -85,7 +96,7 @@ class HookBackend::Impl {
     hoox_interceptor_begin_transaction(interceptor_);
     HooxInterceptorOptions options{};
     options.scenario = HOOX_INTERCEPTOR_SCENARIO_ONLINE;
-    options.relocation_policy = HOOX_RELOCATION_CHECKED;
+    options.relocation_policy = relocation_policy;
     void* original = nullptr;
     const HooxReplaceReturn replace_status =
         hoox_interceptor_replace_fast(interceptor_, target, replacement, &original, &options);
@@ -297,6 +308,11 @@ HookBackend::~HookBackend() = default;
 FastHookResult HookBackend::install_fast(void* target, void* replacement,
                                          OriginalTrampolineSlot* original_slot) {
   return impl_->install_fast(target, replacement, original_slot);
+}
+
+FastHookResult HookBackend::install_fast_forced(void* target, void* replacement,
+                                                OriginalTrampolineSlot* original_slot) {
+  return impl_->install_fast_forced(target, replacement, original_slot);
 }
 
 HookUninstallStatus HookBackend::uninstall(void* target, std::uint32_t flush_attempts) noexcept {

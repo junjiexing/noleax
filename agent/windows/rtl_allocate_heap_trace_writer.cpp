@@ -433,6 +433,44 @@ class RtlAllocateHeapTraceWriter::Implementation final {
   }
 
   [[nodiscard]] RtlAllocateHeapTraceWriterResult finish() {
+    require_hooks_logically_stopped();
+    request_stop();
+    if (worker_.joinable()) {
+      worker_.join();
+    }
+    return result_;
+  }
+
+  // Inline finalization for process teardown: the worker thread was already killed
+  // by ExitProcess, so the final drain runs on this thread. state_mutex_ is never
+  // touched here because the worker may have died while holding it.
+  [[nodiscard]] RtlAllocateHeapTraceWriterResult finish_after_worker_exit() {
+    require_hooks_logically_stopped();
+    stop_requested_.store(true, std::memory_order_release);
+    if (inline_finalize_done_) {
+      return result_;
+    }
+    inline_finalize_done_ = true;
+    try {
+      if (capture_begun_) {
+        finalize_capture_inline();
+      } else {
+        finalize_empty_trace();
+      }
+    } catch (const std::exception& error) {
+      record_inline_error(error.what());
+    } catch (...) {
+      record_inline_error("unknown trace writer failure");
+    }
+    return result_;
+  }
+
+  [[nodiscard]] bool is_running() const noexcept {
+    return running_.load(std::memory_order_acquire);
+  }
+
+ private:
+  void require_hooks_logically_stopped() const {
     const auto hook_not_stopped = [](const auto* hook) {
       return hook != nullptr &&
              (hook->has_pending_teardown() ||
@@ -468,18 +506,48 @@ class RtlAllocateHeapTraceWriter::Implementation final {
       append_state("virtual-memory", nt_memory_hooks_);
       throw std::logic_error{"memory hooks are not logically stopped before finish: " + detail};
     }
-    request_stop();
-    if (worker_.joinable()) {
-      worker_.join();
+  }
+
+  // Runs the final drain boundary of capture_loop() on the calling thread. Used when
+  // the worker can no longer run it (process teardown).
+  void finalize_capture_inline() {
+    if (!initial_modules_processed_) {
+      initial_modules_processed_ = true;
+      for (const RawModuleEvent& initial : module_tracker_->initial_modules()) {
+        process_module_event(initial);
+      }
+      collect_module_drops();
     }
-    return result_;
+    RtlAllocateHeapEvent raw_event;
+    while (event_queue_.try_pop(raw_event)) {
+      drain_modules_through(raw_event.monotonic_ticks);
+      process_event(raw_event);
+    }
+    drain_modules_through(std::numeric_limits<std::uint64_t>::max());
+    collect_queue_drops();
+    collect_module_drops();
+    flush_pending();
+    finalize_trace();
   }
 
-  [[nodiscard]] bool is_running() const noexcept {
-    return running_.load(std::memory_order_acquire);
+  void record_inline_error(const char* message) noexcept {
+    result_.error_message = message;
+    result_.status = RtlAllocateHeapTraceWriterStatus::kWriterError;
+    result_.stack_capture_failures = stack_capture_failures_;
+    result_.queue_dropped_events = queue_dropped_events_;
+    result_.trace_dropped_events = trace_dropped_events_;
+    result_.timestamp_adjustments = timestamp_adjustments_;
+    result_.bytes_written = writer_.bytes_written();
+    result_.stack_dictionary_segments = dictionary_.segment_count();
+    result_.module_load_records = written_module_loads_;
+    result_.module_unload_records = written_module_unloads_;
+    result_.module_notification_drops = module_notification_drops_;
+    try {
+      writer_.flush();
+    } catch (...) {
+    }
   }
 
- private:
   void write_metadata() {
     std::vector<std::byte> payload;
     noleax::trace::append_capture_scope_record(payload, options_.capture_scope,
@@ -551,6 +619,7 @@ class RtlAllocateHeapTraceWriter::Implementation final {
   }
 
   void capture_loop() {
+    initial_modules_processed_ = true;
     for (const RawModuleEvent& initial : module_tracker_->initial_modules()) {
       process_module_event(initial);
     }
@@ -1945,6 +2014,8 @@ class RtlAllocateHeapTraceWriter::Implementation final {
   bool thread_ready_{false};
   bool capture_begun_{false};
   bool file_limit_reached_{false};
+  bool initial_modules_processed_{false};
+  bool inline_finalize_done_{false};
 
   RtlAllocateHeapTraceWriterResult result_;
   std::uint64_t next_allocation_id_{1U};
@@ -2066,6 +2137,10 @@ void RtlAllocateHeapTraceWriter::begin_capture() { implementation_->begin_captur
 
 RtlAllocateHeapTraceWriterResult RtlAllocateHeapTraceWriter::finish() {
   return implementation_->finish();
+}
+
+RtlAllocateHeapTraceWriterResult RtlAllocateHeapTraceWriter::finish_after_worker_exit() {
+  return implementation_->finish_after_worker_exit();
 }
 
 bool RtlAllocateHeapTraceWriter::is_running() const noexcept {

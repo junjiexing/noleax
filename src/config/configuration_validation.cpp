@@ -140,6 +140,8 @@ void require_default_patch(const Configuration& configuration, const Configurati
   require_default(configuration.patch.allow_break_signature, defaults.patch.allow_break_signature,
                   "patch.allow_break_signature", operation);
   require_default(configuration.patch.verify, defaults.patch.verify, "patch.verify", operation);
+  require_default(configuration.patch.standalone, defaults.patch.standalone, "patch.standalone",
+                  operation);
 }
 
 void require_existing_path(const std::optional<std::filesystem::path>& path, std::string_view key) {

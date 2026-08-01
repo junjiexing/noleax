@@ -485,8 +485,8 @@ void load_symbols(const toml::table& table, ConfigurationOverrides& result,
 
 void load_patch(const toml::table& table, ConfigurationOverrides& result,
                 const std::filesystem::path& base_directory) {
-  constexpr std::array allowed{"input", "output", "method", "agent_name", "allow_break_signature",
-                               "verify"};
+  constexpr std::array allowed{
+      "input", "output", "method", "agent_name", "allow_break_signature", "verify", "standalone"};
   reject_unknown_keys(table, allowed, "patch");
 
   if (const auto* node = optional_node(table, "input")) {
@@ -507,6 +507,9 @@ void load_patch(const toml::table& table, ConfigurationOverrides& result,
   }
   if (const auto* node = optional_node(table, "verify")) {
     result.patch.verify.set(read_boolean(*node, "patch.verify", "--verify"));
+  }
+  if (const auto* node = optional_node(table, "standalone")) {
+    result.patch.standalone.set(read_boolean(*node, "patch.standalone", "--standalone"));
   }
 }
 

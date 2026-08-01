@@ -19,6 +19,13 @@ struct BootstrapParameters {
   std::uint32_t controller_process_id{0U};
 };
 
+// Session token that marks standalone capture: `noleax patch --standalone` bakes it into
+// the patched image's parameter area, and the agent then records without a controller.
+inline constexpr std::array<std::byte, 16U> kStandaloneMagic{
+    std::byte{'N'}, std::byte{'L'}, std::byte{'X'}, std::byte{'-'}, std::byte{'S'}, std::byte{'T'},
+    std::byte{'A'}, std::byte{'N'}, std::byte{'D'}, std::byte{'A'}, std::byte{'L'}, std::byte{'O'},
+    std::byte{'N'}, std::byte{'E'}, std::byte{'-'}, std::byte{'1'}};
+
 static_assert(std::is_standard_layout_v<BootstrapParameters>);
 static_assert(std::is_trivially_copyable_v<BootstrapParameters>);
 

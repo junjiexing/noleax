@@ -44,6 +44,7 @@ struct PePatchOptions {
   std::string agent_name{"noleax-agent.dll"};
   bool allow_break_signature{false};
   bool verify{true};
+  bool standalone{false};
 };
 
 struct PePatchResult {

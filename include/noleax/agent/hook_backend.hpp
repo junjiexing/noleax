@@ -61,6 +61,10 @@ class HookBackend {
 
   [[nodiscard]] FastHookResult install_fast(void* target, void* replacement,
                                             OriginalTrampolineSlot* original_slot = nullptr);
+  // Same as install_fast but with HOOX_RELOCATION_FORCED for targets whose prologue
+  // fails the checked relocation (for example a relative call inside the copied bytes).
+  [[nodiscard]] FastHookResult install_fast_forced(void* target, void* replacement,
+                                                   OriginalTrampolineSlot* original_slot = nullptr);
   [[nodiscard]] HookUninstallStatus uninstall(
       void* target, std::uint32_t flush_attempts = kDefaultFlushAttempts) noexcept;
   [[nodiscard]] bool flush(std::uint32_t max_attempts = kDefaultFlushAttempts) noexcept;

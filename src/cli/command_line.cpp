@@ -79,6 +79,7 @@ struct PatchBindings {
   TextOption agent_name;
   BooleanOption allow_break_signature;
   BooleanOption verify;
+  BooleanOption standalone;
 };
 
 struct AnalyzeBindings {
@@ -392,6 +393,9 @@ void apply_patch_bindings(const PatchBindings& bindings, config::ConfigurationOv
   if (const auto value = boolean_value(bindings.verify)) {
     overrides.patch.verify.set(*value);
   }
+  if (const auto value = boolean_value(bindings.standalone)) {
+    overrides.patch.standalone.set(*value);
+  }
 }
 
 void apply_analyze_bindings(const AnalyzeBindings& bindings,
@@ -584,6 +588,8 @@ ParsedCommandLine parse_command_line(int argc, const char* const* argv,
                      "--no-allow-break-signature", "Allow invalidating an existing signature");
   add_boolean_option(*patch, patch_bindings.verify, "--verify", "--no-verify",
                      "Verify the patched output");
+  add_boolean_option(*patch, patch_bindings.standalone, "--standalone", "--no-standalone",
+                     "Bake standalone capture activation into the patched image");
 
   AnalyzeBindings analyze_bindings;
   CLI::App* const analyze = app.add_subcommand("analyze", "Analyze one or more Noleax traces");

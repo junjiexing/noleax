@@ -371,6 +371,7 @@ struct PatchSettings {
   Setting<std::string> agent_name;
   Setting<bool> allow_break_signature;
   Setting<bool> verify;
+  Setting<bool> standalone;
 };
 
 struct DiagnosticSettings {
@@ -461,6 +462,7 @@ struct PatchOverrides {
   SettingOverride<std::string> agent_name;
   SettingOverride<bool> allow_break_signature;
   SettingOverride<bool> verify;
+  SettingOverride<bool> standalone;
 };
 
 struct DiagnosticOverrides {

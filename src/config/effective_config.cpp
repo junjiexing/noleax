@@ -319,6 +319,8 @@ std::string serialize_effective_config(const Configuration& configuration) {
                  configuration.patch.allow_break_signature.source);
   append_setting(output, "verify", configuration.patch.verify.value ? "true" : "false",
                  configuration.patch.verify.source);
+  append_setting(output, "standalone", configuration.patch.standalone.value ? "true" : "false",
+                 configuration.patch.standalone.source);
 
   append_table(output, "diagnostics");
   append_setting(output, "log_level",

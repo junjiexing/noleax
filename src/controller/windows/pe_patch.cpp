@@ -338,9 +338,20 @@ struct EntryPatchPlan {
 [[nodiscard]] std::vector<std::byte> build_section_content(
     std::uint32_t section_rva, std::uint32_t entry_rva, std::uint32_t patch_rva,
     const std::array<std::byte, pepatch::kEntryPatchSize>& original_bytes,
-    const std::wstring& agent_name) {
+    const std::wstring& agent_name, bool standalone) {
   std::vector<std::byte> content(pepatch::kContentSize, std::byte{0U});
   std::memcpy(content.data(), pepatch::kStaticStub.data(), pepatch::kStaticStub.size());
+  if (standalone) {
+    // Bake standalone capture activation into the parameter area: the stub loads the
+    // agent, and the agent recognizes the magic token and records without a controller.
+    noleax::agent::windows::BootstrapParameters parameters;
+    parameters.session_token = noleax::agent::windows::kStandaloneMagic;
+    constexpr wchar_t kStandaloneSentinel[] = L"standalone";
+    std::memcpy(parameters.pipe_name.data(), kStandaloneSentinel, sizeof(kStandaloneSentinel));
+    parameters.connect_timeout_ms = 0U;
+    parameters.controller_process_id = 0U;
+    std::memcpy(content.data() + pepatch::kParamsOffset, &parameters, sizeof(parameters));
+  }
   write_at<std::uint32_t>(content, pepatch::kFixupSectionRvaOffset, section_rva);
   write_at<std::uint32_t>(content, pepatch::kFixupEntryRvaOffset, entry_rva);
   std::memcpy(content.data() + pepatch::kMarkerOffset, pepatch::kMarker, pepatch::kMarkerSize);
@@ -464,8 +475,9 @@ PePatchResult patch_pe_image(const PePatchOptions& options) {
   const std::uint32_t new_raw_offset = align_up(data.size(), image.file_alignment, "the raw size");
   const std::uint32_t new_raw_size =
       align_up(pepatch::kContentSize, image.file_alignment, "the raw size");
-  const std::vector<std::byte> content = build_section_content(
-      result.section_rva, result.entry_rva, result.patch_rva, plan.original_bytes, agent_name);
+  const std::vector<std::byte> content =
+      build_section_content(result.section_rva, result.entry_rva, result.patch_rva,
+                            plan.original_bytes, agent_name, options.standalone);
 
   Section bootstrap;
   std::memcpy(bootstrap.name.data(), kBootstrapSectionName, sizeof(kBootstrapSectionName) - 1U);

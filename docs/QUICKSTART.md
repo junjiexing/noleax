@@ -50,6 +50,28 @@
 attach 无法知道注入前已经存在的 allocation。生成的分析结果会标记
 `preexisting_allocations_unknown`，并以退出码 2 表示范围不完整；这不代表命令崩溃或 trace 不可读。
 
+## 3.1 standalone：无法注入也无法 attach 时
+
+先用 `--standalone` 生成 patched 副本，再把 agent 和配置文件放在副本同目录，直接运行即可，
+不需要 noleax 参与启动或连接：
+
+~~~powershell
+.\noleax.exe patch --input C:\apps\demo.exe --output .\demo.patched.exe --standalone
+Copy-Item .\noleax-agent.dll .\demo-dir\
+@'
+schema_version = 1
+
+[trace]
+path = "demo.nlx"
+'@ | Set-Content .\demo-dir\noleax-agent.toml
+.\demo-dir\demo.patched.exe
+.\noleax.exe analyze .\demo-dir\demo.nlx
+~~~
+
+agent 在目标启动时读取配置并自写 trace；正常退出时 trace 完整（含 end-of-trace），也可改用
+环境变量 `NOLEAX_AGENT_CONFIG` 指向其他配置路径。完整语义见
+[STATIC_PE_PATCH.md](STATIC_PE_PATCH.md) 第 8 节。
+
 ## 4. 查看全部事件
 
 console 适合交互查看，JSON/CSV 适合自动处理：

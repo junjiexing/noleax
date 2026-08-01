@@ -13,7 +13,9 @@ DLL 注入目标进程，hook 内存分配 API，将 alloc/realloc/free、heap l
 - 四种启动注入：`remote-thread`、`thread-hijack`、`entrypoint-code`、`static-pe-patch`，均在目标
   入口点之前完成注入。
 - 两种 attach 注入：`remote-thread`、`thread-hijack`，连接运行中的进程。
-- `noleax patch` 生成静态 patch 副本，配合 `static-pe-patch` 方式捕获，无需启动期远程注入。
+- `noleax patch` 生成静态 patch 副本，配合 `static-pe-patch` 方式捕获，无需启动期远程注入；
+  `patch --standalone` 更进一步，patched 副本可直接运行，agent 读配置自写 trace，
+  无需控制器（`docs/STATIC_PE_PATCH.md` 第 8 节）。
 - 基于 Hoox v0.1.1 的 hook profile 覆盖 Windows NT Heap 与 NT virtual memory 共九个逻辑 API。
 - 有界 trace：大小上限、定期 flush、lz4/zstd 压缩、Module/Stack 字典去重，损坏时可部分恢复。
 - 离线分析：events/leaks 两种模式加调用栈聚合，多维过滤，console/JSON/CSV 输出，离线符号解析。
