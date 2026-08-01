@@ -1,6 +1,5 @@
 # Noleax 配置规范
 
-> 状态：P8.5 Windows x64 V1 release candidate
 > 格式：TOML
 > schema_version：1
 
@@ -105,7 +104,7 @@ color = "auto"
 `remote-thread` 和 `thread-hijack`（其余组合由配置校验以退出码 1 拒绝）。配置值不会被
 静默忽略。
 
-`operation = "patch"` 与 `[patch]` 表用于静态 PE patch（P7C 已实现）：input 只接受原生 x64 EXE，
+`operation = "patch"` 与 `[patch]` 表用于静态 PE patch：input 只接受原生 x64 EXE，
 签名文件默认拒绝，输出总是新副本且不与输入相同。patched 副本通过 `run` 加
 `injection.method = "static-pe-patch"` 捕获。`patch.standalone = true` 时 patch 会把
 standalone 激活参数烧进镜像，patched 副本可直接运行：agent 读取

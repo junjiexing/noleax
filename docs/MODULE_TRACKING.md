@@ -1,12 +1,11 @@
 # Windows Module Generation Tracking
 
-> 状态：P5.6 Windows x64 完成
 > 范围：初始模块快照、loader 通知、ModuleLoad/ModuleUnload、相对栈帧和离线符号化
 
 ## 1. 目标
 
 绝对 PC 不能唯一标识长期捕获中的代码。DLL 卸载后，另一代 DLL 可以复用同一地址；如果 stack
-dictionary 只比较绝对地址，两代调用栈会被错误合并。P5.6 为每次模块加载分配不复用的
+dictionary 只比较绝对地址，两代调用栈会被错误合并。模块跟踪为每次模块加载分配不复用的
 `ModuleId`，并把栈帧规范化为：
 
 ~~~text
@@ -69,7 +68,7 @@ identity。ModuleUnload 保存 `ModuleId` 和 tick。正式 EventStream 校验�
 模块卸载不会删除 analyzer 中的历史 ModuleLoad，因此离线 symbolizer 仍可用 trace 保存的 image/PDB
 identity 解析旧 generation。
 
-## 5. 自动门禁
+## 5. 自动验证
 
 - codec golden/round-trip、非法 identity/path length；
 - EventStream load → unload → 同基址 reload、重复 ID、非法相对帧；

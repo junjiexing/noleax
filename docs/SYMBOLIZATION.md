@@ -1,6 +1,5 @@
 # Noleax 离线符号解析
 
-> 状态：P6.7 Windows x64 CLI 集成完成
 
 ## 1. 范围
 
@@ -8,12 +7,11 @@
 symbol+offset。Windows 实现使用 DbgHelp；DbgHelp 只在 analyzer 进程中调用，不进入目标进程或
 hook replacement。
 
-P3.8 提供独立符号服务；P6.7 的 `TraceMetadata` 已将 trace 中的 ModuleLoad/Unload、StackDefinition
+符号化提供独立符号服务；`TraceMetadata` 已将 trace 中的 ModuleLoad/Unload、StackDefinition
 和 API registry 装配为 `noleax analyze` 共用的 filter/presentation resolver。CLI 因而可以直接从
 trace 输出真实 module+offset，并在匹配映像/PDB 可用时输出 symbol+offset。
 
-非 Windows 平台保留相同接口，注册模块时返回 `unsupported_platform`。Linux/macOS 的实现留给
-对应平台阶段。
+非 Windows 平台保留相同接口，注册模块时返回 `unsupported_platform`。Linux/macOS 的实现留待后续。
 
 ## 2. 输入模型
 
@@ -62,7 +60,7 @@ identity mismatch 不会降级使用可能属于另一构建的符号。`pdb_not
 - `search_paths` 按用户顺序加入，转换为绝对路径。
 - `symbol_servers` 只有用户显式配置时才以 `srv*URL` 加入。
 - path/server 条目不允许包含分号，server 必须是有效非空 UTF-8。
-- P3.8 不自行管理下载缓存、凭据或代理；这些属于 CLI 集成和发布安全设计。
+- 符号服务不自行管理下载缓存、凭据或代理；这些属于 CLI 集成和发布安全设计。
 
 计划中的配置映射保持为 `symbols.paths` / `--symbol-path` 和
 `symbols.servers` / `--symbol-server`，命令行覆盖配置文件。
@@ -78,7 +76,7 @@ module map 使用读写锁：多个查询可同时读取元数据，但进入 Db
 module map。锁顺序固定为 module map 在前、DbgHelp mutex 在后。对象析构仍要求调用方先停止针对该
 对象的并发调用，这是普通 C++ 对象生命周期约束。
 
-## 7. 测试门禁
+## 7. 测试验证
 
 Windows 组件测试使用带完整 PDB 和导出函数的专用 DLL，覆盖：
 
@@ -89,4 +87,4 @@ Windows 组件测试使用带完整 PDB 和导出函数的专用 DLL，覆盖：
 - 多线程并发 frame resolve；
 - Debug/Release 构建。
 
-P3.8 不替代 P4 hook 安全测试；符号查询始终位于离线 analyzer，不能在 hook 热路径中调用。
+符号化不替代 hook 安全测试；符号查询始终位于离线 analyzer，不能在 hook 热路径中调用。

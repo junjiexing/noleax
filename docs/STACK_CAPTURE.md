@@ -1,12 +1,11 @@
 # Windows Raw Stack Capture
 
-> 状态：P4.6 Windows x64 完成；P5.5 复用于五个 NT Heap 与五个 NT memory 物理入口
 > 范围：Windows memory adapter 的原始地址捕获；不解析符号、不去重、不写 trace
 
 ## 1. 合同
 
 hook 热路径只捕获原始指令地址。它不得调用 DbgHelp、访问符号服务器、生成符号字符串或维护共享
-栈字典；符号化和栈去重分别属于离线 analyzer 与 P4.7 后台 writer。
+栈字典；符号化和栈去重分别属于离线 analyzer 与后台 writer。
 
 `CapturedStack` 是 520-byte、trivially-copyable 的定长对象：
 
@@ -24,7 +23,7 @@ hook 热路径只捕获原始指令地址。它不得调用 DbgHelp、访问符�
 | `kTruncated` | requested | 至少还有一帧被深度上限截断 |
 | `kFailed` | 0 | 本次 unwind 未得到任何帧 |
 
-失败不能伪装成 disabled 或一个“成功的空栈”。P4.7 writer 为每个 `kFailed` 结果生成
+失败不能伪装成 disabled 或一个“成功的空栈”。后台 writer 为每个 `kFailed` 结果生成
 `stack_capture_failed/agent_queue` Loss，同时仍保留 allocation/free 事件；该 Loss 只降低 stack
 completeness，不声称生命周期事件已经丢失。
 
@@ -47,7 +46,7 @@ preflight 完全失败会拒绝构造，不允许半安装。单个目标线程�
 
 ## 3. 对照策略
 
-P4.6 同时实现只用于测试的 Windows x64 metadata unwind：
+另实现一套只用于测试的 Windows x64 metadata unwind：
 
 - `RtlCaptureContext` 获取寄存器；
 - `RtlLookupFunctionEntry` 查询 x64 unwind metadata；
@@ -62,7 +61,7 @@ leaf 规则。
 
 ## 4. 事件与失败边界
 
-P4.6 的 allocate event 加入栈后为 576 bytes；P5.3 统一为 608 bytes，P5.4 为容纳 NT VM target 和
+allocate event 加入栈后为 576 bytes；随后统一为 608 bytes，并为容纳 NT VM target、
 mapping 与 section 字段扩展为 664-byte `RtlHeapEvent`。默认 queue 为 16,384 个 slot，含 slot sequence 预分配
 约 10.1 MiB；测试 harness 使用 256 个 slot
 稳定制造 overflow。
@@ -76,7 +75,7 @@ mapping 与 section 字段扩展为 664-byte `RtlHeapEvent`。默认 queue 为 1
 - 真实 hook drain 的事件必须使用生产方法和配置深度，并且整批至少有一个成功栈；
 - hooked/unhooked workload 的返回、内容、`LastError` 和 checksum 保持逐字节一致。
 
-P4.6 捕获层自身不执行后台 drain、栈去重或 trace 编码；P4.7 writer 已接入 queue-full 和
+捕获层自身不执行后台 drain、栈去重或 trace 编码；后台 writer 已接入 queue-full 和
 stack-capture-failed 的 Loss record。
 
 ## 5. 验证
@@ -92,4 +91,4 @@ ctest --preset windows-x64-release -R "stack capture|rtl-allocate-heap-passthrou
 Release object 审计确认生产捕获函数唯一的外部调用是 `RtlCaptureStackBackTrace`；replacement 调用
 guard、original、错误状态/计时/thread API、无锁 queue 和该捕获入口，未出现 allocator、文件、
 日志、符号、loader 或显式锁调用。相关 object 也没有 `.tls$` section。卸载时的 replacement
-in-flight 生命周期已在 P4.8 完成，见 [HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)。
+in-flight 生命周期见 [HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)。

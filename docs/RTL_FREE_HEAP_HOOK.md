@@ -1,6 +1,5 @@
 # Windows RtlFreeHeap Hook
 
-> 状态：P5.1 Windows x64 adapter 完成；P5.3 已接入五 hook 组合并通过完整门禁
 > 分支：`feat/rtl-free-heap-hook`
 
 ## 1. ABI 与行为基线
@@ -26,7 +25,7 @@ baseline 与 hooked 行为。
 
 ## 2. 热路径合同
 
-`RtlFreeHeapHook` 复用 P4 已验证的基础设施：
+`RtlFreeHeapHook` 复用 allocate hook 已验证的基础设施：
 
 - 安装前解析 ntdll export、预检 `RtlCaptureStackBackTrace` 并取得固定 TEB TLS guard 引用；
 - replacement 入口先计入独立的 in-flight lifecycle，再取得 `record/original/target` 路由；
@@ -40,7 +39,7 @@ outermost 的 `successful + failed == recordable`；SEH 异常同时计入 faile
 
 ## 3. 统一事件与共享队列
 
-P5.5 的统一 664-byte `RtlHeapEvent` 保留 P5.1 定义的 free 字段：
+统一 664-byte `RtlHeapEvent` 保留以下 free 字段：
 
 - 全局 queue sequence、QPC tick、thread ID；
 - heap handle、address、flags 和 original raw BOOLEAN result；
@@ -95,14 +94,14 @@ allocation 和 free 可以来自不同线程。配对与调用栈去重都在 in
 释放 trampoline lease、完成 Hoox flush。`RtlHeapHooks` 负责让五个 hook 都达到完成态；任一仍处于
 teardown-pending 时，组合 writer 不允许写正常 EndOfTrace。
 
-当前 adapter 与 P4 一样限制为每进程安装一次，replacement module pin 到进程退出。析构时若有限次
+当前 adapter 与 allocate hook 一样限制为每进程安装一次，replacement module pin 到进程退出。析构时若有限次
 flush 仍无法证明 quiescence，会把仍可能被旧 replacement 读取的 state 和 guard 引用转交进程生命期。
 组合对象同时释放共享 queue 的所有权，使 queue 也保留到进程退出；不能只保留 hook state 却析构其
 指向的外部 queue。正常 quiescent 路径仍按常规顺序释放全部对象。
 
 ## 7. 自动验证
 
-P5.1 新增或扩展、并在 P5.3 五 hook 组合中持续执行的门禁包括：
+free hook 引入、并在五 hook 组合中持续执行的验证包括：
 
 - free return/LastError/outermost/recursive/internal/SEH 合同；
 - bad address、wrong heap、double free 隔离 fail-fast 差分；
@@ -111,9 +110,9 @@ P5.1 新增或扩展、并在 P5.3 五 hook 组合中持续执行的门禁包括
 - matched、cross-thread、preexisting、unmatched 和 outstanding generation 的正式 trace 回读；
 - MD/MT 8×20,000×2 baseline/hooked 长差分；
 - 10 个 PE 的 CFG/CET metadata、allocate/free runtime mitigation；
-- Application Verifier/Full Page Heap 三轮；P5.4 结束后 15 个目标 IFEO key 全部不存在。
+- Application Verifier/Full Page Heap 三轮；15 个目标 IFEO key 全部不存在。
 
-结果汇总见 [WINDOWS_HOOK_HARDENING.md](WINDOWS_HOOK_HARDENING.md)。常用定向命令：
+常用定向命令：
 
 ~~~powershell
 . .\scripts\Enter-NoleaxDevShell.ps1
@@ -122,9 +121,8 @@ ctest --preset windows-x64-release -R "rtl-free-heap|rtl-heap-trace-writer" --ou
 .\scripts\Test-WindowsHookHardening.ps1 -SkipApplicationVerifier -RequireCetRuntime
 ~~~
 
-## 8. 尚未启用的范围
+## 8. 覆盖边界
 
-当前仍不启用产品 profile，也没有新增最终用户 CLI。heap create/destroy 已在 P5.3 完成，NT VM
-allocate/free 已在 P5.4 完成；section view、模块 generation 和注入链路仍待后续阶段。在这些能力
-完成前，当前五 hook 组合只能
-作为经过硬化的 agent building block，不能宣称完整 Windows 内存泄漏覆盖。
+free hook 已随 `windows-nt-heap` 与 `windows-native` 产品 profile 启用；heap create/destroy、NT VM
+allocate/free、section view、模块 generation 和注入链路均已完成。剩余边界是内部切分大块 VM 的
+第三方 allocator：只能看到 backing mapping，不能宣称完整 Windows 内存泄漏覆盖。

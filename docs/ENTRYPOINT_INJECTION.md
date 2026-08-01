@@ -1,6 +1,4 @@
-# Entrypoint Code 注入（P7B）
-
-> 状态：P7B Windows x64 完成
+# Entrypoint Code 注入
 > 注入方式：`entrypoint-code`，仅 `run`（suspended launch）
 
 ## 1. 目的与适用范围
@@ -40,7 +38,7 @@ stage 编码：1=`LdrLoadDll` 已返回（附 NTSTATUS），2=bootstrap 已返�
 
 - stub 用 `mov r14, rsp` 记录寄存器压栈后的栈顶，恢复前先 `mov rsp, r14` 再逐项 `pop`；
   早期版本缺少这一步，`pop` 序列读到的是 `and rsp,-16; sub rsp,60h` 之后的调用者栈垃圾，
-  导致目标在 stub 发出完成信号后立刻崩溃（现为回归门禁，由 launch 集成测试覆盖）。
+  导致目标在 stub 发出完成信号后立刻崩溃（现为回归用例，由 launch 集成测试覆盖）。
 - kernel32 在 freshly suspended 进程里尚未映射，stub 侧刷缓存用
   `ntdll!NtFlushInstructionCache`（永远存在），不解析 kernel32 导出。
 - stub 的 ready 轮询有界（约 2^27 次）；超时后 stage=4，stub 仍然恢复入口字节并跳回原入口，

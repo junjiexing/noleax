@@ -1,6 +1,5 @@
 # Noleax HookBackend
 
-> 状态：P4.8 Windows x64 完成
 > 后端：Hoox v0.1.1 `replace_fast`
 
 ## 1. 边界
@@ -8,8 +7,8 @@
 `HookBackend` 是 Noleax 业务代码与 Hoox 之间的唯一适配层。公开头文件不包含 `hoox.h`，也不暴露
 Hoox enum、interceptor 或 option 类型。agent 通过 `noleax::hook-backend` 静态库使用后端。
 
-P4.2 的通用 backend 生命周期使用无副作用 fixture；P4.3 已在该边界之上完成真实
-`RtlAllocateHeap` passthrough ABI 差分，见
+通用 backend 生命周期测试使用无副作用 fixture；真实
+`RtlAllocateHeap` passthrough ABI 差分已在该边界之上完成，见
 [RTL_ALLOCATE_HEAP_HOOK.md](RTL_ALLOCATE_HEAP_HOOK.md)。
 
 ## 2. 安装策略
@@ -64,7 +63,7 @@ Hoox `flush` 只知道其 trampoline 是否仍被使用。`replace_fast` 是直�
 - original 已返回但 replacement 尚未退出；
 - replacement 选择不调用 original。
 
-P4.8 增加 trampoline lifetime lease：lease 存在时 backend 允许 revert，但拒绝 flush/deinit。
+backend 另提供 trampoline lifetime lease：lease 存在时允许 revert，但拒绝 flush/deinit。
 allocator adapter 在 Noleax replacement in-flight 归零后才释放 lease。完整的三路 gate、Windows
 RWX patch 暂停和 module pin 见 [HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)。该协议不能通过单纯增大
 Hoox flush 次数替代。
@@ -93,12 +92,12 @@ overlay port 中的 `windows-fls-lifecycle.patch` 为私有线程键增加显式
 - deinit 清理当前 interceptor context 后注销 FLS index；
 - `FlsFree` 触发仍有值的 fiber callback，并从进程注销 callback；
 - 将 key 复位，后续 `hoox_init` 可以重新分配；
-- 提供 `pthread_key_delete` 对称实现，保持 POSIX 源码可编译，但 P4.2 只验证 Windows x64。
+- 提供 `pthread_key_delete` 对称实现，保持 POSIX 源码可编译，但当前只验证 Windows x64。
 
 补丁不改变 `replace_fast`、relocator 或 trampoline 行为，也不升级 Hoox。上游来源仍固定为
 v0.1.1 和原 SHA-512；补丁文件随 Noleax 源码 review。
 
-## 7. P4.2 测试
+## 7. 测试
 
 专用 fixture 是独立 DLL，提供两个 `noinline`、足够长且 Release 下保持优化的导出函数，避免上游
 同一编译单元短函数测试的已知失真。测试覆盖：
@@ -125,4 +124,5 @@ ctest --preset windows-x64-debug -R "agent.load-and-link-hoox" --output-on-failu
 ctest --preset windows-x64-debug -R "agent.load-and-link-hoox" --repeat until-fail:20
 ~~~
 
-P4.2 不构成真实 allocator hook 通过结论，默认 hook profile 继续保持 disabled。
+backend 生命周期测试不构成真实 allocator hook 通过结论；真实 allocator hook 的验证见
+[RTL_ALLOCATE_HEAP_HOOK.md](RTL_ALLOCATE_HEAP_HOOK.md)。

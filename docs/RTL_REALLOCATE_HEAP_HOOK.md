@@ -1,6 +1,5 @@
 # Windows `RtlReAllocateHeap` Hook
 
-> 状态：P5.2 Windows x64 adapter 完成；P5.3 已接入五 hook 组合并通过完整门禁
 > 范围：精确 ABI、guard/SEH、共享队列、reallocation/heap generation 与安全卸载
 
 ## 1. Adapter 合同
@@ -54,7 +53,7 @@ writer 继续维护 `(heap_handle,address) -> allocation_id` live map，并使�
 
 ## 4. 自动验证
 
-P5.2 新增的测试覆盖：
+测试覆盖：
 
 - 原地缩小、真实移动、普通增长、零大小和可控 OOM 失败；
 - 返回形态、原数据、`LastError`、outermost/recursive/internal 分类和 raw event 字段；
@@ -66,11 +65,9 @@ P5.2 新增的测试覆盖：
 - Debug/Release 各 186/186，hardened 200/200；
 - 三个 quiescence race 各连续 100 次，14 个 PE 的 CFG/CET metadata 与 runtime 检查；
 - Application Verifier/Full Page Heap 下三轮组合 workload、三轮 quiescence 和三轮合同/trace；
-- P5.3 五 hook 回归为 Debug/Release 189/189、hardened 206/206，17 个 PE 通过 CFG/CET，四组
+- 五 hook 回归为 Debug/Release 189/189、hardened 206/206，17 个 PE 通过 CFG/CET，四组
   quiescence race 各 100/100，12 个 IFEO key 全部清理。
 
-管理员门禁结束后 10 个 IFEO key 均不存在。平台强化门禁由
-[WINDOWS_HOOK_HARDENING.md](WINDOWS_HOOK_HARDENING.md) 和
-`scripts/Test-WindowsHookHardening.ps1` 统一执行；heap generation 设计见
-[RTL_HEAP_LIFECYCLE_HOOK.md](RTL_HEAP_LIFECYCLE_HOOK.md)。P5.7 已启用 NT Heap/native profile；realloc
+需要管理员权限的验证轮结束后，10 个 IFEO key 均不存在。heap generation 设计见
+[RTL_HEAP_LIFECYCLE_HOOK.md](RTL_HEAP_LIFECYCLE_HOOK.md)。NT Heap/native profile 已启用；realloc
 不受 `capture.min_size` 过滤，以保留 generation 转换。

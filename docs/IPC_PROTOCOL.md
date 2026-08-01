@@ -1,6 +1,5 @@
 # Controller/Agent IPC Protocol
 
-> 状态：P6.1 Windows x64 完成
 > 传输：仅限本机的 overlapped named pipe
 
 ## 1. Frame
@@ -25,7 +24,7 @@ decoder 必须消费完整输入，拒绝截断和尾随数据。
 | `FinalizeHooks` / `CaptureFinalized` | controller ↔ agent | 目标线程暂停后的物理 revert |
 | `Error` | 双向 | 稳定错误码、系统错误和消息 |
 
-停止使用两阶段消息，保持 P5.7 的安全顺序：agent 先停止新事件并完成 trace，controller 随后暂停除
+停止使用两阶段消息，保持安全顺序：agent 先停止新事件并完成 trace，controller 随后暂停除
 agent worker 外的目标线程，最后才允许物理卸载 hook。
 
 ## 3. 传输和安全边界
@@ -36,5 +35,5 @@ agent worker 外的目标线程，最后才允许物理卸载 hook。
 - timeout 会执行 `CancelIoEx` 并等待 overlapped I/O 完成，避免栈上 `OVERLAPPED` 生命周期错误；
 - broken pipe、部分 header、超长声明、未知版本和保留位均为显式错误，不进入下一状态。
 
-P6.1 自动测试覆盖 payload/frame round-trip、major/minor、恶意长度、截断、尾随字节、accept timeout、
+自动测试覆盖 payload/frame round-trip、major/minor、恶意长度、截断、尾随字节、accept timeout、
 部分 header timeout、双向传输和 peer PID。

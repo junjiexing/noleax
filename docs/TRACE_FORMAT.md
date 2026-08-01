@@ -1,6 +1,5 @@
 # Noleax Trace Format
 
-> 状态：P4.7 trace core、StackDefinition 与 Windows 原型 writer 完成
 > 文件扩展名：.nlx
 > format major：1
 > 默认字节序：little-endian
@@ -81,7 +80,7 @@ reader 必须在分配或解压前检查：
 
 最后一个 chunk 不完整时，保留之前所有完整 chunk 并将 trace 标记为 truncated。
 
-P2.5 reader 将“完整 chunk 后恰好 EOF”和“已出现下一个 chunk 的部分 header、header
+reader 将“完整 chunk 后恰好 EOF”和“已出现下一个 chunk 的部分 header、header
 extension 或 payload”分别返回 end-of-file 和 truncated。完整但校验失败的 chunk 属于损坏输入，
 返回错误而不是伪装成 truncated。未知 chunk 按 header_size 和 stored_size 流式跳过，并将结果
 标记为 partially understood。
@@ -99,10 +98,10 @@ chunk payload 由 record 组成。每个 record 固定头为 8 bytes：
 
 同一 major 中未知 record 可以按 record_size 跳过。record_size 小于 header、超过 chunk 或违反实现上限时，该 chunk 无效。
 
-P2.5 的 RecordCursor 返回原始 type/version 和零拷贝 payload view；上层 decoder 可以忽略未知
+RecordCursor 返回原始 type/version 和零拷贝 payload view；上层 decoder 可以忽略未知
 type 后继续读取下一条 record。默认单 record 上限为 1 MiB，可由调用方收紧或放宽。
 
-record_type 在 chunk_type 内命名，不是跨 chunk 的全局编号。P2.7 V1 codec 均使用
+record_type 在 chunk_type 内命名，不是跨 chunk 的全局编号。V1 codec 均使用
 record_version=1：
 
 | chunk | record_type |
@@ -136,7 +135,7 @@ ID 只在一个 session 中有意义。
 
 ## 7. Metadata records
 
-P2.7 首个可编码 metadata record 为 CaptureScope。payload 固定 8 bytes：
+首个可编码 metadata record 为 CaptureScope。payload 固定 8 bytes：
 started_at_process_start uint8、preexisting_allocations_unknown uint8、reserved byte[6]。
 两个布尔值只接受 0/1；process-start capture 不得同时声明 preexisting allocations unknown。
 
@@ -207,7 +206,7 @@ ModuleUnload payload 为 16 bytes，完整 record 为 24 bytes：
 | 0 | module_id | uint64 | 必须引用当前 live generation |
 | 8 | monotonic_ticks | uint64 | 不早于对应 load |
 
-P5.6 Windows writer 在 hook 安装前记录初始模块并用 loader 通知追加代次；详细安全边界见
+Windows writer 在 hook 安装前记录初始模块并用 loader 通知追加代次；详细安全边界见
 [MODULE_TRACKING.md](MODULE_TRACKING.md)。
 
 ## 9. Stack records
@@ -246,7 +245,7 @@ V1 StackDefinition 的固定 payload 为 16 bytes，随后每帧 32 bytes；完�
 | 24 | flags | uint32 | V1 必须为 0 |
 | 28 | reserved | uint32 | 必须为 0 |
 
-complete/truncated 必须至少有一帧；unwind_failed/unavailable 必须为零帧。P5.6 Windows writer
+complete/truncated 必须至少有一帧；unwind_failed/unavailable 必须为零帧。Windows writer
 命中已知 module range 时写 generation 和相对 offset；未知/JIT frame 仍写 `module_id=0`、
 `module_offset=0` 并保留绝对地址。
 writer 总是在引用某个新 stack_id 的 Event chunk 之前写出相应 StackDefinition chunk。
@@ -265,7 +264,7 @@ stack dictionary 有独立内存上限。达到上限时：
 - 已写入的 definition 永不被覆盖。
 - 允许同一帧序列在不同 dictionary segment 获得不同 ID。
 
-P4.7 dictionary 以完整原始帧数组解决 hash 碰撞；segment reset 只释放进程内索引，stack_id 全局
+dictionary 以完整原始帧数组解决 hash 碰撞；segment reset 只释放进程内索引，stack_id 全局
 单调递增，已经落盘的 definition 不会重写或复用。
 
 ## 10. Event 公共字段
@@ -471,7 +470,7 @@ presence bit 0/1/2 分别表示 count/sequence/tick 是否存在；缺省字段�
 
 任一影响生命周期的维度存在时，outstanding 结果标记 incomplete，默认退出码为 2。
 
-P2.6 将完整性问题保存为 uint32 bit mask：
+完整性问题以 uint32 bit mask 保存：
 
 | bit | issue | lifecycle | stack detail | understanding |
 |---:|---|:---:|:---:|:---:|
@@ -504,7 +503,7 @@ Statistics：
 - written uncompressed/compressed bytes。
 - per-API counts。
 
-P2.6 校验 successful+failed=observed、filtered+dropped<=observed、per-API ID 唯一且汇总值
+analyzer 校验 successful+failed=observed、filtered+dropped<=observed、per-API ID 唯一且汇总值
 与 aggregate 完全一致；计数求和必须检查 uint64 overflow。
 
 V1 CaptureStatistics payload 固定前缀为 80 bytes：9 个 aggregate uint64、per_api_count
@@ -543,7 +542,7 @@ final_monotonic_ticks 必须大于等于 FileHeader.monotonic_origin。
   uncompressed_size/stored_size 同时为零或同时非零。
 - codec 不支持时返回格式不支持错误，不猜测内容。
 
-P4.7 Windows writer 对数据 chunk 使用所选 codec；最后的 Loss、Statistics 和 EndOfTrace 使用
+Windows writer 对数据 chunk 使用所选 codec；最后的 Loss、Statistics 和 EndOfTrace 使用
 none。终止记录较小，固定为 none 可给文件尾保留空间建立不依赖压缩 bound 的硬上限证明。
 
 ## 16. Rotation
@@ -567,12 +566,12 @@ reader 将 trace 视为不可信输入：
 - trace 内 URL 不触发联网。
 - fuzz target 覆盖 header、chunk、record、compression 和生命周期状态机。
 
-P2.5 reader 默认限制：file/chunk header 各 64 KiB、stored chunk 17 MiB、uncompressed
+reader 默认限制：file/chunk header 各 64 KiB、stored chunk 17 MiB、uncompressed
 chunk 16 MiB、最大展开比例 65536:1。所有长度在分配和解压前验证；调用方可以进一步收紧。
 
 ## 18. 合成 trace fixture
 
-P2.7 提供仅供测试使用的 SyntheticTraceBuilder，以正式 TraceWriter 和 V1 record codec 生成
+提供仅供测试使用的 SyntheticTraceBuilder，以正式 TraceWriter 和 V1 record codec 生成
 fixture，再用正式 TraceReader 和 decoder 验证，不维护第二套 wire-format 实现。
 
 生成规则：

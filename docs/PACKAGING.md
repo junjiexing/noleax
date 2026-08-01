@@ -1,9 +1,7 @@
 # Noleax Windows x64 打包
 
-> 状态：P8.6 release-candidate packaging gate
 
-V1 使用 CMake install 与 CPack ZIP 生成自包含目录。Noleax 以 MIT License 发布；包内容的公开
-分发范围（clean-machine 验收、签名策略）仍由 RELEASE_CHECKLIST.md 管控。
+V1 使用 CMake install 与 CPack ZIP 生成自包含目录。Noleax 以 MIT License 发布。
 
 ## 生成本地包
 
@@ -59,8 +57,8 @@ pwsh -NoProfile -File .\scripts\Test-NoleaxPackage.ps1 -SkipBuild
 5. 从 staging 执行 version、doctor、真实 NT Heap capture 和两种 analyze 示例。
 6. 生成 ZIP 和 SHA-256 companion，解压到新目录后重复布局、依赖和端到端工作流。
 
-这证明包不依赖构建树中的 Noleax DLL；测试 workload 仍由测试构建提供。最终 clean-machine/VM 的人工
-验收属于 P8.7，并应在未安装 Visual Studio 的 Windows x64 环境中执行。
+这证明包不依赖构建树中的 Noleax DLL；测试 workload 仍由测试构建提供。发布到干净环境前，应在
+未安装 Visual Studio 的 Windows x64 机器上做一次人工验证。
 
 ## CI 发布
 

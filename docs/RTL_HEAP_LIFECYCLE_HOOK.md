@@ -1,6 +1,5 @@
 # Windows RtlCreateHeap/RtlDestroyHeap Hook
 
-> 状态：P5.3 Windows x64 全部门禁完成
 > 范围：NT Heap create/destroy adapter、HeapId generation、五 hook 组合与安全卸载
 
 ## 1. ABI 与原始事件
@@ -24,7 +23,7 @@ PVOID NTAPI RtlDestroyHeap(PVOID heap);
 `__finally` 保证异常路径也释放 fixed TEB guard 与 replacement in-flight；第一遍 filter 只写固定事件
 并继续搜索。
 
-P5.5 扩展后的统一 664-byte `RtlHeapEvent` 的 create 字段映射为：
+统一 664-byte `RtlHeapEvent` 的 create 字段映射为：
 
 | 字段 | 值 |
 |---|---|
@@ -86,11 +85,11 @@ destroy 的危险输入在隔离子进程中比较 baseline/hooked：
 这些值用于本机证据；正式断言以 baseline/hooked 相等为核心，避免把 OS 或 verifier 版本差异误判成
 hook 行为。
 
-## 5. 自动门禁
+## 5. 自动验证
 
-P5.3 结果：
+验证结果：
 
-| 门禁 | 结果 |
+| 验证项 | 结果 |
 |---|---:|
 | Debug 全量 | 189/189 |
 | Release 全量 | 189/189 |
@@ -99,7 +98,7 @@ P5.3 结果：
 | allocate/reallocate/free/lifecycle race | 各 100/100 |
 | MD/MT 8×20,000×2 差分 | 3/3 |
 | AppVerifier/Full Page Heap workload、race、trace、contract | 各 3/3 |
-| 本轮 IFEO key 清理 | 12/12 |
+| IFEO key 清理 | 12/12 |
 
 ~~~powershell
 .\scripts\Test-WindowsHookHardening.ps1 -SkipApplicationVerifier -RequireCetRuntime
@@ -108,5 +107,5 @@ P5.3 结果：
 .\scripts\Test-WindowsHookHardening.ps1 -RequireCetRuntime
 ~~~
 
-P5.7 已启用 `windows-nt-heap` 与 `windows-native` 产品 profile，并通过九 API 共享队列、过滤统计、
-逻辑停录和完整 trace 回读门禁。详见 [WINDOWS_HOOK_PROFILES.md](WINDOWS_HOOK_PROFILES.md)。
+`windows-nt-heap` 与 `windows-native` 产品 profile 已启用，并通过九 API 共享队列、过滤统计、
+逻辑停录和完整 trace 回读验证。详见 [WINDOWS_HOOK_PROFILES.md](WINDOWS_HOOK_PROFILES.md)。

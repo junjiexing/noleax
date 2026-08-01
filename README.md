@@ -5,8 +5,8 @@ DLL 注入目标进程，hook 内存分配 API，将 alloc/realloc/free、heap l
 事件连同原始调用栈写入有界、可恢复的 trace 文件，再由内置 analyzer 离线过滤、聚合与符号化，
 用于定位内存泄漏和分析分配行为。
 
-当前支持 Windows x64（控制器与目标均为 x64）。项目处于 V1 release candidate 阶段：AI 技术门禁
-已完成，等待人工最终验收，尚未创建 tag 或发布二进制。
+当前支持 Windows x64（控制器与目标均为 x64）。以 MIT License 发布，发布包与滚动构建见
+GitHub Releases；尚未完成的能力见 [docs/ROADMAP.md](docs/ROADMAP.md)。
 
 ## 功能特性
 
@@ -301,18 +301,15 @@ noleax 自身成功时返回 0，目标进程退出码在摘要中以 `target_ex
 ## 文档
 
 - 快速上手与排错：[docs/QUICKSTART.md](docs/QUICKSTART.md)、[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
-- 完整参考：[docs/CLI.md](docs/CLI.md)、[docs/CONFIG.md](docs/CONFIG.md)、
-  [docs/TRACE_FORMAT.md](docs/TRACE_FORMAT.md)、[docs/CONSOLE_OUTPUT.md](docs/CONSOLE_OUTPUT.md)、
+- 命令与配置：[docs/CLI.md](docs/CLI.md)、[docs/CONFIG.md](docs/CONFIG.md)
+- 输出与格式：[docs/TRACE_FORMAT.md](docs/TRACE_FORMAT.md)、[docs/CONSOLE_OUTPUT.md](docs/CONSOLE_OUTPUT.md)、
   [docs/JSON_OUTPUT.md](docs/JSON_OUTPUT.md)、[docs/CSV_OUTPUT.md](docs/CSV_OUTPUT.md)、
-  [docs/SYMBOLIZATION.md](docs/SYMBOLIZATION.md)
-- 注入与 hook 设计：[docs/ENTRYPOINT_INJECTION.md](docs/ENTRYPOINT_INJECTION.md)、
+  [docs/SYMBOLIZATION.md](docs/SYMBOLIZATION.md)、[docs/TRACE_RECOVERY.md](docs/TRACE_RECOVERY.md)
+- 注入与 patch：[docs/ENTRYPOINT_INJECTION.md](docs/ENTRYPOINT_INJECTION.md)、
   [docs/THREAD_HIJACK_INJECTION.md](docs/THREAD_HIJACK_INJECTION.md)、
-  [docs/STATIC_PE_PATCH.md](docs/STATIC_PE_PATCH.md)、
-  [docs/RTL_ALLOCATE_HEAP_HOOK.md](docs/RTL_ALLOCATE_HEAP_HOOK.md)、
-  [docs/WINDOWS_HOOK_PROFILES.md](docs/WINDOWS_HOOK_PROFILES.md)、[docs/HOOK_API_MATRIX.md](docs/HOOK_API_MATRIX.md)
-- 发布：[docs/RELEASE_CANDIDATE.md](docs/RELEASE_CANDIDATE.md)、
-  [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md)、[docs/PACKAGING.md](docs/PACKAGING.md)
-- 开发计划与全部设计文档索引见 [docs/DEVELOPMENT_PLAN.md](docs/DEVELOPMENT_PLAN.md)。
+  [docs/STATIC_PE_PATCH.md](docs/STATIC_PE_PATCH.md)
+- 打包与发布：[docs/PACKAGING.md](docs/PACKAGING.md)
+- 尚未完成的能力：[docs/ROADMAP.md](docs/ROADMAP.md)
 
 ## License
 

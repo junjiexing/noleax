@@ -1,18 +1,17 @@
 # RtlAllocateHeap Hook Prototype
 
-> 状态：P5.7 Windows x64 完成；已接入 NT Heap/native 产品 profile 与热路径过滤
 > 范围：guarded raw-stack event queue 与后台 trace writer，可独立或参与五 hook 组合
 
 ## 1. 目的
 
-P4.3 首次在正式测试路径 hook `ntdll!RtlAllocateHeap`，验证 Hoox trampoline、精确 ABI、original
-发布顺序和卸载生命周期。P4.4 增加无分配 recursion/internal-thread guard，P4.5 为 outermost
-调用增加预分配 MPSC 原始事件队列，P4.6 在成功取得 queue slot 后捕获原始调用栈。replacement
-自身仍不写 trace；P4.7 由预先启动并标记为 internal 的后台线程消费队列、去重调用栈并写 trace。
-P4.8 已增加 replacement gate、并发 revert 和 fail-safe 模块生命周期。P4.9 增加 SEH-safe 清理、
-异常失败事件以及 CFG/CET hardened 门禁。
+该 adapter 在正式测试路径 hook `ntdll!RtlAllocateHeap`，验证 Hoox trampoline、精确 ABI、original
+发布顺序和卸载生命周期。它包含无分配 recursion/internal-thread guard、面向 outermost
+调用的预分配 MPSC 原始事件队列，并在成功取得 queue slot 后捕获原始调用栈。replacement
+自身仍不写 trace；由预先启动并标记为 internal 的后台线程消费队列、去重调用栈并写 trace。
+另有 replacement gate、并发 revert 和 fail-safe 模块生命周期、SEH-safe 清理、
+异常失败事件，以及 CFG/CET hardened 验证。
 
-P5.3 保留原 allocate-only 构造方式并统一 raw event；P5.5 加入 NT VM 与 section 字段后当前为 664-byte
+保留原 allocate-only 构造方式并统一 raw event；加入 NT VM 与 section 字段后当前为 664-byte
 `RtlHeapEvent`。heap 组合路径由
 `RtlHeapHooks` 让 create/allocate/reallocate/free/destroy 引用同一个 queue，跨 API 共用唯一
 sequence。生命周期语义见 [RTL_FREE_HEAP_HOOK.md](RTL_FREE_HEAP_HOOK.md)、
@@ -48,7 +47,7 @@ original；backend 自身在步骤 2 中发生的分配仍走未 hook 的原函�
 
 ## 3. 合同测试拓扑
 
-P4.1 的两个 workload executable 不链接 Hoox 或 agent。P4.3 新增独立 MD harness DLL，显式导出
+两个 workload executable 不链接 Hoox 或 agent。独立 MD harness DLL 显式导出
 install/call-count/stop；同一 executable 通过可选 `--hook-harness DLL` 参数决定是否加载它：
 
 ~~~text
@@ -98,16 +97,15 @@ ID。Noleax 正常路径没有 allocator、文件、loader、日志、符号或�
 
 writer 以 empty、normal、2-slot queue-limit、8 KiB file-limit 和 exception 五种模式验证。每个
 生成文件均由正式 EventStream 回读，检查 StackDefinition 引用、Loss、统计守恒、终止记录和文件
-硬上限；exception 模式额外检查 NTSTATUS failure event 和 SEH stack-detail Loss。P5.3 当前
+硬上限；exception 模式额外检查 NTSTATUS failure event 和 SEH stack-detail Loss。
 Debug/Release 全量各 189 项通过。writer 重复压力和完整说明见
 [TRACE_WRITER.md](TRACE_WRITER.md)。
 
-P4.9 的隔离进程 SEH 合同确认 baseline/hooked 都抛出 `STATUS_NO_MEMORY (0xc0000017)`，exception
+隔离进程 SEH 合同确认 baseline/hooked 都抛出 `STATUS_NO_MEMORY (0xc0000017)`，exception
 flags/parameters 一致，且 `LastError` 同为 8。异常 unwind 后 hook depth 和 replacement in-flight
-均为零，下一次普通 allocation 仍被记录，hook 可正常 quiesce/shutdown。P5.3 hardened 产物全量
+均为零，下一次普通 allocation 仍被记录，hook 可正常 quiesce/shutdown。hardened 产物全量
 206/206 通过，17 个真实 PE 都包含 CFG/CET 标记；当前机器的四个 hook quiescence 进程均报告
-`cfg=1, cet=1`，四组 race 各 100 次及 MD/MT 8×20,000×2 三轮长差分通过。详见
-[WINDOWS_HOOK_HARDENING.md](WINDOWS_HOOK_HARDENING.md)。
+`cfg=1, cet=1`，四组 race 各 100 次及 MD/MT 8×20,000×2 三轮长差分通过。
 
 运行方法：
 
@@ -121,7 +119,7 @@ ctest --preset windows-x64-release -L passthrough --repeat until-fail:20
 
 ## 5. 产品边界
 
-P5.7 已补齐 section-view、模块 generation、registry、过滤与组合 trace，并启用
+section-view、模块 generation、registry、过滤与组合 trace 均已齐备，并启用
 `windows-nt-heap`/`windows-native` profile。产品停止先逻辑停录和 final drain，目标 worker 停止后
 才物理 revert；完整生命周期见 [HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)，profile 语义见
 [WINDOWS_HOOK_PROFILES.md](WINDOWS_HOOK_PROFILES.md)。

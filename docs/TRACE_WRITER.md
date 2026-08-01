@@ -1,6 +1,5 @@
 # Windows Memory Background Trace Writer
 
-> 状态：P5.7 Windows x64 产品 profile、过滤与统计完成
 > 范围：进程内 trace、heap/allocation/mapping generation 配对和安全停止
 
 ## 1. 目标与边界
@@ -29,7 +28,7 @@
 
 ## 2. 共享队列与跨 API 顺序
 
-独立 heap-only 或 VM-only 模式各使用一个预分配 queue。P5.7 的 `windows-native` 产品 profile 让五个
+独立 heap-only 或 VM-only 模式各使用一个预分配 queue。`windows-native` 产品 profile 让五个
 NT Heap hook 与五个 NT memory 物理入口共用同一个 queue。统一的 664-byte `RtlHeapEvent` 通过
 operation 区分九种逻辑 API，并包含所需参数、raw result、异常状态和定长栈。成功 reservation 时分配
 唯一 sequence，因此完整 native profile 中不同线程、不同 API 的生命周期顺序不依赖可能倒退或相同的
@@ -148,7 +147,7 @@ trace-full。
 ## 7. 自动验证
 
 原 allocate-only 集成测试继续覆盖 empty、normal、queue-limit、file-limit 和 exception 五种模式。
-P5.3 组合测试另覆盖：
+组合测试另覆盖：
 
 - writer 拒绝两个独立 queue；
 - matched allocate/free 共享 allocation_id；
@@ -161,18 +160,18 @@ P5.3 组合测试另覆盖：
 - 五组 ApiStatistics、aggregate Statistics、EventStream 数量和 completeness 一致；
 - queue/trace dropped 均为零的正常组合路径。
 
-P5.4 VM trace 另覆盖 reserve/commit/decommit/release、preexisting、失败 NTSTATUS、真实 remote child、
+VM trace 另覆盖 reserve/commit/decommit/release、preexisting、失败 NTSTATUS、真实 remote child、
 outstanding generation、MappingId 复用、两组 ApiStatistics 以及正式 EventStream/GenerationTracker 回读。
 
-P5.5 增加两组逻辑 ApiStatistics。local map 创建独立 MappingId，view 内地址 unmap 规范化为基址；
+section map/unmap 增加两组逻辑 ApiStatistics。local map 创建独立 MappingId，view 内地址 unmap 规范化为基址；
 remote 不创建 ID，未知成功 unmap 按 CaptureScope 归类为 preexisting/unmatched。pagefile/file-backed、
 多 view、wrapper、remote 与 outstanding 均经正式 EventStream/GenerationTracker 回读。
 
-P5.6 增加初始模块快照、固定 loader-notification queue、PE/CodeView identity、ModuleLoad/Unload codec
+模块跟踪增加初始模块快照、固定 loader-notification queue、PE/CodeView identity、ModuleLoad/Unload codec
 和 generation-aware stack dictionary。真实 fixture 覆盖 unload/reload、同基址复用、相同绝对 PC 的
 不同 StackId，以及模块卸载后的离线符号化。详见 [MODULE_TRACKING.md](MODULE_TRACKING.md)。
 
-P5.7 增加 profile 构造方式和九 API 单 queue 端到端测试。测试在持续 heap/VM worker 与线程 churn
+另覆盖 profile 构造方式和九 API 单 queue 端到端测试。测试在持续 heap/VM worker 与线程 churn
 下先逻辑停录，确认九组 recordable counter 冻结；writer 在物理 revert 前结束，目标 worker 停止后
 才 uninstall。三种 creation-side filter、每 API/aggregate Statistics、九个 API ID、GenerationTracker
 和 EndOfTrace 均由正式 decoder 校验。
@@ -182,8 +181,7 @@ P5.7 增加 profile 构造方式和九 API 单 queue 端到端测试。测试在
 [RTL_REALLOCATE_HEAP_HOOK.md](RTL_REALLOCATE_HEAP_HOOK.md) 及
 [RTL_HEAP_LIFECYCLE_HOOK.md](RTL_HEAP_LIFECYCLE_HOOK.md) 及
 [NT_VIRTUAL_MEMORY_HOOK.md](NT_VIRTUAL_MEMORY_HOOK.md) 及
-[NT_SECTION_VIEW_HOOK.md](NT_SECTION_VIEW_HOOK.md) 及
-[WINDOWS_HOOK_HARDENING.md](WINDOWS_HOOK_HARDENING.md)。
+[NT_SECTION_VIEW_HOOK.md](NT_SECTION_VIEW_HOOK.md)。
 
 ~~~powershell
 . .\scripts\Enter-NoleaxDevShell.ps1

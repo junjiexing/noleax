@@ -1,13 +1,12 @@
 # Noleax Console 输出
 
-> 状态：P6.7 formatter、元数据与公开 CLI 完成
 > 日期：2026-07-29
 
 ## 1. 目标与边界
 
 console 输出面向人工诊断，不作为机器可解析的稳定 schema。JSON 和 CSV 分别提供版本化或固定列的
-机器接口。P3.5 提供 ConsoleWriter、`analyze_events_to_console` 和
-`analyze_outstanding_to_console`；P6.7 已通过公共调度接入文件、退出码和 Module/Stack resolver，
+机器接口。实现提供 ConsoleWriter、`analyze_events_to_console` 和
+`analyze_outstanding_to_console`；二者已通过公共调度接入文件、退出码和 Module/Stack resolver，
 避免为每种格式复制分析状态机。
 
 events 管线边读 trace 边写匹配事件和 Loss，不缓存全部事件。outstanding 管线复用窗口分析器，只

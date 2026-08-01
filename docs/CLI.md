@@ -1,6 +1,5 @@
 # Noleax CLI 规范
 
-> 状态：P8.5 Windows x64 V1 release candidate
 > schema version：1
 
 ## 1. 命令结构
@@ -65,9 +64,9 @@ noleax run [capture-options] [injection-options] -- target [args...]
 - entrypoint-code
 - static-pe-patch
 
-P7C Windows x64 全部方法均已实现。`static-pe-patch` 要求目标是 `noleax patch` 生成的副本；
+全部四种 run 注入方法均已实现。`static-pe-patch` 要求目标是 `noleax patch` 生成的副本；
 未打补丁的目标在执行前以退出码 1 拒绝，patched 副本的捕获语义见
-[STATIC_PE_PATCH.md](STATIC_PE_PATCH.md) 与 [ADR 0004](adr/0004-static-pe-patch-run-semantics.md)。
+[STATIC_PE_PATCH.md](STATIC_PE_PATCH.md)。
 
 **默认（agent 直写）**：控制器把有效捕获配置写成会话 TOML 经 bootstrap 参数传入，注入后
 agent 自行启动记录并直写 trace；`--capture-duration` 由 agent 到点自行 finalize（quiescence、
@@ -106,7 +105,7 @@ noleax attach --pid PID [capture-options] [injection-options]
 - remote-thread
 - thread-hijack
 
-P7B Windows x64 已实现两者（`entrypoint-code` 仅适用于 launch，attach 选择它会被配置校验
+两种 attach 注入方法均已实现（`entrypoint-code` 仅适用于 launch，attach 选择它会被配置校验
 拒绝），且 `--unload-on-stop` 当前只接受 false。attach 成功不表示
 trace 完整；分析输出必须标记注入前分配未知。默认模式（agent 直写）下
 `--capture-duration` 由 agent 自行执行，无 duration 时记录到目标退出；attach 的退出码同样由
@@ -147,7 +146,7 @@ on-trace-full：
 - stop
 - rotate
 
-P6 已实现单文件 `stop`，保证输出不超过 `max_file_size`；`rotate` 和 `max_files > 1` 在跨文件分析
+当前实现单文件 `stop`，保证输出不超过 `max_file_size`；`rotate` 和 `max_files > 1` 在跨文件分析
 协议完成前返回 5，不会静默降级。
 
 compression：
@@ -202,7 +201,7 @@ noleax analyze [options] trace...
 
 trace operand 存在时整体覆盖 analysis.inputs。
 
-P6.7 每次执行接受一个 trace。传入多个文件会返回 5；rotation 文件的跨文件 sequence、module
+每次执行接受一个 trace。传入多个文件会返回 5；rotation 文件的跨文件 sequence、module
 generation 和机器输出 schema 在实现前不做猜测式拼接。
 
 | CLI | 配置键 | 默认值 |
