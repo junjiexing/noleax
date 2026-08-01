@@ -29,17 +29,37 @@ noleax-0.1.0-windows-x64/
     noleax.exe
     noleax-agent.dll
   docs/
+    quickstart.md
+    troubleshooting.md
+    cli.md
+    config.md
+    console-output.md
+    json-output.md
+    csv-output.md
+    trace-format.md
+    trace-recovery.md
+    symbolization.md
+    static-pe-patch.md
+    hook-profiles.md
+    roadmap.md
+    schema/
+      noleax-analysis-v1.schema.json
   examples/
   licenses/
   README.md
   BUILDING.md
   SECURITY.md
+  LICENSE
   THIRD_PARTY_NOTICES.md
 ~~~
 
 controller 和 agent 必须保持在同一个 `bin` 目录。Hoox、LZ4、Zstandard 与 MSVC runtime 静态链接；
 CLI11 与 toml++ 由头文件编译。`licenses/` 保存锁定 vcpkg baseline 的六份原始版权文本。两个 PE 的
 动态依赖必须全部由受支持 Windows 提供，包不携带第三方 DLL。
+
+`docs/` 只包含使用方法相关的文档（快速上手、排错、命令与配置、输出格式、符号化、trace 格式与
+恢复、静态 patch、hook profile、未完成能力），安装时重命名为小写 kebab 名；内部设计文档保留在
+仓库中，不随包发布。
 
 ## 自动 smoke
 
