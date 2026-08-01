@@ -240,6 +240,39 @@ TEST_CASE("patch rejects unsupported and malformed inputs", "[controller][pe-pat
     expect_rejection(mutated, PePatchError::kNotPe, "bad-sig");
   }
 
+  SECTION("entry point beyond the entry section raw data is rejected") {
+    auto mutated = source;
+    std::uint32_t entry_rva = 0U;
+    std::memcpy(&entry_rva, mutated.data() + layout.optional_offset + 16U, sizeof(entry_rva));
+    for (std::uint16_t index = 0U; index < layout.number_of_sections; ++index) {
+      const std::uint64_t entry = layout.section_table_offset + index * 40ULL;
+      std::uint32_t virtual_size = 0U;
+      std::uint32_t virtual_address = 0U;
+      std::uint32_t raw_size = 0U;
+      std::memcpy(&virtual_size, mutated.data() + entry + 8U, sizeof(virtual_size));
+      std::memcpy(&virtual_address, mutated.data() + entry + 12U, sizeof(virtual_address));
+      std::memcpy(&raw_size, mutated.data() + entry + 16U, sizeof(raw_size));
+      const std::uint64_t begin = virtual_address;
+      const std::uint64_t size = (std::max)(static_cast<std::uint64_t>(virtual_size),
+                                            static_cast<std::uint64_t>(raw_size));
+      if (entry_rva < begin || entry_rva >= begin + size) {
+        continue;
+      }
+      // Shrink the raw data so the entry RVA exists only virtually: still inside
+      // max(virtual_size, raw_size), but past the raw bytes the patcher would touch.
+      constexpr std::uint32_t shrunk = 0x200U;
+      poke(mutated, entry + 16U, shrunk);
+      poke(mutated, entry + 8U, (std::max)(virtual_size, shrunk + 0x200U));
+      poke(mutated, layout.optional_offset + 16U, virtual_address + shrunk + 0x40U);
+      expect_rejection(mutated, PePatchError::kMalformed, "virtual-tail-entry");
+      const auto input = directory / "virtual-tail-info.exe";
+      write_all(input, mutated);
+      CHECK_FALSE(noleax::controller::windows::read_static_patch_info(input).has_value());
+      return;
+    }
+    FAIL("test executable did not contain its entry point in a section");
+  }
+
   SECTION("truncated image is rejected") {
     auto mutated = source;
     mutated.resize(layout.pe_offset + 0x40U);  // inside the optional header

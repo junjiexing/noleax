@@ -827,7 +827,7 @@ void append_event_record(std::vector<std::byte>& chunk_payload, const Event& eve
                          std::uint32_t maximum_record_size) {
   validate_event(event);
   std::vector<std::byte> payload;
-  payload.reserve(kEventHeaderPayloadSize + 72U);
+  payload.reserve(kEventHeaderPayloadSize + 88U);
   append_event_header(payload, event.header);
   append_event_payload(payload, event.payload);
   append_record(chunk_payload, static_cast<std::uint16_t>(event_record_type(event.payload)),

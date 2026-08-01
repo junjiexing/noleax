@@ -30,9 +30,17 @@ struct SuspendedThread {
 }
 
 [[nodiscard]] std::vector<std::uint32_t> enumerate_threads(std::uint32_t process_id) {
-  const HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0U);
-  if (snapshot == INVALID_HANDLE_VALUE) {
-    fail("CreateToolhelp32Snapshot(threads)", GetLastError());
+  HANDLE snapshot = INVALID_HANDLE_VALUE;
+  // Toolhelp snapshots race thread/process churn; ERROR_BAD_LENGTH is transient per MSDN.
+  for (std::uint32_t attempt = 0U; attempt < 8U; ++attempt) {
+    snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0U);
+    if (snapshot != INVALID_HANDLE_VALUE) {
+      break;
+    }
+    const DWORD error = GetLastError();
+    if (error != ERROR_BAD_LENGTH || attempt + 1U == 8U) {
+      fail("CreateToolhelp32Snapshot(threads)", error);
+    }
   }
   std::vector<std::uint32_t> result;
   THREADENTRY32 entry{};
@@ -69,15 +77,17 @@ class ThreadSuspension::Impl final {
       throw ThreadSuspensionError{"thread suspension parameters are invalid",
                                   ERROR_INVALID_PARAMETER};
     }
-    suspend_until_stable();
-  }
-
-  ~Impl() {
-    for (auto iterator = suspended_.rbegin(); iterator != suspended_.rend(); ++iterator) {
-      static_cast<void>(ResumeThread(iterator->handle));
-      static_cast<void>(CloseHandle(iterator->handle));
+    try {
+      suspend_until_stable();
+    } catch (...) {
+      // The destructor does not run when a constructor throws: resume every thread that
+      // was already suspended instead of leaving them frozen for the process lifetime.
+      resume_and_close_all();
+      throw;
     }
   }
+
+  ~Impl() { resume_and_close_all(); }
 
   Impl(const Impl&) = delete;
   Impl& operator=(const Impl&) = delete;
@@ -85,6 +95,12 @@ class ThreadSuspension::Impl final {
   [[nodiscard]] std::size_t count() const noexcept { return suspended_.size(); }
 
  private:
+  void resume_and_close_all() noexcept {
+    for (auto iterator = suspended_.rbegin(); iterator != suspended_.rend(); ++iterator) {
+      static_cast<void>(ResumeThread(iterator->handle));
+      static_cast<void>(CloseHandle(iterator->handle));
+    }
+  }
   void suspend_until_stable() {
     constexpr std::uint32_t kMaximumSnapshots = 16U;
     for (std::uint32_t pass = 0U; pass < kMaximumSnapshots; ++pass) {

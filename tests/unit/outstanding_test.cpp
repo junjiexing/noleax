@@ -211,6 +211,12 @@ TEST_CASE("outstanding analysis validates its window against itself and the trac
     CHECK(result.outstanding.front().allocation_id == noleax::trace::AllocationId{1U});
   }
 
+  SECTION("a after c without b is rejected") {
+    std::istringstream input{encoded, std::ios::binary};
+    CHECK_THROWS_AS(noleax::analyzer::analyze_outstanding(input, {10ns, std::nullopt, 5ns}),
+                    noleax::analyzer::OutstandingAnalysisError);
+  }
+
   SECTION("empty window") {
     const auto result = analyze(encoded, {10ns, 10ns, 10ns});
     CHECK(result.candidate_count == 0U);

@@ -207,6 +207,14 @@ struct PeImage {
   reject(PePatchError::kMalformed, "the entry point is not inside any section");
 }
 
+// The entry probe reads 4 bytes (endbr64 check) and the patch writes kEntryPatchSize
+// bytes at up to 4 bytes past the entry: both must stay inside the section's raw data.
+[[nodiscard]] bool entry_has_raw_room(const Section& entry, std::uint64_t entry_rva) {
+  const std::uint64_t entry_offset = entry_rva - entry.virtual_address;
+  return entry_offset <= entry.raw_size &&
+         4U + pepatch::kEntryPatchSize <= entry.raw_size - entry_offset;
+}
+
 void validate_patchable(const PeImage& image, std::uint64_t file_size, bool allow_break_signature) {
   if (image.machine != kMachineAmd64) {
     reject(PePatchError::kNotX64, "only native x64 (AMD64) images are supported");
@@ -236,6 +244,9 @@ void validate_patchable(const PeImage& image, std::uint64_t file_size, bool allo
   const Section& entry = entry_section(image);
   if (entry.raw_size == 0U) {
     reject(PePatchError::kPacked, "the entry section has no raw data (packed image?)");
+  }
+  if (!entry_has_raw_room(entry, image.entry_rva)) {
+    reject(PePatchError::kMalformed, "the entry point is outside the entry section's raw data");
   }
   if ((entry.characteristics & kScnMemExecute) == 0U) {
     reject(PePatchError::kMalformed, "the entry section is not executable");
@@ -564,6 +575,9 @@ std::optional<StaticPatchInfo> read_static_patch_info(const std::filesystem::pat
       }
       // The entry must carry our direct jump into the bootstrap section.
       const Section& entry = entry_section(image);
+      if (!entry_has_raw_room(entry, image.entry_rva)) {
+        return std::nullopt;
+      }
       const std::uint64_t entry_raw = entry_raw_offset(image, entry);
       std::uint32_t first_bytes = 0U;
       std::memcpy(&first_bytes, data.data() + entry_raw, sizeof(first_bytes));

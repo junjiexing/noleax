@@ -606,6 +606,10 @@ void standalone_report(const std::string& message) noexcept {
 
 void install_exit_process_hook(noleax::agent::HookBackend& backend) noexcept;
 
+// Shared single-slot guard for every finalize entry point (duration worker, ExitProcess
+// hook, DLL_PROCESS_DETACH fallback).
+extern std::atomic<bool> exit_finalize_started;
+
 // Returns the configuration path: the sentinel pipe name means patch-style discovery
 // (environment or sibling file); any other bootstrap pipe name is the controller-provided
 // configuration file and also requests the named ready event handshake.
@@ -665,8 +669,13 @@ DWORD WINAPI standalone_worker(void* parameter) noexcept {
       Sleep(sleep_ms.count() >= static_cast<long long>((std::numeric_limits<DWORD>::max)())
                 ? (std::numeric_limits<DWORD>::max)() - 1U
                 : static_cast<DWORD>(sleep_ms.count()));
-      runtime->finalize_timed();
-      static_cast<void>(standalone_runtime.exchange(nullptr, std::memory_order_acq_rel));
+      // Claim the single finalize slot and take the pointer out of standalone_runtime up
+      // front: a detach or the exit hook can then never see a live object through it,
+      // even if finalize_timed throws and this unique_ptr is destroyed.
+      if (!exit_finalize_started.exchange(true, std::memory_order_acq_rel)) {
+        static_cast<void>(standalone_runtime.exchange(nullptr, std::memory_order_acq_rel));
+        runtime->finalize_timed();
+      }
     }
     static_cast<void>(runtime.release());
     close_event();
@@ -704,13 +713,13 @@ void standalone_finalize() noexcept {
 using ExitProcessFunction = void(NTAPI*)(long);
 
 std::atomic<bool> exit_finalize_started{false};
-std::atomic<ExitProcessFunction> original_exit_process{nullptr};
+noleax::agent::OriginalTrampolineSlot exit_process_trampoline{nullptr};
 std::atomic<bool> exit_hook_install_attempted{false};
 
 void standalone_finalize_graceful() noexcept {
   try {
-    auto* runtime =
-        static_cast<CaptureRuntime*>(standalone_runtime.load(std::memory_order_acquire));
+    auto* runtime = static_cast<CaptureRuntime*>(
+        standalone_runtime.exchange(nullptr, std::memory_order_acq_rel));
     if (runtime != nullptr) {
       runtime->finalize_graceful();
     }
@@ -722,7 +731,8 @@ void NTAPI replacement_exit_process(long exit_code) {
   if (!exit_finalize_started.exchange(true, std::memory_order_acq_rel)) {
     standalone_finalize_graceful();
   }
-  const ExitProcessFunction original = original_exit_process.load(std::memory_order_acquire);
+  const ExitProcessFunction original = reinterpret_cast<ExitProcessFunction>(
+      exit_process_trampoline.load(std::memory_order_acquire));
   if (original != nullptr) {
     original(exit_code);
   }
@@ -741,15 +751,15 @@ void install_exit_process_hook(noleax::agent::HookBackend& backend) noexcept {
     if (target == nullptr) {
       throw std::runtime_error{"RtlExitUserProcess is unavailable"};
     }
-    const auto installed =
-        backend.install_fast_forced(target, reinterpret_cast<void*>(&replacement_exit_process));
+    // The trampoline slot is written inside the install transaction, before the hook is
+    // activated, so the replacement can never observe an active hook without its original.
+    const auto installed = backend.install_fast_forced(
+        target, reinterpret_cast<void*>(&replacement_exit_process), &exit_process_trampoline);
     if (!installed.installed()) {
       throw std::runtime_error{
           "hook install failed: " +
           std::string{noleax::agent::hook_install_status_name(installed.status)}};
     }
-    original_exit_process.store(reinterpret_cast<ExitProcessFunction>(installed.original),
-                                std::memory_order_release);
   } catch (const std::exception& error) {
     standalone_report(std::string{"exit hook unavailable, detach finalize only: "} + error.what());
   }

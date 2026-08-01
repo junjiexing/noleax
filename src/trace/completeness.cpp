@@ -5,6 +5,7 @@
 #include <limits>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 
 namespace noleax::trace {
 namespace {
@@ -173,15 +174,14 @@ void validate_statistics(const CaptureStatistics& statistics) {
   std::uint64_t failed = 0U;
   std::uint64_t filtered = 0U;
   std::uint64_t dropped = 0U;
+  std::unordered_set<std::uint32_t> seen_api_ids;
   for (std::size_t index = 0; index < statistics.per_api.size(); ++index) {
     const auto& api = statistics.per_api[index];
     if (api.api_id == 0U) {
       throw CompletenessValidationError{"per-API statistics require a nonzero api_id"};
     }
-    for (std::size_t previous = 0; previous < index; ++previous) {
-      if (statistics.per_api[previous].api_id == api.api_id) {
-        throw CompletenessValidationError{"per-API statistics contain a duplicate api_id"};
-      }
+    if (!seen_api_ids.insert(api.api_id).second) {
+      throw CompletenessValidationError{"per-API statistics contain a duplicate api_id"};
     }
     validate_call_counts(api.observed_calls, api.successful_operations, api.failed_operations,
                          api.filtered_before_queue, api.dropped_events, "per-API");

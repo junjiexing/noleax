@@ -371,10 +371,21 @@ class EntrypointInjection::Impl final {
     // being torn down anyway make sure the entry bytes are original.
     try {
       write_remote(patch_.patch_va, original_bytes_.data(), original_bytes_.size());
-      DWORD previous = 0U;
-      protect_remote(process_, patch_.patch_va, patch_.patch_length, patch_.original_protection,
-                     &previous);
-      flush_remote(process_, patch_.patch_va, patch_.patch_length);
+      std::uint32_t stub_restored = 0U;
+      try {
+        data_memory_->read_at(offsetof(EntryStubData, restored), &stub_restored,
+                              sizeof(stub_restored));
+      } catch (...) {
+      }
+      // Re-protecting to the original (read-execute) protection is only safe once the
+      // stub finished its own restore: its rep-movsb needs the page writable, and if the
+      // stub is still running, restoring protection now would crash it with an AV.
+      if (stub_restored != 0U) {
+        DWORD previous = 0U;
+        protect_remote(process_, patch_.patch_va, patch_.patch_length, patch_.original_protection,
+                       &previous);
+        flush_remote(process_, patch_.patch_va, patch_.patch_length);
+      }
       restored_ = true;
     } catch (...) {
     }

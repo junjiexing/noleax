@@ -59,6 +59,11 @@ class TraceMetadata::Impl final {
     if (scanned_) {
       throw TraceAnalysisError{"trace metadata has already been scanned"};
     }
+    // A failed scan leaves the instance reusable but must not keep partial state from the
+    // previous trace (module/stack id spaces overlap heavily across traces).
+    modules_.clear();
+    stacks_.clear();
+    file_header_ = noleax::trace::FileHeader{};
     EventStreamCallbacks callbacks;
     callbacks.on_file_header = [this](const noleax::trace::FileHeader& header) {
       file_header_ = header;

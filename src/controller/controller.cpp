@@ -524,69 +524,87 @@ SuspendedProcess launch_agent_capture(const LaunchOptions& launch, const Capture
   validate_capture_options(capture);
   SuspendedProcess process =
       SuspendedProcess::create(launch.executable, launch.arguments, launch.working_directory);
-  const auto bootstrap = make_agent_bootstrap(agent_config);
-  if (capture.method == InjectionMethod::kThreadHijack) {
-    ReadyEvent ready{agent_config};
-    ThreadHijack hijack{process.process_handle(),
-                        process.process_id(),
-                        capture.agent_path,
-                        bootstrap,
-                        {process.main_thread_handle(), true}};
-    hijack.start();
-    try {
+  try {
+    const auto bootstrap = make_agent_bootstrap(agent_config);
+    if (capture.method == InjectionMethod::kThreadHijack) {
+      ReadyEvent ready{agent_config};
+      ThreadHijack hijack{process.process_handle(),
+                          process.process_id(),
+                          capture.agent_path,
+                          bootstrap,
+                          {process.main_thread_handle(), true}};
+      hijack.start();
+      try {
+        ready.wait(capture.timeout);
+      } catch (...) {
+        hijack.abort();
+        throw;
+      }
+      static_cast<void>(hijack.finish(capture.timeout));
+      process.note_main_thread_resumed();
+    } else if (capture.method == InjectionMethod::kEntrypointCode) {
+      EntrypointInjection injection{process.process_handle(), process.process_id(),
+                                    launch.executable.filename().native(), capture.agent_path,
+                                    bootstrap};
+      ReadyEvent ready{agent_config};
+      process.resume_main_thread();
+      process.note_main_thread_resumed();
+      try {
+        ready.wait(capture.timeout);
+      } catch (const std::exception& wait_error) {
+        const std::string detail = injection.describe_failure();
+        injection.abort();
+        throw ControllerError{std::string{"agent readiness failed after entrypoint bootstrap: "} +
+                              wait_error.what() + " (" + detail + ")"};
+      }
+      static_cast<void>(injection.finish(capture.timeout));
+    } else if (capture.method == InjectionMethod::kStaticPePatch) {
+      const auto patch_info = read_static_patch_info(launch.executable);
+      if (!patch_info.has_value()) {
+        throw ControllerError{
+            "the target is not a noleax-patched executable; create one with 'noleax patch' first",
+            ERROR_BAD_EXE_FORMAT};
+      }
+      const auto image = injection::find_remote_image_by_memory(
+          static_cast<HANDLE>(process.process_handle()), launch.executable.filename().native());
+      if (!image.has_value()) {
+        throw ControllerError{"cannot locate the main image inside the target process",
+                              ERROR_MOD_NOT_FOUND};
+      }
+      const auto params_address =
+          injection::checked_remote_address(image->base, patch_info->params_rva);
+      SIZE_T written = 0U;
+      if (WriteProcessMemory(static_cast<HANDLE>(process.process_handle()),
+                             std::bit_cast<LPVOID>(params_address), &bootstrap, sizeof(bootstrap),
+                             &written) == FALSE ||
+          written != sizeof(bootstrap)) {
+        const DWORD error = GetLastError();
+        throw ControllerError{
+            "cannot pass bootstrap parameters to the patched target (Windows error " +
+                std::to_string(error) + ")",
+            error};
+      }
+      ReadyEvent ready{agent_config};
+      process.resume_main_thread();
+      process.note_main_thread_resumed();
       ready.wait(capture.timeout);
-    } catch (...) {
-      hijack.abort();
-      throw;
+    } else if (capture.method == InjectionMethod::kRemoteThread) {
+      ReadyEvent ready{agent_config};
+      static_cast<void>(inject_remote_thread(process.process_handle(), process.process_id(),
+                                             capture.agent_path, bootstrap, capture.timeout));
+      ready.wait(capture.timeout);
+      process.resume_main_thread();
+    } else {
+      throw ControllerError{"the selected injection method is not implemented for launch",
+                            ERROR_NOT_SUPPORTED};
     }
-    static_cast<void>(hijack.finish(capture.timeout));
-    process.note_main_thread_resumed();
-  } else if (capture.method == InjectionMethod::kEntrypointCode) {
-    EntrypointInjection injection{process.process_handle(), process.process_id(),
-                                  launch.executable.filename().native(), capture.agent_path,
-                                  bootstrap};
-    process.resume_main_thread();
-    process.note_main_thread_resumed();
-    static_cast<void>(injection.finish(capture.timeout));
-  } else if (capture.method == InjectionMethod::kStaticPePatch) {
-    const auto patch_info = read_static_patch_info(launch.executable);
-    if (!patch_info.has_value()) {
-      throw ControllerError{
-          "the target is not a noleax-patched executable; create one with 'noleax patch' first",
-          ERROR_BAD_EXE_FORMAT};
-    }
-    const auto image = injection::find_remote_image_by_memory(
-        static_cast<HANDLE>(process.process_handle()), launch.executable.filename().native());
-    if (!image.has_value()) {
-      throw ControllerError{"cannot locate the main image inside the target process",
-                            ERROR_MOD_NOT_FOUND};
-    }
-    const auto params_address =
-        injection::checked_remote_address(image->base, patch_info->params_rva);
-    SIZE_T written = 0U;
-    if (WriteProcessMemory(static_cast<HANDLE>(process.process_handle()),
-                           std::bit_cast<LPVOID>(params_address), &bootstrap, sizeof(bootstrap),
-                           &written) == FALSE ||
-        written != sizeof(bootstrap)) {
-      const DWORD error = GetLastError();
-      throw ControllerError{
-          "cannot pass bootstrap parameters to the patched target (Windows error " +
-              std::to_string(error) + ")",
-          error};
-    }
-    process.resume_main_thread();
-    process.note_main_thread_resumed();
-  } else if (capture.method == InjectionMethod::kRemoteThread) {
-    ReadyEvent ready{agent_config};
-    static_cast<void>(inject_remote_thread(process.process_handle(), process.process_id(),
-                                           capture.agent_path, bootstrap, capture.timeout));
-    ready.wait(capture.timeout);
-    process.resume_main_thread();
-  } else {
-    throw ControllerError{"the selected injection method is not implemented for launch",
-                          ERROR_NOT_SUPPORTED};
+    return process;
+  } catch (...) {
+    // Mirror CaptureSession::launch: a launch that failed before returning must not leak a
+    // suspended, unrecoverable process.
+    process.terminate(1U);
+    throw;
   }
-  return process;
 }
 
 AgentProcessHandle attach_agent_capture(std::uint32_t process_id, const CaptureOptions& capture,

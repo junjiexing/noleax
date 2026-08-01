@@ -766,8 +766,7 @@ void JsonWriter::write_event_stacks(const EventsStacksResult& result, const Anal
   json.raw(",\"free_bytes\":");
   json.unsigned_number(total_free_bytes);
   json.raw(",\"net_bytes\":");
-  json.signed_number(static_cast<std::int64_t>(total_alloc_bytes) -
-                     static_cast<std::int64_t>(total_free_bytes));
+  json.signed_number(saturating_net_bytes(total_alloc_bytes, total_free_bytes));
   json.raw(",\"aggregated_events\":");
   json.unsigned_number(result.aggregated_event_count);
   json.raw(",\"unmatched_frees\":");

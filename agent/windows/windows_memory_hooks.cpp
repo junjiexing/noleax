@@ -44,7 +44,14 @@ WindowsMemoryHookInstallResult WindowsMemoryHooks::install() {
       (virtual_memory_hooks_ != nullptr && virtual_memory_hooks_->is_installed())) {
     throw std::logic_error{"Windows memory hook profile is already installed"};
   }
-  event_queue_->reset_quiescent();
+  // reset_quiescent requires that no producer or consumer is using the queue; a hook
+  // stuck in teardown-pending can still publish into it, so refuse to reset then.
+  const bool teardown_pending =
+      (nt_heap_hooks_ != nullptr && nt_heap_hooks_->has_pending_teardown()) ||
+      (virtual_memory_hooks_ != nullptr && virtual_memory_hooks_->has_pending_teardown());
+  if (!teardown_pending) {
+    event_queue_->reset_quiescent();
+  }
 
   WindowsMemoryHookInstallResult result;
   if (nt_heap_hooks_ != nullptr) {
