@@ -165,6 +165,7 @@ struct AnalysisResult {
         1, "cannot open input trace '" + noleax::config::path_to_utf8(input_path) + "'"};
   }
   noleax::analyzer::TraceMetadata metadata{make_symbolizer_options(configuration)};
+  metadata.set_trim_agent_frames(configuration.analysis.trim_agent_frames.value);
   try {
     static_cast<void>(metadata.scan(metadata_input));
   } catch (const std::exception& error) {

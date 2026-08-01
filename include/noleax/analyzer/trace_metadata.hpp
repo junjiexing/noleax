@@ -24,6 +24,7 @@ class TraceMetadata final {
   [[nodiscard]] EventStreamResult scan(std::istream& input, EventStreamOptions options = {});
   [[nodiscard]] EventMetadata metadata(const noleax::trace::Event& event) const;
   [[nodiscard]] EventPresentation presentation(const noleax::trace::Event& event) const;
+  void set_trim_agent_frames(bool enabled) noexcept;
 
  private:
   class Impl;

@@ -90,17 +90,17 @@ allocation，也仍输出 header 和 summary，因此窗口及“结果为空”
 `summary`。events 数据集的列为：
 
 `csv_schema_version, record_type, rank, calls, alloc_calls, alloc_bytes, free_calls, free_bytes,
-net_bytes, stack_id, stack_status, stack_frames, window_from_ns, window_to_ns, groups,
+net_bytes, api_names, stack_id, stack_status, stack_frames, window_from_ns, window_to_ns, groups,
 aggregated_events, unmatched_frees`，后接与 leaks 表相同的 trace/完整性/终止列。
 
 leaks 数据集的列为：
 
-`csv_schema_version, record_type, rank, calls, bytes, stack_id, stack_status, stack_frames,
+`csv_schema_version, record_type, rank, calls, bytes, api_names, stack_id, stack_status, stack_frames,
 window_a_ns, window_b_ns, requested_c_ns, effective_c_ns, observation_uses_trace_end, groups`，
 后接同一组 trace/完整性/终止列。
 
 events 数据集的窗口列和 leaks 数据集的窗口列均只在 summary 行填写；summary 行的 `calls` 与各字节
-列为全组合计。
+列为全组合计。`api_names` 以分号连接组内涉及的分配 API 规范名（按首次出现排序）。
 
 ## 5. stack_frames 子格式
 

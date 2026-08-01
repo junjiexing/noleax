@@ -1,5 +1,6 @@
 #include "noleax/analyzer/trace_metadata.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -42,6 +43,19 @@ namespace {
 [[nodiscard]] std::string module_basename(std::string_view path) {
   const std::size_t separator = path.find_last_of("/\\");
   return std::string{separator == std::string_view::npos ? path : path.substr(separator + 1U)};
+}
+
+[[nodiscard]] bool is_agent_module_name(std::string_view module_name) {
+  constexpr std::string_view kAgentName{"noleax-agent.dll"};
+  const std::size_t separator = module_name.find_last_of("/\\");
+  const std::string_view basename =
+      separator == std::string_view::npos ? module_name : module_name.substr(separator + 1U);
+  return basename.size() == kAgentName.size() &&
+         std::equal(
+             basename.begin(), basename.end(), kAgentName.begin(), [](char left, char right) {
+               return (left >= 'A' && left <= 'Z' ? static_cast<char>(left - 'A' + 'a') : left) ==
+                      right;
+             });
 }
 
 [[nodiscard]] std::filesystem::path utf8_path(std::string_view value) {
@@ -93,6 +107,8 @@ class TraceMetadata::Impl final {
     scanned_ = true;
     return result;
   }
+
+  void set_trim_agent_frames(bool enabled) noexcept { trim_agent_frames_ = enabled; }
 
   [[nodiscard]] EventMetadata metadata(const noleax::trace::Event& event) const {
     require_scanned();
@@ -148,6 +164,15 @@ class TraceMetadata::Impl final {
       }
       result.stack_frames.push_back(std::move(resolved));
     }
+    if (trim_agent_frames_) {
+      result.stack_frames.erase(
+          std::remove_if(result.stack_frames.begin(), result.stack_frames.end(),
+                         [](const ResolvedStackFrame& frame) {
+                           return frame.module_name.has_value() &&
+                                  is_agent_module_name(*frame.module_name);
+                         }),
+          result.stack_frames.end());
+    }
     return result;
   }
 
@@ -180,6 +205,7 @@ class TraceMetadata::Impl final {
   std::unordered_map<std::uint64_t, ModuleEntry> modules_;
   std::unordered_map<std::uint64_t, noleax::trace::StackDefinition> stacks_;
   bool scanned_{false};
+  bool trim_agent_frames_{false};
 };
 
 TraceMetadata::TraceMetadata(const SymbolizerOptions& symbolizer_options)
@@ -197,6 +223,10 @@ EventMetadata TraceMetadata::metadata(const noleax::trace::Event& event) const {
 
 EventPresentation TraceMetadata::presentation(const noleax::trace::Event& event) const {
   return impl_->presentation(event);
+}
+
+void TraceMetadata::set_trim_agent_frames(bool enabled) noexcept {
+  impl_->set_trim_agent_frames(enabled);
 }
 
 }  // namespace noleax::analyzer

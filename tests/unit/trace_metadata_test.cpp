@@ -51,6 +51,34 @@ namespace {
       .build();
 }
 
+[[nodiscard]] std::string trace_bytes_with_agent_frame() {
+  noleax::trace::ModuleLoad fixture_module;
+  fixture_module.module_id = noleax::trace::ModuleId{7U};
+  fixture_module.base_address = 0x1000U;
+  fixture_module.image_size = 0x1000U;
+  fixture_module.image_path = "C:/missing/fixture.dll";
+
+  noleax::trace::ModuleLoad agent_module;
+  agent_module.module_id = noleax::trace::ModuleId{8U};
+  agent_module.base_address = 0x2000U;
+  agent_module.image_size = 0x1000U;
+  agent_module.image_path = "C:/noleax/noleax-agent.dll";
+
+  noleax::trace::StackDefinition stack;
+  stack.stack_id = noleax::trace::StackId{101U};
+  stack.status = noleax::trace::StackCaptureStatus::kComplete;
+  stack.frames.push_back({noleax::trace::ModuleId{8U}, 0x30U, 0x2030U, 0U});
+  stack.frames.push_back({noleax::trace::ModuleId{7U}, 0x20U, 0x1020U, 0U});
+
+  return noleax::testing::SyntheticTraceBuilder{file_header(), {true, false}}
+      .add_module(fixture_module)
+      .add_module(agent_module)
+      .add_stack(stack)
+      .add_event(allocation_event())
+      .finish_normally()
+      .build();
+}
+
 }  // namespace
 
 TEST_CASE("trace metadata assembles API module and stack presentation",
@@ -93,4 +121,25 @@ TEST_CASE("trace metadata rejects resolution before scan and duplicate scans",
   static_cast<void>(metadata.scan(first));
   std::istringstream second{bytes, std::ios::binary};
   CHECK_THROWS_AS(metadata.scan(second), noleax::analyzer::TraceAnalysisError);
+}
+
+TEST_CASE("trace metadata trims agent frames from presented stacks on request",
+          "[analyzer][metadata][stack]") {
+  const std::string bytes = trace_bytes_with_agent_frame();
+
+  std::istringstream untrimmed_input{bytes, std::ios::binary};
+  noleax::analyzer::TraceMetadata untrimmed;
+  static_cast<void>(untrimmed.scan(untrimmed_input));
+  const auto full = untrimmed.presentation(allocation_event());
+  REQUIRE(full.stack_frames.size() == 2U);
+  CHECK(full.stack_frames.front().module_name == "noleax-agent.dll");
+
+  std::istringstream trimmed_input{bytes, std::ios::binary};
+  noleax::analyzer::TraceMetadata trimmed;
+  trimmed.set_trim_agent_frames(true);
+  static_cast<void>(trimmed.scan(trimmed_input));
+  const auto presentation = trimmed.presentation(allocation_event());
+  REQUIRE(presentation.stack_frames.size() == 1U);
+  CHECK(presentation.stack_frames.front().module_name == "fixture.dll");
+  CHECK(presentation.stack_frames.front().module_offset == 0x20U);
 }

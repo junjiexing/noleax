@@ -5,7 +5,9 @@
 #include <iosfwd>
 #include <limits>
 #include <optional>
+#include <span>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "noleax/analyzer/event_stream.hpp"
@@ -45,9 +47,14 @@ struct StacksWindow {
                            : -static_cast<std::int64_t>(difference);
 }
 
+// Canonical API names for the ids aggregated in a group, in first-seen order.
+[[nodiscard]] std::vector<std::string> group_api_names(
+    std::span<const noleax::trace::ApiId> api_ids);
+
 struct EventsStacksGroup {
   noleax::trace::StackId stack_id;
   noleax::trace::Event sample_event;
+  std::vector<noleax::trace::ApiId> api_ids;
   std::uint64_t calls{0};
   std::uint64_t alloc_calls{0};
   std::uint64_t alloc_bytes{0};
@@ -70,6 +77,7 @@ struct EventsStacksResult {
 struct LeaksStacksGroup {
   noleax::trace::StackId stack_id;
   noleax::trace::Event sample_event;
+  std::vector<noleax::trace::ApiId> api_ids;
   std::uint64_t calls{0};
   std::uint64_t bytes{0};
 };

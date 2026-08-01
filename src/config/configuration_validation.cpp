@@ -100,6 +100,8 @@ void require_default_analysis(const Configuration& configuration, const Configur
   require_default(configuration.analysis.group_by, defaults.analysis.group_by, "analysis.group_by",
                   operation);
   require_default(configuration.analysis.sort, defaults.analysis.sort, "analysis.sort", operation);
+  require_default(configuration.analysis.trim_agent_frames, defaults.analysis.trim_agent_frames,
+                  "analysis.trim_agent_frames", operation);
 }
 
 void require_default_filters(const Configuration& configuration, const Configuration& defaults,

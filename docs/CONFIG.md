@@ -64,6 +64,7 @@ to = ""
 end = ""
 group_by = ""
 sort = "alloc-bytes"
+trim_agent_frames = true
 
 [filters]
 min_size = ""

@@ -486,3 +486,23 @@ TEST_CASE("CSV writer rejects invalid state summaries and output streams", "[ana
                     noleax::analyzer::CsvFormatError);
   }
 }
+
+TEST_CASE("event stacks CSV pipeline lists group api names", "[analyzer][csv]") {
+  noleax::testing::SyntheticTraceBuilder builder{file_header(), capture_scope()};
+  builder.add_event(allocation_event());
+  const auto encoded = builder.finish_normally().build();
+
+  std::istringstream input{encoded, std::ios::binary};
+  std::ostringstream output;
+  const auto result = noleax::analyzer::analyze_event_stacks_to_csv(
+      input, output, {}, noleax::analyzer::StacksSort::kAllocBytes,
+      noleax::analyzer::AnalysisFilter{}, {},
+      [](const noleax::trace::Event&) { return presentation(); });
+
+  REQUIRE(result.groups.size() == 1U);
+  const auto table = noleax::testing::parse_csv(output.str());
+  REQUIRE(table.rows.size() == 2U);
+  CHECK(table.at(0U, "record_type") == "group");
+  CHECK(table.at(0U, "api_names") == "RtlAllocateHeap");
+  CHECK(table.at(1U, "record_type") == "summary");
+}

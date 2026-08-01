@@ -57,6 +57,7 @@ Configuration make_default_configuration() {
   configuration.analysis.mode.value = AnalysisMode::kEvents;
   configuration.analysis.format.value = OutputFormat::kConsole;
   configuration.analysis.sort.value = AnalysisSort::kAllocBytes;
+  configuration.analysis.trim_agent_frames.value = true;
 
   configuration.symbols.mode.value = SymbolMode::kAuto;
 
@@ -115,6 +116,8 @@ void apply_overrides(Configuration& configuration, const ConfigurationOverrides&
   apply_override(configuration.analysis.end, overrides.analysis.end, source);
   apply_override(configuration.analysis.group_by, overrides.analysis.group_by, source);
   apply_override(configuration.analysis.sort, overrides.analysis.sort, source);
+  apply_override(configuration.analysis.trim_agent_frames, overrides.analysis.trim_agent_frames,
+                 source);
 
   apply_override(configuration.filters.min_size, overrides.filters.min_size, source);
   apply_override(configuration.filters.max_size, overrides.filters.max_size, source);

@@ -212,7 +212,7 @@ noleax analyze [options] trace.nlx
   裸命令即"任何时间申请、trace 结束时仍未释放"。这是一份候选集合，不等同于语义上的泄漏证明，
   应重复 workload、缩小时间窗口并结合调用栈判断。
 - 两个模式都可加 `--group-by stack` 按调用栈聚合：events 下统计成功 alloc/realloc/free 的调用次数与
-  分配/释放字节，leaks 下统计存活分配的个数与字节；`--sort` 选择排序键。
+  分配/释放字节，leaks 下统计存活分配的个数与字节；每组同时列出涉及的分配 API；`--sort` 选择排序键。
 
 | 选项 | 默认值 | 说明 |
 |---|---|---|
@@ -223,6 +223,7 @@ noleax analyze [options] trace.nlx
 | `--end TIME` | trace 终点 | leaks 观察点（超过终点截断） |
 | `--group-by DIM` | 不聚合 | 聚合维度，当前唯一取值 stack |
 | `--sort KEY` | events 聚合 alloc-bytes,leaks 聚合 bytes | 聚合排序键 |
+| `--trim-agent-frames` / `--no-trim-agent-frames` | true | 展示调用栈时隐藏 noleax-agent 自身的帧 |
 | `--min-size SIZE` / `--max-size SIZE` | 无 | 大小过滤，包含端点 |
 | `--event TYPE` | 全部 | 事件类型 |
 | `--thread TID` | 全部 | 线程 |

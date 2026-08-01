@@ -474,7 +474,18 @@ void ConsoleWriter::write_event_stacks(const EventsStacksResult& result,
     total_free_bytes += group.free_bytes;
     output_ << "#" << rank << " calls=" << group.calls << " alloc=" << group.alloc_calls << "/"
             << group.alloc_bytes << "B free=" << group.free_calls << "/" << group.free_bytes
-            << "B net=" << group.net_bytes() << "B\n";
+            << "B net=" << group.net_bytes() << "B";
+    const auto names = group_api_names(group.api_ids);
+    if (!names.empty()) {
+      output_ << " apis=";
+      for (std::size_t index = 0U; index < names.size(); ++index) {
+        if (index != 0U) {
+          output_ << ',';
+        }
+        output_ << names[index];
+      }
+    }
+    output_ << '\n';
     const auto metadata = resolver ? resolver(group.sample_event) : ConsoleEventMetadata{};
     write_stack(group.sample_event, metadata);
   }
@@ -516,7 +527,18 @@ void ConsoleWriter::write_leak_stacks(const LeaksStacksResult& result,
     ++rank;
     total_calls += group.calls;
     total_bytes += group.bytes;
-    output_ << "#" << rank << " calls=" << group.calls << " bytes=" << group.bytes << "B\n";
+    output_ << "#" << rank << " calls=" << group.calls << " bytes=" << group.bytes << "B";
+    const auto names = group_api_names(group.api_ids);
+    if (!names.empty()) {
+      output_ << " apis=";
+      for (std::size_t index = 0U; index < names.size(); ++index) {
+        if (index != 0U) {
+          output_ << ',';
+        }
+        output_ << names[index];
+      }
+    }
+    output_ << '\n';
     const auto metadata = resolver ? resolver(group.sample_event) : ConsoleEventMetadata{};
     write_stack(group.sample_event, metadata);
   }

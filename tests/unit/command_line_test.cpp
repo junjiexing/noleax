@@ -265,3 +265,15 @@ TEST_CASE("omitted CLI options preserve config values while present arrays repla
   CHECK(configuration.filters.apis.value == std::vector<std::string>{"cli-api"});
   CHECK(configuration.filters.apis.source == noleax::config::ValueSource::kCommandLine);
 }
+
+TEST_CASE("analyze CLI maps trim-agent-frames boolean options", "[cli][config]") {
+  const auto current_directory = std::filesystem::current_path();
+
+  const auto trimmed = parse({"analyze", "--trim-agent-frames", "one.nlx"}, current_directory);
+  CHECK(trimmed.overrides.analysis.trim_agent_frames.specified);
+  CHECK(trimmed.overrides.analysis.trim_agent_frames.value);
+
+  const auto untrimmed = parse({"analyze", "--no-trim-agent-frames", "one.nlx"}, current_directory);
+  CHECK(untrimmed.overrides.analysis.trim_agent_frames.specified);
+  CHECK_FALSE(untrimmed.overrides.analysis.trim_agent_frames.value);
+}

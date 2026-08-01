@@ -26,6 +26,11 @@
       "type": "array",
       "items": { "$ref": "#/$defs/generation" }
     },
+    "dataset": { "enum": ["events", "leaks"] },
+    "groups": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/stack_group" }
+    },
     "summary": { "$ref": "#/$defs/summary" }
   },
   "oneOf": [
@@ -514,7 +519,7 @@
     },
     "stack_group": {
       "type": "object",
-      "required": ["rank", "calls", "stack_id", "sample_event"],
+      "required": ["rank", "calls", "apis", "stack_id", "sample_event"],
       "properties": {
         "rank": { "type": "integer" },
         "calls": { "type": "integer" },
@@ -524,6 +529,7 @@
         "free_bytes": { "type": "integer" },
         "net_bytes": { "type": "integer" },
         "bytes": { "type": "integer" },
+        "apis": { "type": "array", "items": { "type": "string" } },
         "stack_id": { "type": ["integer", "null"] },
         "sample_event": { "$ref": "#/$defs/event" }
       },
@@ -686,6 +692,14 @@
         "outstanding": { "type": "integer" },
         "orphaned_allocation_ends": { "type": "integer" },
         "orphaned_mapping_ends": { "type": "integer" },
+        "groups": { "type": "integer" },
+        "calls": { "type": "integer" },
+        "alloc_bytes": { "type": "integer" },
+        "free_bytes": { "type": "integer" },
+        "net_bytes": { "type": "integer" },
+        "bytes": { "type": "integer" },
+        "aggregated_events": { "type": "integer" },
+        "unmatched_frees": { "type": "integer" },
         "trace_events": { "type": "integer" },
         "loss_records": { "type": "integer" },
         "bytes_read": { "type": "integer" },

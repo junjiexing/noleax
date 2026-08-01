@@ -277,6 +277,9 @@ std::string serialize_effective_config(const Configuration& configuration) {
                  configuration.analysis.group_by.source);
   append_setting(output, "sort", quote_toml(enum_value_name(configuration.analysis.sort.value)),
                  configuration.analysis.sort.source);
+  append_setting(output, "trim_agent_frames",
+                 configuration.analysis.trim_agent_frames.value ? "true" : "false",
+                 configuration.analysis.trim_agent_frames.source);
 
   append_table(output, "filters");
   append_setting(output, "min_size", format_optional_size(configuration.filters.min_size.value),
