@@ -1,13 +1,12 @@
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO junjiexing/hoox
-    REF v0.1.1
-    SHA512 fad832827539a789123b78c88d4cf5f5fc096a2c2fcaebf8bb5e5fdfa09388ee5bbb1f55925688b228b22907c1a1fdc882ed3967cea452869564540743a47359
-    HEAD_REF main
+    REF v0.1.2
+    SHA512 91313f5855daa33c51a49807f280dd0af489b4f3f9946add2111afe25dced139fbb5156940e2a2942c3253e50fb0513ab9c93147105ff6ce3df54566ac2f7711
+    HEAD_REF master
     PATCHES
         install-rules.patch
         windows-fls-lifecycle.patch
-        windows-rwx-patch-quiescence.patch
 )
 
 vcpkg_cmake_configure(
@@ -15,6 +14,7 @@ vcpkg_cmake_configure(
     OPTIONS
         -DHOOX_ENABLE_TESTS=OFF
         -DHOOX_BUILD_AMALGAMATION=OFF
+        -DHOOX_WINDOWS_PATCH_PC_GUARD=ON
 )
 
 vcpkg_cmake_install()

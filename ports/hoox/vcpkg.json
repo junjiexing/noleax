@@ -1,6 +1,6 @@
 {
   "name": "hoox",
-  "version-semver": "0.1.1",
+  "version-semver": "0.1.2",
   "description": "Minimal cross-platform inline-hooking library",
   "homepage": "https://github.com/junjiexing/hoox",
   "license": "wxWindows",
