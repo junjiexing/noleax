@@ -8,6 +8,7 @@ vcpkg_from_github(
         install-rules.patch
         windows-fls-lifecycle.patch
         windows-rwx-patch-quiescence.patch
+        windows-patch-pc-guard.patch
 )
 
 vcpkg_cmake_configure(
