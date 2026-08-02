@@ -262,7 +262,18 @@ class CaptureRuntime final {
       if (!backend_->shutdown()) {
         throw std::runtime_error{"hook backend shutdown failed"};
       }
-      hooks_.reset();
+      // Threads parked in the closed gate are invisible to both the lifecycle counters and the
+      // patch rendezvous. Reopen the gate and let runnable parked threads drain through the
+      // restored-target route before releasing the hook instances they are about to touch.
+      release_finalize_gate();
+      if (!noleax::agent::ReplacementQuiescenceGate::wait_for_drain(10'000U)) {
+        // Remaining waiters are frozen by the controller and will wake onto the lifecycle
+        // counters only after this finalize returns. Transfer the profile to process lifetime
+        // instead of freeing state they can still dereference.
+        static_cast<void>(hooks_.release());
+      } else {
+        hooks_.reset();
+      }
       backend_.reset();
       output_.reset();
     } catch (...) {

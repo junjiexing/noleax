@@ -78,10 +78,14 @@ enter/leave 计数窗口编译进专用 `.nlxhk` 段：in-transit 线程从旧�
 必然位于该段；对称地，线程在退出计数归零后到离开 replacement 之前的尾迹也在该段。段内刻意不放
 其他 agent 代码（writer、tracker 等），避免无关线程造成 rendezvous 假失败；gate 读取线程深度不
 调用共享的 guard 查询（它们的被调在段外会成为扫描盲区），而是走只有 gate 调用的专用 probe，
-同样放进该段。已知残留窗口：gate 关闭期间停在等待循环里的线程（多数是 agent 内部 worker，本身
-无害）会把 RIP 留在 CRT 原子等待代码中，RIP 扫描不可见；若其中混有尚未计数的 in-transit 线程，
-gate 重新打开后它会继续走进入口计数并触碰 hook state。该窗口在 rendezvous 引入前就存在，产品流
-由"卸载前停住目标 worker"覆盖，standalone 退出路径下进程随即结束。teardown
+同样放进该段。gate 关闭期间停在等待循环里的线程会把 RIP 留在 CRT 原子等待代码中，对 RIP 扫描
+不可见；若其中混有尚未计数的 in-transit 线程，gate 重新打开后它会继续走进入口计数并触碰 hook
+state。因此 finalize 在 backend shutdown 之后先重开 gate，让可运行的 parked 线程按
+restored-target 路由排空（`wait_for_drain` 等待 waiter/transition/active 计数归零）才销毁 hook
+实例；仍被 controller 冻结的 waiter 无法唤醒，无法排空时按进程生命期保留 profile，让它们之后
+醒来时读到的是仍然有效的状态，而不是释放仍可能被解引用的内存。相应地，未来实现 attach 卸载
+agent 时，卸载决策也必须把 gate waiter 计数纳入考量（被冻结的 waiter 醒来还要执行 gate 代码）。
+teardown
 在 backend flush 完成之后、`finish_teardown` 之前执行 rendezvous：
 
 1. Toolhelp 枚举进程线程，跳过当前线程，逐个 OpenThread + SuspendThread，记录到固定容量的静态

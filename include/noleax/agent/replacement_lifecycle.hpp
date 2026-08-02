@@ -115,6 +115,23 @@ class ReplacementQuiescenceGate final {
     detail::replacement_gate_epoch.notify_all();
   }
 
+  // Waits until every thread parked in the gate has woken and fully left its replacement call.
+  // Must only be called with the gate open and no way for new threads to enter a replacement
+  // (targets reverted); otherwise the counters can never be trusted to stay at zero.
+  [[nodiscard]] static bool wait_for_drain(std::uint32_t max_yields) noexcept {
+    for (std::uint32_t yielded = 0U;; ++yielded) {
+      if (detail::replacement_gate_waiters.load(std::memory_order_seq_cst) == 0U &&
+          detail::replacement_gate_transitions.load(std::memory_order_seq_cst) == 0U &&
+          detail::replacement_active_calls.load(std::memory_order_seq_cst) == 0U) {
+        return true;
+      }
+      if (yielded == max_yields) {
+        return false;
+      }
+      std::this_thread::yield();
+    }
+  }
+
   [[nodiscard]] static bool is_closed() noexcept {
     return detail::replacement_gate_closed.load(std::memory_order_seq_cst);
   }
