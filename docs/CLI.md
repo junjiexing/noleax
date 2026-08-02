@@ -272,7 +272,11 @@ status：
 
 symbols mode：
 
-- auto
+- auto：尽可能解析符号，失败时静默回退到 module+offset（默认）。
+- off：完全不触碰 DbgHelp——不探测映像、不访问符号服务器，始终输出 module+offset；与
+  --symbol-path/--symbol-server 同时配置时校验报错。
+- required：任一模块无法解析出符号（结果不是 symbols_loaded 或 exports_only）即分析失败，
+  用于要求完整符号化的自动化场景。
 
 `--symbol-path` 与 `--symbol-server` 都未配置时，analyzer 回退到 `_NT_SYMBOL_PATH` 与
 `_NT_ALT_SYMBOL_PATH`（DbgHelp 惯例，分号连接的搜索路径，支持 `srv*` 语法）；配置任一者

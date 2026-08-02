@@ -93,6 +93,8 @@ enum class OutputFormat : std::uint8_t {
 
 enum class SymbolMode : std::uint8_t {
   kAuto,
+  kOff,
+  kRequired,
 };
 
 enum class PatchMethod : std::uint8_t {
@@ -238,7 +240,9 @@ template <>
 struct EnumTraits<SymbolMode> {
   inline static constexpr std::string_view kind = "symbol mode";
   inline static constexpr auto values =
-      std::array{NamedEnumValue{std::string_view{"auto"}, SymbolMode::kAuto}};
+      std::array{NamedEnumValue{std::string_view{"auto"}, SymbolMode::kAuto},
+                 NamedEnumValue{std::string_view{"off"}, SymbolMode::kOff},
+                 NamedEnumValue{std::string_view{"required"}, SymbolMode::kRequired}};
 };
 
 template <>

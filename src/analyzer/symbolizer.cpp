@@ -231,6 +231,9 @@ class OfflineSymbolizer::Impl {
  public:
   explicit Impl(const SymbolizerOptions& options) : options_{options} {
 #ifdef _WIN32
+    if (options_.mode == SymbolResolutionMode::kOff) {
+      return;
+    }
     search_path_ = build_symbol_search_path(options_);
     process_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if (process_ == nullptr) {
@@ -388,6 +391,10 @@ class OfflineSymbolizer::Impl {
   }
 
   void register_windows_module(Entry& entry) {
+    if (options_.mode == SymbolResolutionMode::kOff) {
+      entry.result.status = SymbolModuleStatus::kNoSymbols;
+      return;
+    }
     std::error_code filesystem_error;
     if (!std::filesystem::is_regular_file(entry.module.image_path, filesystem_error)) {
       entry.result.status = SymbolModuleStatus::kImageNotFound;

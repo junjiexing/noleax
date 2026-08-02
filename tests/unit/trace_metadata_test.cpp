@@ -9,6 +9,7 @@
 #include "noleax/trace/module.hpp"
 #include "noleax/trace/stack.hpp"
 #include "noleax/trace/wire_format.hpp"
+#include "support/loaded_image.hpp"
 #include "support/synthetic_trace.hpp"
 
 namespace {
@@ -143,3 +144,48 @@ TEST_CASE("trace metadata trims agent frames from presented stacks on request",
   CHECK(presentation.stack_frames.front().module_name == "fixture.dll");
   CHECK(presentation.stack_frames.front().module_offset == 0x20U);
 }
+
+TEST_CASE("trace metadata rejects unavailable symbols in required mode",
+          "[analyzer][metadata][symbols]") {
+  noleax::analyzer::SymbolizerOptions options;
+  options.mode = noleax::analyzer::SymbolResolutionMode::kRequired;
+  std::istringstream input{trace_bytes(), std::ios::binary};
+  noleax::analyzer::TraceMetadata metadata{options};
+  CHECK_THROWS_AS(metadata.scan(input), noleax::analyzer::TraceAnalysisError);
+}
+
+#ifdef _WIN32
+
+TEST_CASE("trace metadata accepts resolvable symbols in required mode",
+          "[analyzer][metadata][symbols]") {
+  const noleax::testing::LoadedImage image{noleax::testing::symbol_fixture_path()};
+
+  noleax::trace::ModuleLoad module;
+  module.module_id = noleax::trace::ModuleId{7U};
+  module.base_address = 0x1000U;
+  module.image_size = image.size();
+  const std::u8string image_path = noleax::testing::symbol_fixture_path().u8string();
+  module.image_path = {reinterpret_cast<const char*>(image_path.data()), image_path.size()};
+
+  noleax::trace::StackDefinition stack;
+  stack.stack_id = noleax::trace::StackId{101U};
+  stack.status = noleax::trace::StackCaptureStatus::kComplete;
+  stack.frames.push_back({noleax::trace::ModuleId{7U}, 0x20U, 0x1020U, 0U});
+
+  const std::string bytes = noleax::testing::SyntheticTraceBuilder{file_header(), {true, false}}
+                                .add_module(module)
+                                .add_stack(stack)
+                                .add_event(allocation_event())
+                                .finish_normally()
+                                .build();
+
+  noleax::analyzer::SymbolizerOptions options;
+  options.mode = noleax::analyzer::SymbolResolutionMode::kRequired;
+  options.search_paths.push_back(noleax::testing::symbol_fixture_path().parent_path());
+  noleax::analyzer::TraceMetadata metadata{options};
+  std::istringstream input{bytes, std::ios::binary};
+  const auto scan = metadata.scan(input);
+  CHECK(scan.event_count == 1U);
+}
+
+#endif

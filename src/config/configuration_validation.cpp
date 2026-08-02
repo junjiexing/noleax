@@ -347,6 +347,11 @@ void validate_analyze(const Configuration& configuration, const Configuration& d
   if (sort_specified && !configuration.analysis.group_by.value.has_value()) {
     fail("analysis.sort", "requires --group-by");
   }
+  if (configuration.symbols.mode.value == SymbolMode::kOff &&
+      (!configuration.symbols.paths.value.empty() ||
+       !configuration.symbols.servers.value.empty())) {
+    fail("symbols.mode", "off conflicts with configured symbols.paths or symbols.servers");
+  }
   if (configuration.analysis.group_by.value.has_value() && sort_specified) {
     const AnalysisSort sort = configuration.analysis.sort.value;
     if (events_mode && sort == AnalysisSort::kBytes) {

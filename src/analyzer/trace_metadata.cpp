@@ -67,7 +67,9 @@ namespace {
 
 class TraceMetadata::Impl final {
  public:
-  explicit Impl(const SymbolizerOptions& symbolizer_options) : symbolizer_{symbolizer_options} {}
+  explicit Impl(const SymbolizerOptions& symbolizer_options)
+      : symbolizer_{symbolizer_options},
+        require_symbols_{symbolizer_options.mode == SymbolResolutionMode::kRequired} {}
 
   [[nodiscard]] EventStreamResult scan(std::istream& input, EventStreamOptions options) {
     if (scanned_) {
@@ -93,8 +95,13 @@ class TraceMetadata::Impl final {
         module.image_path = utf8_path(load.image_path);
         module.expected_image_identity = load.image_identity;
         module.expected_pdb_identity = load.pdb_identity;
-        static_cast<void>(symbolizer_.register_module(module));
+        const SymbolModuleResult result = symbolizer_.register_module(module);
         entry.registered = true;
+        if (require_symbols_ && result.status != SymbolModuleStatus::kSymbolsLoaded &&
+            result.status != SymbolModuleStatus::kExportsOnly) {
+          throw TraceAnalysisError{"required symbols unavailable for module '" + load.image_path +
+                                   "': " + std::string{symbol_module_status_name(result.status)}};
+        }
       } catch (const SymbolizerError&) {
         entry.registered = false;
       }
@@ -206,6 +213,7 @@ class TraceMetadata::Impl final {
   std::unordered_map<std::uint64_t, noleax::trace::StackDefinition> stacks_;
   bool scanned_{false};
   bool trim_agent_frames_{false};
+  bool require_symbols_{false};
 };
 
 TraceMetadata::TraceMetadata(const SymbolizerOptions& symbolizer_options)

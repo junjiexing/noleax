@@ -421,4 +421,20 @@ TEST_CASE("analysis validation enforces window sort and group rules", "[config]"
   configuration.analysis.sort.value = noleax::config::AnalysisSort::kAllocBytes;
   configuration.analysis.sort.source = noleax::config::ValueSource::kDefault;
   CHECK_NOTHROW(noleax::config::validate_configuration(configuration));
+
+  // symbols.mode off conflicts with explicitly configured paths or servers.
+  configuration.symbols.mode.value = noleax::config::SymbolMode::kOff;
+  configuration.symbols.paths.value = {temporary.path() / "symbols"};
+  CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
+                  noleax::config::ConfigError);
+  configuration.symbols.paths.value = {};
+  configuration.symbols.servers.value = {"https://symbols.example"};
+  CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
+                  noleax::config::ConfigError);
+  configuration.symbols.servers.value = {};
+  CHECK_NOTHROW(noleax::config::validate_configuration(configuration));
+
+  configuration.symbols.mode.value = noleax::config::SymbolMode::kRequired;
+  configuration.symbols.servers.value = {"https://symbols.example"};
+  CHECK_NOTHROW(noleax::config::validate_configuration(configuration));
 }

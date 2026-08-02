@@ -130,6 +130,17 @@ void ensure_output_directory(const std::filesystem::path& path) {
 [[nodiscard]] noleax::analyzer::SymbolizerOptions make_symbolizer_options(
     const noleax::config::Configuration& configuration) {
   noleax::analyzer::SymbolizerOptions options;
+  switch (configuration.symbols.mode.value) {
+    case noleax::config::SymbolMode::kAuto:
+      options.mode = noleax::analyzer::SymbolResolutionMode::kAuto;
+      break;
+    case noleax::config::SymbolMode::kOff:
+      options.mode = noleax::analyzer::SymbolResolutionMode::kOff;
+      break;
+    case noleax::config::SymbolMode::kRequired:
+      options.mode = noleax::analyzer::SymbolResolutionMode::kRequired;
+      break;
+  }
   options.search_paths = configuration.symbols.paths.value;
   options.symbol_servers = configuration.symbols.servers.value;
   // DbgHelp convention: with no explicitly configured paths or servers, fall back to the
