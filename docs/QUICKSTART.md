@@ -4,6 +4,12 @@
 `remote-thread`、`thread-hijack`、`entrypoint-code` 和 `static-pe-patch` 注入，`attach` 支持
 `remote-thread` 和 `thread-hijack`，并可用 `noleax patch` 生成静态 patch 副本。
 
+不支持的目标：Protected Process / PPL（部分安全软件、受保护的媒体与服务进程）。Noleax 的
+安全模型要求枚举并暂停目标进程的全部线程并读取线程上下文，protected process 会拒绝这些
+访问；表现为 hook 安装失败或卸载无法完成（状态保留到进程退出），目标不会崩溃但无法捕获。
+跨用户、AppContainer 或更高 integrity 级别的目标同样受权限边界约束，详见
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md) 的权限一节。
+
 ## 1. 准备
 
 解压本地 RC ZIP 后进入 `bin`，并保持 `noleax.exe` 与 `noleax-agent.dll` 在同一目录。源码构建方式

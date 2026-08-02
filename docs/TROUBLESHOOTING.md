@@ -17,9 +17,14 @@ Noleax 的完整 stderr、退出码和 capture summary。
 
 ## 权限与安全软件
 
-attach 需要打开目标进程并创建远程线程。跨用户、受保护进程、PPL、AppContainer 或更高 integrity
+attach 需要打开目标进程并创建远程线程。跨用户、AppContainer 或更高 integrity
 目标可能拒绝访问。管理员权限也不能绕过所有 Windows 保护边界。企业 EDR/防病毒可能将注入行为拦截；
 仅在获授权环境中添加例外，不要关闭系统级保护来掩盖问题。
+
+Protected Process / PPL 目标不受支持。Noleax 的安全模型要求枚举并暂停目标进程的全部线程、
+读取线程上下文，protected process 会拒绝这些访问（`OpenThread`/`SuspendThread` 返回
+`ERROR_ACCESS_DENIED`）。表现为 hook 安装失败（返回错误而非崩溃），或卸载无法完成、插装状态
+保留到进程退出。这不是权限提升可以解决的问题，请改用其他观测手段。
 
 ## 文件大小与完整性
 
