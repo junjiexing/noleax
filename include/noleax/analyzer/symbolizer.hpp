@@ -52,7 +52,17 @@ struct SymbolModuleResult {
   bool operator==(const SymbolModuleResult&) const = default;
 };
 
+enum class SymbolResolutionMode : std::uint8_t {
+  // Resolve when possible, silently fall back to module+offset otherwise.
+  kAuto,
+  // Never touch DbgHelp: no image probing, no symbol downloads, always module+offset.
+  kOff,
+  // Like kAuto, but TraceMetadata rejects modules whose symbols cannot be resolved.
+  kRequired,
+};
+
 struct SymbolizerOptions {
+  SymbolResolutionMode mode{SymbolResolutionMode::kAuto};
   std::vector<std::filesystem::path> search_paths;
   std::vector<std::string> symbol_servers;
   // Verbatim DbgHelp search path used only when search_paths and symbol_servers are both

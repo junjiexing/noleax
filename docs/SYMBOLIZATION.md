@@ -56,14 +56,19 @@ identity mismatch 不会降级使用可能属于另一构建的符号。`pdb_not
 
 ## 5. Symbol path 与联网策略
 
-- 默认向 DbgHelp 传入显式空 search path，不继承隐式 symbol server。
+- `symbols.mode` 控制解析策略：`auto` 尽可能解析，失败保留 module+offset 回退；`off` 完全不
+  初始化 DbgHelp，注册模块直接报告 `no_symbols`，没有任何映像探测或网络访问；`required` 由
+  `TraceMetadata` 在扫描时强制——任一模块结果不是 `symbols_loaded` 或 `exports_only` 即中止分析。
 - `search_paths` 按用户顺序加入，转换为绝对路径。
-- `symbol_servers` 只有用户显式配置时才以 `srv*URL` 加入。
+- `symbol_servers` 只有用户显式配置时才加入：值带 `srv*` 前缀（大小写不敏感）时原样透传
+  （可用 `srv*缓存目录*服务器地址` 指定下载缓存），否则补 `srv*` 前缀。
+- 两者都未配置时，CLI 把 `_NT_SYMBOL_PATH`/`_NT_ALT_SYMBOL_PATH` 环境变量作为
+  `raw_search_path` 传入（DbgHelp 惯例）；配置任一者则忽略环境变量。库本身不读取环境变量。
 - path/server 条目不允许包含分号，server 必须是有效非空 UTF-8。
 - 符号服务不自行管理下载缓存、凭据或代理；这些属于 CLI 集成和发布安全设计。
 
-计划中的配置映射保持为 `symbols.paths` / `--symbol-path` 和
-`symbols.servers` / `--symbol-server`，命令行覆盖配置文件。
+配置映射为 `symbols.paths` / `--symbol-path`、`symbols.servers` / `--symbol-server` 和
+`symbols.mode` / `--symbols`，命令行覆盖配置文件。
 
 ## 6. 并发与生命周期
 

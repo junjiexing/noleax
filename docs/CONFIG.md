@@ -123,6 +123,10 @@ standalone 激活参数烧进镜像，patched 副本可直接运行：agent 读�
 的值已带 `srv*` 前缀（大小写不敏感）时原样透传，可用 `srv*缓存目录*服务器地址` 指定本地
 下载缓存，否则自动补 `srv*` 前缀。
 
+`symbols.mode`：`auto`（默认）尽可能解析、失败静默回退 module+offset；`off` 完全不触碰
+DbgHelp（不探测映像、不下载符号），与 `symbols.paths`/`symbols.servers` 同时配置校验报错；
+`required` 要求每个模块都解析出符号（symbols_loaded 或 exports_only），否则分析失败。
+
 ## 3. operation
 
 允许值：

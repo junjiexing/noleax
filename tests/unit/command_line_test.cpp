@@ -277,3 +277,13 @@ TEST_CASE("analyze CLI maps trim-agent-frames boolean options", "[cli][config]")
   CHECK(untrimmed.overrides.analysis.trim_agent_frames.specified);
   CHECK_FALSE(untrimmed.overrides.analysis.trim_agent_frames.value);
 }
+
+TEST_CASE("analyze CLI maps symbol modes", "[cli][config]") {
+  const auto current_directory = std::filesystem::current_path();
+
+  const auto off = parse({"analyze", "--symbols", "off", "one.nlx"}, current_directory);
+  CHECK(off.overrides.symbols.mode.value == noleax::config::SymbolMode::kOff);
+
+  const auto required = parse({"analyze", "--symbols", "required", "one.nlx"}, current_directory);
+  CHECK(required.overrides.symbols.mode.value == noleax::config::SymbolMode::kRequired);
+}

@@ -232,7 +232,7 @@ noleax analyze [options] trace.nlx
 | `--stack-module PATTERN` | 全部 | 按栈帧模块过滤 |
 | `--allocation-id ID` | 全部 | allocation id |
 | `--status STATUS` | 全部 | success、failure、unmatched、preexisting |
-| `--symbols MODE` | auto | 符号解析模式 |
+| `--symbols MODE` | auto | auto、off（禁用符号解析）、required（任一模块解析失败即报错） |
 | `--symbol-path PATH` | 空 | 本地符号路径 |
 | `--symbol-server URL` | 空 | 符号服务器；带 `srv*` 前缀的值原样透传（可用 `srv*缓存*地址` 指定缓存） |
 
