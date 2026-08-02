@@ -274,6 +274,12 @@ symbols mode：
 
 - auto
 
+`--symbol-path` 与 `--symbol-server` 都未配置时，analyzer 回退到 `_NT_SYMBOL_PATH` 与
+`_NT_ALT_SYMBOL_PATH`（DbgHelp 惯例，分号连接的搜索路径，支持 `srv*` 语法）；配置任一者
+则忽略环境变量。`--symbol-server` 的值已带 `srv*` 前缀（大小写不敏感）时原样透传，可写成
+`srv*缓存目录*服务器地址` 指定本地下载缓存，否则自动补 `srv*` 前缀。符号服务器下载由
+DbgHelp 在解析缺失 PDB 时按需进行。
+
 同一过滤类别的重复选项为 OR，不同类别为 AND；大小范围包含端点。模块 pattern 支持 `*` 和
 `?`，ASCII 大小写及 `/`、`\` 路径分隔符不敏感。API 名称区分大小写。
 

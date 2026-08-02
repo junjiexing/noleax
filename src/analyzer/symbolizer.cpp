@@ -4,6 +4,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <limits>
@@ -38,6 +39,73 @@ namespace {
                      [](std::byte value) { return value == std::byte{0}; });
 }
 
+[[nodiscard]] std::wstring absolute_path(const std::filesystem::path& path) {
+  std::error_code error;
+  const auto absolute = std::filesystem::absolute(path, error);
+  return (error ? path : absolute).wstring();
+}
+
+[[nodiscard]] std::wstring widen_symbol_text(std::string_view value) {
+  if (!detail::is_valid_utf8(value)) {
+    throw SymbolizerError{"symbol server is not valid UTF-8"};
+  }
+  if (value.empty()) {
+    return {};
+  }
+#ifdef _WIN32
+  const int required = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
+                                           static_cast<int>(value.size()), nullptr, 0);
+  if (required <= 0) {
+    throw SymbolizerError{"cannot convert UTF-8 symbol text to UTF-16"};
+  }
+  std::wstring result(static_cast<std::size_t>(required), L'\0');
+  if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
+                          static_cast<int>(value.size()), result.data(), required) != required) {
+    throw SymbolizerError{"cannot convert UTF-8 symbol text to UTF-16"};
+  }
+  return result;
+#else
+  // Symbolization is Windows-only; elsewhere the built path is never consumed, so a
+  // byte-wise widening keeps this function well-defined without a full UTF-8 decoder.
+  std::wstring result;
+  result.reserve(value.size());
+  for (const char character : value) {
+    result.push_back(static_cast<wchar_t>(static_cast<unsigned char>(character)));
+  }
+  return result;
+#endif
+}
+
+[[nodiscard]] bool has_srv_prefix(std::string_view value) noexcept {
+  constexpr std::string_view prefix{"srv*"};
+  return value.size() >= prefix.size() &&
+         std::equal(prefix.begin(), prefix.end(), value.begin(), [](char expected, char actual) {
+           const char lowered =
+               actual >= 'A' && actual <= 'Z' ? static_cast<char>(actual - 'A' + 'a') : actual;
+           return expected == lowered;
+         });
+}
+
+#ifdef _WIN32
+[[nodiscard]] std::wstring environment_value(const wchar_t* name) {
+  const DWORD required = GetEnvironmentVariableW(name, nullptr, 0);
+  if (required == 0U) {
+    return {};
+  }
+  std::wstring result(required, L'\0');
+  const DWORD length = GetEnvironmentVariableW(name, result.data(), required);
+  result.resize(length);
+  return result;
+}
+#else
+[[nodiscard]] std::wstring environment_value(const char* name) {
+  if (const char* value = std::getenv(name); value != nullptr) {
+    return widen_symbol_text(value);
+  }
+  return {};
+}
+#endif
+
 #ifdef _WIN32
 
 [[nodiscard]] std::mutex& dbghelp_mutex() {
@@ -64,26 +132,6 @@ class DbgHelpOptionsGuard {
  private:
   DWORD previous_;
 };
-
-[[nodiscard]] std::wstring utf8_to_wide(std::string_view value) {
-  if (!detail::is_valid_utf8(value)) {
-    throw SymbolizerError{"symbol server is not valid UTF-8"};
-  }
-  if (value.empty()) {
-    return {};
-  }
-  const int required = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
-                                           static_cast<int>(value.size()), nullptr, 0);
-  if (required <= 0) {
-    throw SymbolizerError{"cannot convert UTF-8 symbol text to UTF-16"};
-  }
-  std::wstring result(static_cast<std::size_t>(required), L'\0');
-  if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
-                          static_cast<int>(value.size()), result.data(), required) != required) {
-    throw SymbolizerError{"cannot convert UTF-8 symbol text to UTF-16"};
-  }
-  return result;
-}
 
 [[nodiscard]] std::string wide_to_utf8(std::wstring_view value) {
   if (value.empty()) {
@@ -112,35 +160,6 @@ class DbgHelpOptionsGuard {
   return result;
 }
 
-[[nodiscard]] std::wstring absolute_path(const std::filesystem::path& path) {
-  std::error_code error;
-  const auto absolute = std::filesystem::absolute(path, error);
-  return (error ? path : absolute).wstring();
-}
-
-[[nodiscard]] std::wstring build_search_path(const SymbolizerOptions& options) {
-  std::wstring result;
-  const auto append = [&result](const std::wstring& value) {
-    if (value.find(L';') != std::wstring::npos) {
-      throw SymbolizerError{"symbol path entries must not contain semicolons"};
-    }
-    if (!result.empty()) {
-      result.push_back(L';');
-    }
-    result.append(value);
-  };
-  for (const auto& path : options.search_paths) {
-    append(absolute_path(path));
-  }
-  for (const auto& server : options.symbol_servers) {
-    if (server.empty()) {
-      throw SymbolizerError{"symbol server must not be empty"};
-    }
-    append(L"srv*" + utf8_to_wide(server));
-  }
-  return result;
-}
-
 [[nodiscard]] SymbolModuleStatus status_from_symbol_type(SYM_TYPE type) noexcept {
   switch (type) {
     case SymPdb:
@@ -164,11 +183,55 @@ class DbgHelpOptionsGuard {
 
 }  // namespace
 
+std::wstring build_symbol_search_path(const SymbolizerOptions& options) {
+  if (options.search_paths.empty() && options.symbol_servers.empty()) {
+    return options.raw_search_path;
+  }
+  std::wstring result;
+  const auto append = [&result](const std::wstring& value) {
+    if (value.find(L';') != std::wstring::npos) {
+      throw SymbolizerError{"symbol path entries must not contain semicolons"};
+    }
+    if (!result.empty()) {
+      result.push_back(L';');
+    }
+    result.append(value);
+  };
+  for (const auto& path : options.search_paths) {
+    append(absolute_path(path));
+  }
+  for (const auto& server : options.symbol_servers) {
+    if (server.empty()) {
+      throw SymbolizerError{"symbol server must not be empty"};
+    }
+    append(has_srv_prefix(server) ? widen_symbol_text(server)
+                                  : L"srv*" + widen_symbol_text(server));
+  }
+  return result;
+}
+
+std::wstring symbol_search_path_from_environment() {
+#ifdef _WIN32
+  std::wstring result = environment_value(L"_NT_SYMBOL_PATH");
+  const std::wstring alternate = environment_value(L"_NT_ALT_SYMBOL_PATH");
+#else
+  std::wstring result = environment_value("_NT_SYMBOL_PATH");
+  const std::wstring alternate = environment_value("_NT_ALT_SYMBOL_PATH");
+#endif
+  if (!alternate.empty()) {
+    if (!result.empty()) {
+      result.push_back(L';');
+    }
+    result.append(alternate);
+  }
+  return result;
+}
+
 class OfflineSymbolizer::Impl {
  public:
   explicit Impl(const SymbolizerOptions& options) : options_{options} {
 #ifdef _WIN32
-    search_path_ = build_search_path(options_);
+    search_path_ = build_symbol_search_path(options_);
     process_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if (process_ == nullptr) {
       throw SymbolizerError{"cannot create the DbgHelp session handle"};
