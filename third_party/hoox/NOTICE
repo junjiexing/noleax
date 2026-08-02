@@ -1,0 +1,63 @@
+hoox
+====
+
+hoox is a minimal inline-hooking library extracted and adapted from frida-gum.
+
+It retains only the inline-hooking (Interceptor) capability and reimplements
+its third-party dependencies in-tree, so that the shipped library has no
+external runtime dependencies and can be amalgamated into a single hoox.c /
+hoox.h (SQLite-style).
+
+
+Primary licence
+---------------
+
+hoox is distributed under the wxWindows Library Licence, Version 3.1, the same
+licence as frida-gum. See the COPYING file. All original frida-gum copyright
+headers are preserved in the extracted sources.
+
+    frida-gum — Copyright (C) Ole André Vadla Ravnås and contributors.
+    https://github.com/frida/frida-gum
+    Extraction baseline: commit a2ebd7b8f570a0aa82ef6823ffa0f7d39703ffa4
+    (tag 17.15.4).
+
+
+Third-party attribution
+------------------------
+
+* Microsoft Detours (MIT License), Copyright (C) Microsoft Corporation.
+  https://github.com/microsoft/Detours
+
+  The compact instruction decoder in src/disasm/ (hoox's replacement for
+  capstone) is a clean C reimplementation informed by Detours' disassembly
+  engine (src/disasm.cpp). Any file that ports or derives opcode tables or
+  decoding logic from Detours carries Detours' MIT copyright and permission
+  notice in its file header.
+
+  The MIT License:
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in
+    all copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+
+
+Not distributed
+---------------
+
+capstone (BSD-3-Clause) is used only under _refs/ as a differential-testing
+oracle. It is neither linked into nor shipped with hoox, so it imposes no
+distribution obligation here.

@@ -705,6 +705,14 @@ if(WIN32)
   )
   noleax_set_project_warnings(noleax-nt-virtual-memory-reinstall-test)
 
+  add_executable(noleax-patch-pc-guard-test
+    integration/patch_pc_guard_test.cpp
+  )
+  target_link_libraries(noleax-patch-pc-guard-test PRIVATE
+    noleax::hook-backend
+  )
+  noleax_set_project_warnings(noleax-patch-pc-guard-test)
+
   if(MSVC)
     add_executable(noleax-rtl-free-heap-contract-test
       integration/rtl_free_heap_contract_test.cpp
@@ -891,6 +899,16 @@ if(WIN32)
     PASS_REGULAR_EXPRESSION "^status=ok operations=[0-9]+ thread_creations=[0-9]+ "
     RUN_SERIAL TRUE
     TIMEOUT 120
+  )
+
+  add_test(NAME hook.patch-pc-guard
+    COMMAND noleax-patch-pc-guard-test
+  )
+  set_tests_properties(hook.patch-pc-guard PROPERTIES
+    LABELS "hook;windows;quiescence;pc-guard"
+    PASS_REGULAR_EXPRESSION "^status=ok blocked=1"
+    RUN_SERIAL TRUE
+    TIMEOUT 60
   )
   set_tests_properties(hook.rtl-allocate-heap-quiescence-race PROPERTIES
     LABELS "hook;windows;rtl-heap;quiescence;race;stress"

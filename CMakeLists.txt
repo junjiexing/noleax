@@ -51,7 +51,8 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(NoleaxWarnings)
 
 find_package(CLI11 CONFIG REQUIRED)
-find_package(hoox CONFIG REQUIRED)
+
+add_subdirectory(third_party/hoox)
 
 add_subdirectory(src/core)
 add_subdirectory(src/ipc)
@@ -111,7 +112,6 @@ set(NOLEAX_VCPKG_SHARE_DIR
 foreach(NOLEAX_THIRD_PARTY_PACKAGE IN ITEMS
     catch2
     cli11
-    hoox
     lz4
     tomlplusplus
     zstd)
@@ -126,6 +126,19 @@ foreach(NOLEAX_THIRD_PARTY_PACKAGE IN ITEMS
     DESTINATION "licenses"
     RENAME "${NOLEAX_THIRD_PARTY_PACKAGE}.txt")
 endforeach()
+
+# hoox is vendored (third_party/hoox); ship its license texts from there in the
+# same combined form vcpkg_install_copyright produced before. Normalize to LF so
+# the installed bytes do not depend on the checkout's core.autocrlf setting.
+file(READ "${PROJECT_SOURCE_DIR}/third_party/hoox/COPYING" NOLEAX_HOOX_COPYING)
+file(READ "${PROJECT_SOURCE_DIR}/third_party/hoox/NOTICE" NOLEAX_HOOX_NOTICE)
+file(WRITE "${CMAKE_BINARY_DIR}/hoox-copyright-raw.txt"
+  "${NOLEAX_HOOX_COPYING}\n${NOLEAX_HOOX_NOTICE}")
+configure_file("${CMAKE_BINARY_DIR}/hoox-copyright-raw.txt"
+  "${CMAKE_BINARY_DIR}/hoox-copyright.txt" @ONLY NEWLINE_STYLE LF)
+install(FILES "${CMAKE_BINARY_DIR}/hoox-copyright.txt"
+  DESTINATION "licenses"
+  RENAME "hoox.txt")
 
 if(WIN32)
   if(VCPKG_TARGET_TRIPLET MATCHES "^arm64-")

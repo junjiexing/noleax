@@ -6,7 +6,6 @@
   "dependencies": [
     "catch2",
     "cli11",
-    "hoox",
     "lz4",
     "tomlplusplus",
     "zstd"
