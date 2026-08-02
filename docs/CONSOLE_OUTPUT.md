@@ -52,8 +52,9 @@ summary 分别显示候选数、截至 c 已结束数、最终过滤数和 outst
 ## 5. stacks 布局
 
 `--group-by` 产生按排名排序的分组报告。events 聚合（标题 `noleax event stacks`）每组一行
-`#rank calls=N alloc=C/B free=C/B net=B`，leaks 聚合（标题 `noleax leak stacks`）每组一行
-`#rank calls=N bytes=B`，均随附展开后的调用栈。summary 给出组数、合计计数与字节；events 聚合
+`#rank calls=N alloc=C/B free=C/B net=B apis=名1,名2`，leaks 聚合（标题 `noleax leak stacks`）
+每组一行 `#rank calls=N bytes=B apis=名1,名2`，均随附展开后的调用栈。apis 列出组内涉及的
+分配 API 规范名（按首次出现去重）。summary 给出组数、合计计数与字节；events 聚合
 额外给出 aggregated-events 与 unmatched-frees（无法追踪到 allocation 的 free 数），leaks 聚合的
 窗口行与 leaks 报告一致。
 

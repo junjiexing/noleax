@@ -11,12 +11,25 @@
 #include <variant>
 #include <vector>
 
+#include "noleax/agent/windows/hook_registry.hpp"
 #include "noleax/analyzer/generation_tracker.hpp"
 #include "noleax/analyzer/time.hpp"
 #include "noleax/trace/event.hpp"
 #include "noleax/trace/identifiers.hpp"
 
 namespace noleax::analyzer {
+
+std::vector<std::string> group_api_names(std::span<const noleax::trace::ApiId> api_ids) {
+  std::vector<std::string> names;
+  names.reserve(api_ids.size());
+  for (const noleax::trace::ApiId api_id : api_ids) {
+    const auto* api = noleax::agent::windows::find_windows_hook(api_id);
+    names.push_back(api != nullptr ? std::string{api->canonical_name}
+                                   : "api-" + std::to_string(api_id));
+  }
+  return names;
+}
+
 namespace {
 
 void validate_window(const StacksWindow& window) {
@@ -127,6 +140,12 @@ class EventsStacksCollector {
     return group;
   }
 
+  static void note_api(EventsStacksGroup& group, noleax::trace::ApiId api_id) {
+    if (std::find(group.api_ids.begin(), group.api_ids.end(), api_id) == group.api_ids.end()) {
+      group.api_ids.push_back(api_id);
+    }
+  }
+
   void observe(const noleax::trace::Event& event) {
     if (!file_header_.has_value()) {
       throw StacksAnalysisError{"event appeared before FileHeader"};
@@ -142,6 +161,7 @@ class EventsStacksCollector {
 
     if (untracked_free && selected(event)) {
       EventsStacksGroup& group = group_for(event);
+      note_api(group, event.header.api_id);
       ++group.free_calls;
       ++group.calls;
       ++aggregated_event_count_;
@@ -154,6 +174,7 @@ class EventsStacksCollector {
         return;
       }
       EventsStacksGroup& group = group_for(event);
+      note_api(group, event.header.api_id);
       ++group.alloc_calls;
       ++group.calls;
       group.alloc_bytes +=
@@ -172,6 +193,7 @@ class EventsStacksCollector {
       return;
     }
     EventsStacksGroup& group = group_for(event);
+    note_api(group, event.header.api_id);
     ++group.free_calls;
     ++group.calls;
     group.free_bytes += generation.size;
@@ -219,6 +241,10 @@ LeaksStacksResult analyze_leak_stacks(std::istream& input, OutstandingWindow win
     if (group.calls == 0U) {
       group.stack_id = generation.created_by.header.stack_id;
       group.sample_event = generation.created_by;
+    }
+    if (std::find(group.api_ids.begin(), group.api_ids.end(),
+                  generation.created_by.header.api_id) == group.api_ids.end()) {
+      group.api_ids.push_back(generation.created_by.header.api_id);
     }
     ++group.calls;
     group.bytes += generation.size;

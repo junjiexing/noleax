@@ -893,6 +893,7 @@ enum class EventStacksColumn : std::uint8_t {
   kFreeCalls,
   kFreeBytes,
   kNetBytes,
+  kApiNames,
   kStackId,
   kStackStatus,
   kStackFrames,
@@ -930,6 +931,7 @@ constexpr std::array<std::string_view, kEventStacksColumnCount> kEventStacksHead
     "free_calls",
     "free_bytes",
     "net_bytes",
+    "api_names",
     "stack_id",
     "stack_status",
     "stack_frames",
@@ -963,6 +965,7 @@ enum class LeakStacksColumn : std::uint8_t {
   kRank,
   kCalls,
   kBytes,
+  kApiNames,
   kStackId,
   kStackStatus,
   kStackFrames,
@@ -997,6 +1000,7 @@ constexpr std::array<std::string_view, kLeakStacksColumnCount> kLeakStacksHeader
     "rank",
     "calls",
     "bytes",
+    "api_names",
     "stack_id",
     "stack_status",
     "stack_frames",
@@ -1255,6 +1259,15 @@ void CsvWriter::write_event_stacks_row(const EventsStacksGroup& group, std::uint
   set(row, EventStacksColumn::kFreeCalls, decimal(group.free_calls));
   set(row, EventStacksColumn::kFreeBytes, decimal(group.free_bytes));
   set(row, EventStacksColumn::kNetBytes, decimal(group.net_bytes()));
+  const auto names = group_api_names(group.api_ids);
+  std::string api_names;
+  for (std::size_t index = 0U; index < names.size(); ++index) {
+    if (index != 0U) {
+      api_names.push_back(';');
+    }
+    api_names.append(names[index]);
+  }
+  set(row, EventStacksColumn::kApiNames, std::move(api_names));
   const auto& event = group.sample_event;
   validate_stack_presentation(event, presentation);
   set(row, EventStacksColumn::kStackId, identifier_value(event.header.stack_id));
@@ -1342,6 +1355,15 @@ void CsvWriter::write_leak_stacks_row(const LeaksStacksGroup& group, std::uint64
   set(row, LeakStacksColumn::kRank, decimal(rank));
   set(row, LeakStacksColumn::kCalls, decimal(group.calls));
   set(row, LeakStacksColumn::kBytes, decimal(group.bytes));
+  const auto names = group_api_names(group.api_ids);
+  std::string api_names;
+  for (std::size_t index = 0U; index < names.size(); ++index) {
+    if (index != 0U) {
+      api_names.push_back(';');
+    }
+    api_names.append(names[index]);
+  }
+  set(row, LeakStacksColumn::kApiNames, std::move(api_names));
   const auto& event = group.sample_event;
   validate_stack_presentation(event, presentation);
   set(row, LeakStacksColumn::kStackId, identifier_value(event.header.stack_id));

@@ -498,3 +498,26 @@ TEST_CASE("JSON writer rejects invalid state, inconsistent summaries, and failed
     CHECK(output.str().empty());
   }
 }
+
+TEST_CASE("event stacks JSON pipeline lists group api names", "[analyzer][json]") {
+  noleax::testing::SyntheticTraceBuilder builder{file_header(), capture_scope()};
+  builder.add_event(allocation_event());
+  const auto encoded = builder.finish_normally().build();
+
+  std::istringstream input{encoded, std::ios::binary};
+  std::ostringstream output;
+  const auto result = noleax::analyzer::analyze_event_stacks_to_json(
+      input, output, {}, noleax::analyzer::StacksSort::kAllocBytes,
+      noleax::analyzer::AnalysisFilter{}, {},
+      [](const noleax::trace::Event&) { return allocation_presentation(); });
+
+  REQUIRE(result.groups.size() == 1U);
+  const auto document = parse_and_validate(output.str());
+  CHECK(document.at("mode").scalar() == "stacks");
+  CHECK(document.at("dataset").scalar() == "events");
+  const auto& groups = document.at("groups").array_items();
+  REQUIRE(groups.size() == 1U);
+  const auto& apis = groups[0].at("apis").array_items();
+  REQUIRE(apis.size() == 1U);
+  CHECK(apis[0].scalar() == "RtlAllocateHeap");
+}

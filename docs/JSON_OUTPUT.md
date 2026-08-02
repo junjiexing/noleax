@@ -79,7 +79,8 @@ summary 的 mode 专属字段为 `matched_events` 和 `filtered_events`。公共
 `window` 为 `{from_ns, to_ns|null}`，leaks 数据集沿用 leaks 窗口结构（含 `effective_b_ns`）。
 `groups` 按排序键降序排列：events 组包含 `rank`、`calls`、`alloc_calls`、`alloc_bytes`、
 `free_calls`、`free_bytes`、`net_bytes`，leaks 组包含 `rank`、`calls`、`bytes`；两者都带
-`stack_id` 与完整 `sample_event`（含调用栈）。events 数据集 summary 含 `groups`、`calls`、
+`apis`（组内涉及的分配 API 规范名数组，按首次出现排序）、`stack_id` 与完整 `sample_event`
+（含调用栈）。events 数据集 summary 含 `groups`、`calls`、
 `alloc_bytes`、`free_bytes`、`net_bytes`、`aggregated_events` 和 `unmatched_frees`；leaks 数据集
 summary 含 `groups`、`calls` 和 `bytes`。
 

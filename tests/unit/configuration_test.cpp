@@ -145,6 +145,7 @@ to = "2s"
 end = "3s"
 group_by = "stack"
 sort = "calls"
+trim_agent_frames = false
 
 [filters]
 min_size = "16B"
@@ -209,6 +210,7 @@ color = "always"
   CHECK(overrides.analysis.end.specified);
   CHECK(overrides.analysis.group_by.specified);
   CHECK(overrides.analysis.sort.specified);
+  CHECK(overrides.analysis.trim_agent_frames.specified);
   CHECK(overrides.filters.min_size.specified);
   CHECK(overrides.filters.max_size.specified);
   CHECK(overrides.filters.events.specified);
@@ -238,6 +240,7 @@ color = "always"
   CHECK(overrides.capture.min_size.value == 4U * 1024U);
   CHECK(overrides.trace.compression.value == noleax::config::Compression::kZstd);
   CHECK(overrides.analysis.inputs.value.front() == temporary.path() / "one.nlx");
+  CHECK_FALSE(overrides.analysis.trim_agent_frames.value);
   CHECK(overrides.filters.events.value ==
         std::vector{noleax::config::EventType::kAlloc, noleax::config::EventType::kRealloc});
   CHECK(overrides.filters.statuses.value == std::vector{noleax::config::EventStatus::kSuccess,

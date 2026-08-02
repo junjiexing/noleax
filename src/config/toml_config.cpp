@@ -395,7 +395,7 @@ void load_trace(const toml::table& table, ConfigurationOverrides& result,
 void load_analysis(const toml::table& table, ConfigurationOverrides& result,
                    const std::filesystem::path& base_directory) {
   constexpr std::array allowed{"inputs", "mode", "format",   "output", "from",
-                               "to",     "end",  "group_by", "sort"};
+                               "to",     "end",  "group_by", "sort",   "trim_agent_frames"};
   reject_unknown_keys(table, allowed, "analysis");
 
   if (const auto* node = optional_node(table, "inputs")) {
@@ -429,6 +429,10 @@ void load_analysis(const toml::table& table, ConfigurationOverrides& result,
   }
   if (const auto* node = optional_node(table, "sort")) {
     result.analysis.sort.set(read_enum<AnalysisSort>(*node, "analysis.sort", "--sort"));
+  }
+  if (const auto* node = optional_node(table, "trim_agent_frames")) {
+    result.analysis.trim_agent_frames.set(
+        read_boolean(*node, "analysis.trim_agent_frames", "--trim-agent-frames"));
   }
 }
 

@@ -214,6 +214,7 @@ generation 和机器输出 schema 在实现前不做猜测式拼接。
 | --end TIME | analysis.end | trace 终点 |
 | --group-by DIM | analysis.group_by | 不聚合 |
 | --sort KEY | analysis.sort | events 聚合 alloc-bytes,leaks 聚合 bytes |
+| --trim-agent-frames / --no-trim-agent-frames | analysis.trim_agent_frames | true |
 | --min-size SIZE | filters.min_size | 无 |
 | --max-size SIZE | filters.max_size | 无 |
 | --event TYPE | filters.events | 全部 |
@@ -241,8 +242,9 @@ mode：
 alloc/realloc/free：每组输出
 总调用次数、alloc 次数与请求字节合计、free 次数与释放字节合计（free 尺寸经 generation 追踪，
 未被追踪的 free 计入 unmatched-frees）及净字节。leaks 下聚合存活的 heap allocation：每组输出
-存活分配个数与存活字节合计。聚合文档的 JSON `mode` 字段为 `stacks`，并以 `dataset`
-区分 `events`/`leaks`。
+存活分配个数与存活字节合计。每组同时列出涉及的分配 API 规范名（console 的 `apis=`、JSON 的
+`apis` 数组、CSV 的 `api_names` 列，均按首次出现排序）。聚合文档的 JSON `mode` 字段为
+`stacks`，并以 `dataset` 区分 `events`/`leaks`。
 
 --sort（仅配合 --group-by）：
 
@@ -250,6 +252,10 @@ alloc/realloc/free：每组输出
 - leaks 聚合：calls、bytes（默认 bytes）
 
 均按降序，键值相同按 stack id 升序。不搭配 --group-by 使用 --sort 时配置校验报错。
+
+--trim-agent-frames：展示调用栈时隐藏 noleax-agent 自身的帧（默认开启）。agent 在 hook 路径
+上会留下少量自身栈帧，隐藏后每组栈的 #0 即目标程序的首个有效帧；需要完整原始栈时用
+--no-trim-agent-frames 关闭。该选项只影响展示，不改写 trace。
 
 format：
 

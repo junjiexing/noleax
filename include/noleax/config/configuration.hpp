@@ -345,6 +345,7 @@ struct AnalysisSettings {
   Setting<std::optional<std::chrono::nanoseconds>> end;
   Setting<std::optional<AnalysisGroupBy>> group_by;
   Setting<AnalysisSort> sort;
+  Setting<bool> trim_agent_frames;
 };
 
 struct FilterSettings {
@@ -437,6 +438,7 @@ struct AnalysisOverrides {
   SettingOverride<std::optional<std::chrono::nanoseconds>> end;
   SettingOverride<std::optional<AnalysisGroupBy>> group_by;
   SettingOverride<AnalysisSort> sort;
+  SettingOverride<bool> trim_agent_frames;
 };
 
 struct FilterOverrides {

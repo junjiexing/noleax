@@ -92,6 +92,7 @@ struct AnalyzeBindings {
   TextOption end;
   TextOption group_by;
   TextOption sort;
+  BooleanOption trim_agent_frames;
   TextOption min_size;
   TextOption max_size;
   ListOption events;
@@ -437,6 +438,9 @@ void apply_analyze_bindings(const AnalyzeBindings& bindings,
     overrides.analysis.group_by.set(
         parse_cli_enum<config::AnalysisGroupBy>(bindings.group_by.value, "--group-by"));
   }
+  if (const auto value = boolean_value(bindings.trim_agent_frames)) {
+    overrides.analysis.trim_agent_frames.set(*value);
+  }
   if (was_set(bindings.sort)) {
     overrides.analysis.sort.set(
         parse_cli_enum<config::AnalysisSort>(bindings.sort.value, "--sort"));
@@ -608,6 +612,8 @@ ParsedCommandLine parse_command_line(int argc, const char* const* argv,
   add_text_option(*analyze, analyze_bindings.group_by, "--group-by",
                   "Group results by this dimension");
   add_text_option(*analyze, analyze_bindings.sort, "--sort", "Group sort order");
+  add_boolean_option(*analyze, analyze_bindings.trim_agent_frames, "--trim-agent-frames",
+                     "--no-trim-agent-frames", "Hide noleax-agent frames in displayed stacks");
   add_text_option(*analyze, analyze_bindings.min_size, "--min-size", "Minimum allocation size");
   add_text_option(*analyze, analyze_bindings.max_size, "--max-size", "Maximum allocation size");
   add_list_option(*analyze, analyze_bindings.events, "--event", "Event type filter");

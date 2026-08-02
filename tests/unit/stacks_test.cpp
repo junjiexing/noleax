@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "noleax/agent/windows/hook_registry.hpp"
 #include "noleax/analyzer/filter.hpp"
 #include "noleax/analyzer/outstanding.hpp"
 #include "noleax/trace/event.hpp"
@@ -265,4 +266,43 @@ TEST_CASE("leak stacks default the window to the whole trace", "[analyzer][stack
   CHECK(result.groups.front().bytes == 48U);
   CHECK(result.outstanding.effective_b == result.outstanding.effective_c);
   CHECK(result.outstanding.observation_uses_trace_end);
+}
+
+TEST_CASE("event stacks record group api ids in first-seen order", "[analyzer][stacks]") {
+  auto free = free_event(3U, 130U, 11U, 1U);
+  free.header.api_id = noleax::agent::windows::kRtlFreeHeapApiId;
+  const auto encoded = make_trace({
+      allocation_event(1U, 110U, 11U, 1U, 64U),
+      allocation_event(2U, 120U, 11U, 2U, 32U),
+      free,
+  });
+
+  const auto result = analyze_events(encoded, noleax::analyzer::StacksSort::kCalls);
+  REQUIRE(result.groups.size() == 1U);
+  const auto& group = result.groups.front();
+  REQUIRE(group.api_ids.size() == 2U);
+  CHECK(group.api_ids.front() == noleax::agent::windows::kRtlAllocateHeapApiId);
+  CHECK(group.api_ids.back() == noleax::agent::windows::kRtlFreeHeapApiId);
+}
+
+TEST_CASE("leak stacks record group api ids", "[analyzer][stacks]") {
+  const auto encoded = make_trace({
+      allocation_event(1U, 110U, 11U, 1U, 64U),
+      allocation_event(2U, 120U, 11U, 2U, 32U),
+  });
+
+  const auto result = analyze_leaks(encoded, noleax::analyzer::StacksSort::kBytes);
+  REQUIRE(result.groups.size() == 1U);
+  REQUIRE(result.groups.front().api_ids.size() == 1U);
+  CHECK(result.groups.front().api_ids.front() == noleax::agent::windows::kRtlAllocateHeapApiId);
+}
+
+TEST_CASE("group api names resolve canonical hook names", "[analyzer][stacks]") {
+  const std::vector<noleax::trace::ApiId> ids{noleax::agent::windows::kRtlAllocateHeapApiId,
+                                              noleax::agent::windows::kRtlFreeHeapApiId, 9999U};
+  const auto names = noleax::analyzer::group_api_names(ids);
+  REQUIRE(names.size() == 3U);
+  CHECK(names[0] == "RtlAllocateHeap");
+  CHECK(names[1] == "RtlFreeHeap");
+  CHECK(names[2] == "api-9999");
 }

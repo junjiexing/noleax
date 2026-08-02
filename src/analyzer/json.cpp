@@ -752,6 +752,15 @@ void JsonWriter::write_event_stacks(const EventsStacksResult& result, const Anal
     json.signed_number(group.net_bytes());
     json.raw(",\"stack_id\":");
     write_identifier(json, group.stack_id);
+    json.raw(",\"apis\":[");
+    const auto names = group_api_names(group.api_ids);
+    for (std::size_t index = 0U; index < names.size(); ++index) {
+      if (index != 0U) {
+        json.raw(",");
+      }
+      json.string(names[index]);
+    }
+    json.raw("]");
     json.raw(",\"sample_event\":");
     write_event_object(group.sample_event, presentation);
     json.raw("}");
@@ -830,6 +839,15 @@ void JsonWriter::write_leak_stacks(const LeaksStacksResult& result, const Analys
     json.unsigned_number(group.bytes);
     json.raw(",\"stack_id\":");
     write_identifier(json, group.stack_id);
+    json.raw(",\"apis\":[");
+    const auto names = group_api_names(group.api_ids);
+    for (std::size_t index = 0U; index < names.size(); ++index) {
+      if (index != 0U) {
+        json.raw(",");
+      }
+      json.string(names[index]);
+    }
+    json.raw("]");
     json.raw(",\"sample_event\":");
     write_event_object(group.sample_event, presentation);
     json.raw("}");

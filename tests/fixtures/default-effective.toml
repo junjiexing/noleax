@@ -40,6 +40,7 @@ to = "" # source: default
 end = "" # source: default
 group_by = "" # source: default
 sort = "alloc-bytes" # source: default
+trim_agent_frames = true # source: default
 
 [filters]
 min_size = "" # source: default

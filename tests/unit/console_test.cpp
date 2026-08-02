@@ -345,3 +345,54 @@ TEST_CASE("console summary names every completeness issue including future bits"
   writer.finish_events(future);
   CHECK(output.str().find("unknown-issue-bits=0x80000000") != std::string::npos);
 }
+
+TEST_CASE("console event stacks output lists group api names", "[analyzer][console]") {
+  noleax::analyzer::EventsStacksResult result;
+  result.trace = trace_result(false);
+  result.trace.event_count = 3U;
+
+  noleax::analyzer::EventsStacksGroup group;
+  group.stack_id = noleax::trace::StackId{11U};
+  group.sample_event = allocation_event();
+  group.api_ids = {1U, 2U};
+  group.calls = 3U;
+  group.alloc_calls = 2U;
+  group.alloc_bytes = 128U;
+  group.free_calls = 1U;
+  group.free_bytes = 64U;
+  result.groups.push_back(group);
+  result.aggregated_event_count = 3U;
+
+  std::ostringstream output;
+  noleax::analyzer::ConsoleWriter writer{output};
+  writer.write_event_stacks(result,
+                            [](const noleax::trace::Event&) { return allocation_metadata(); });
+
+  const std::string expected = R"(noleax event stacks
+trace: platform=windows architecture=x64 pointer-width=64 file-index=0
+clock: frequency=1000000000Hz origin=100 utc-origin-ns=1000
+capture: process-start
+window: [0ns, trace-endns)
+groups:
+#1 calls=3 alloc=2/128B free=1/64B net=64B apis=RtlAllocateHeap,RtlFreeHeap
+  stack #11 (complete):
+    #0 app.exe!main+0x4 [0x0000000140001234]
+    #1 ntdll.dll+0x5678 [0x00007ffb00005678]
+
+summary:
+  groups: 1
+  calls: 3
+  alloc-bytes: 128
+  free-bytes: 64
+  net-bytes: 64
+
+  aggregated-events: 3
+  unmatched-frees: 0
+  trace-events: 3
+  loss-records: 0
+  bytes-read: 768
+  termination: normal
+  completeness: complete (lifecycle=complete stack-detail=complete understanding=full)
+)";
+  CHECK(output.str() == expected);
+}
