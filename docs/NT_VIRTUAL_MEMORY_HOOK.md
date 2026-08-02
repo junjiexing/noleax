@@ -56,7 +56,7 @@ dictionary 和文件大小上限沿用 [TRACE_WRITER.md](TRACE_WRITER.md) 的合
 - pseudo handle、真实当前进程 handle和真实 suspended child remote handle；
 - preexisting reservation、MappingId 复用、outstanding generation 与正式 EventStream 回读；
 - NT Heap 外层调用造成的真实嵌套 NT VM 递归抑制；
-- queue overflow 计数守恒、模块 pin、并发 thread churn 和 quiescent teardown。
+- queue overflow 计数守恒、模块引用、并发 thread churn 和 quiescent teardown。
 
 验证结果：Debug/Release 各 193/193，hardened 213/213；20 个 PE 通过 CFG/CET metadata，
 五个 quiescence 目标报告 `cfg=1 cet=1`。新增 NT VM race 连续 100/100，MD/MT 8×20,000×2 长差分

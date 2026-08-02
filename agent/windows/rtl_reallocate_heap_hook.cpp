@@ -1,6 +1,7 @@
 #include "noleax/agent/windows/rtl_reallocate_heap_hook.hpp"
 
 #include "noleax/agent/hook_guard.hpp"
+#include "noleax/agent/patch_rendezvous.hpp"
 #include "noleax/agent/replacement_lifecycle.hpp"
 
 #define WIN32_LEAN_AND_MEAN
@@ -67,7 +68,8 @@ std::atomic<RtlReAllocateHeapHookState*> active_hook_state{nullptr};
 std::atomic<void*> restored_target{nullptr};
 std::atomic<RtlReAllocateHeapHook*> active_owner{nullptr};
 std::atomic<bool> installation_retired{false};
-std::atomic<bool> replacement_module_pinned{false};
+std::atomic<bool> replacement_module_referenced{false};
+HMODULE replacement_module_handle{nullptr};
 
 static_assert(OriginalTrampolineSlot::is_always_lock_free);
 static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
@@ -150,7 +152,10 @@ void increment_saturating(std::atomic<std::uint64_t>& value) noexcept {
 
 // Not noexcept: SEH exceptions raised by the original API must unwind through this frame
 // (for example HEAP_GENERATE_EXCEPTIONS failures); clang terminates when an exception
-// leaves a noexcept function.
+// leaves a noexcept function. The definition stays in ".nlxhk" so the patch rendezvous covers
+// the window before the lifecycle counters engage.
+#pragma code_seg(push, ".nlxhk")
+
 PVOID NTAPI replacement_rtl_reallocate_heap(PVOID heap, ULONG flags, PVOID address, SIZE_T size) {
   const ReplacementRoute route = replacement_lifecycle.enter_unscoped();
   RtlReAllocateHeapHookState* hook_state = nullptr;
@@ -261,22 +266,33 @@ PVOID NTAPI replacement_rtl_reallocate_heap(PVOID heap, ULONG flags, PVOID addre
   return result;
 }
 
+#pragma code_seg(pop)
+
 [[nodiscard]] void* replacement_address() noexcept {
   return reinterpret_cast<void*>(&replacement_rtl_reallocate_heap);
 }
 
-[[nodiscard]] bool pin_replacement_module() noexcept {
-  if (replacement_module_pinned.load(std::memory_order_acquire)) {
+[[nodiscard]] bool reference_replacement_module() noexcept {
+  if (replacement_module_referenced.load(std::memory_order_acquire)) {
     return true;
   }
   HMODULE module = nullptr;
-  const DWORD flags = GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN;
+  const DWORD flags = GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS;
   if (GetModuleHandleExW(flags, reinterpret_cast<LPCWSTR>(replacement_address()), &module) ==
       FALSE) {
     return false;
   }
-  replacement_module_pinned.store(true, std::memory_order_release);
+  replacement_module_handle = module;
+  replacement_module_referenced.store(true, std::memory_order_release);
   return true;
+}
+
+void release_replacement_module() noexcept {
+  if (!replacement_module_referenced.exchange(false, std::memory_order_acq_rel)) {
+    return;
+  }
+  static_cast<void>(FreeLibrary(replacement_module_handle));
+  replacement_module_handle = nullptr;
 }
 
 void release_owner(RtlReAllocateHeapHook* owner, bool clear_hook_state) noexcept {
@@ -365,9 +381,9 @@ FastHookResult RtlReAllocateHeapHook::install() {
                                             std::memory_order_acquire)) {
     return {HookInstallStatus::kAlreadyReplaced, nullptr};
   }
-  if (!pin_replacement_module()) {
+  if (!reference_replacement_module()) {
     release_owner(this, true);
-    throw HookBackendError{"the replacement module could not be pinned"};
+    throw HookBackendError{"the replacement module could not be referenced"};
   }
   if (!backend_->acquire_trampoline_lifetime_lease()) {
     release_owner(this, true);
@@ -459,8 +475,8 @@ bool RtlReAllocateHeapHook::has_pending_teardown() const noexcept {
   return state_ == State::kTeardownPending;
 }
 
-bool RtlReAllocateHeapHook::replacement_module_is_pinned() const noexcept {
-  return replacement_module_pinned.load(std::memory_order_acquire);
+bool RtlReAllocateHeapHook::replacement_module_is_referenced() const noexcept {
+  return replacement_module_referenced.load(std::memory_order_acquire);
 }
 
 std::uint64_t RtlReAllocateHeapHook::replacement_in_flight_count() const noexcept {
@@ -542,6 +558,16 @@ bool RtlReAllocateHeapHook::try_finish_teardown(std::uint32_t max_attempts) noex
   if (!backend_teardown_complete_) {
     return false;
   }
+  // The lifecycle counters cannot see a thread between the restored jump and the entry
+  // increment. Prove the replacement code section is empty before releasing the module
+  // reference; on failure stay teardown-pending and keep both the reference and the retired
+  // flag so a later flush can retry.
+  if (!verify_replacement_evacuated(hook_code_region(replacement_address()),
+                                    kDefaultRendezvousMaxAttempts)) {
+    return false;
+  }
+  release_replacement_module();
+  installation_retired.store(false, std::memory_order_release);
   finish_teardown();
   return true;
 }

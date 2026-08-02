@@ -67,20 +67,44 @@ writer 在 hook 已完全卸载，或仍 installed 但已逻辑停录、`recordi
 `finish()`；teardown-pending 或仍记录时拒绝结束。后者是产品 profile 的标准路径，保证 final drain
 之后不会再出现 queue producer，同时把危险的物理 patch 延后到目标 worker 停止之后。
 
-## 5. DLL pin 和当前限制
+## 5. 模块引用和 patch rendezvous
 
-在 patch 激活前，adapter 使用 `GetModuleHandleExW(..., GET_MODULE_HANDLE_EX_FLAG_PIN)` 将承载
-replacement 的模块固定到进程退出。即使线程已取到旧跳转但尚未被入口计数覆盖，replacement 代码也
-不会被 `FreeLibrary` 解除映射；该线程随后读取 `target` 路由并走已恢复入口。
+在 patch 激活前，adapter 使用 `GetModuleHandleExW(..., GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS)`
+对承载 replacement 的模块持有普通 +1 引用，不再永久 pin。入口计数看不到 in-transit 线程（已取到
+旧跳转、尚未走进入口计数器的线程），所以只有在证明这类线程已经不存在之后，引用才能释放。
 
-因此当前 adapter 有三个刻意限制：
+证明由 patch rendezvous 完成。各 replacement 入口函数和 `ReplacementLifecycle` 的 gate 与
+enter/leave 计数窗口编译进专用 `.nlxhk` 段：in-transit 线程从旧跳转落地到入口计数自增之间，RIP
+必然位于该段；对称地，线程在退出计数归零后到离开 replacement 之前的尾迹也在该段。段内刻意不放
+其他 agent 代码（writer、tracker 等），避免无关线程造成 rendezvous 假失败；gate 读取线程深度不
+调用共享的 guard 查询（它们的被调在段外会成为扫描盲区），而是走只有 gate 调用的专用 probe，
+同样放进该段。已知残留窗口：gate 关闭期间停在等待循环里的线程（多数是 agent 内部 worker，本身
+无害）会把 RIP 留在 CRT 原子等待代码中，RIP 扫描不可见；若其中混有尚未计数的 in-transit 线程，
+gate 重新打开后它会继续走进入口计数并触碰 hook state。该窗口在 rendezvous 引入前就存在，产品流
+由"卸载前停住目标 worker"覆盖，standalone 退出路径下进程随即结束。teardown
+在 backend flush 完成之后、`finish_teardown` 之前执行 rendezvous：
 
-- `FreeLibrary` 可以释放调用方引用，但包含 replacement 的 DLL 仍驻留到进程退出；
-- adapter 集合各自每进程只允许一次成功安装，避免旧跳转被误归入下一捕获 generation。
-- 产品 profile 不承诺在目标线程持续运行时安全物理 revert；controller 必须先停住目标 worker。
+1. Toolhelp 枚举进程线程，跳过当前线程，逐个 OpenThread + SuspendThread，记录到固定容量的静态
+   存储；重复枚举直到一整轮没有新挂起的线程，覆盖枚举期间的线程创建。
+2. 全部挂起后逐线程读取 `CONTEXT_CONTROL`，任何 RIP 落在 `.nlxhk` 段内即判本轮失败。
+3. 恢复所有由本轮挂起的线程（各只 ResumeThread 一次，不影响外部既有的挂起计数），关闭句柄。
+4. 全部干净才判成功；否则 yield 后有界重试。
 
-真正可重复安装并可解除模块 pin 的方案需要可证明覆盖所有线程 PC 的 patch rendezvous，留给后续
-注入生命周期设计。当前接口不会把“停止记录”误报为“DLL 已可解除映射”。
+rendezvous fail-closed：region 为空、线程无法打开/挂起/读取、静态存储容量耗尽、或并发进入
+rendezvous，都判失败。挂起期间不做堆分配、不调用 loader API、不持任何锁。
+
+rendezvous 成功后 adapter 才 `FreeLibrary` 释放模块引用（DLL 之后可真正卸载），并把
+`installation_retired` 复位，允许用新实例进行下一轮安装；实例级 `State::kRetired` 不变，旧实例
+不复用。rendezvous 失败时保持 teardown-pending、保持模块引用和 retired 标志，每次 `flush()` 重试
+都会重新执行 rendezvous：被 controller 冻结在 replacement 入口的 worker 会让 rendezvous 持续失败，
+worker 恢复后 in-transit 线程按 `target` 路由排空，后续 flush 即可成功。
+`abandon_pending_teardown` 路径不变：失败就故意保留全部状态与模块引用。
+
+当前仍保留一个刻意限制：产品 profile 不承诺在目标线程持续运行时安全物理 revert；controller 必须
+先停住目标 worker。rendezvous 证明的是"没有线程还在 replacement 代码段内"，它不解决线程 RIP 停在
+patch 区 mid-instruction、或恢复执行时流水线仍持有旧字节的问题，因此不改 Hoox port、不做 RIP
+relocation。早先的另外两条限制（模块永久 pin、每进程只允许一次成功安装）随 rendezvous 的排空证明
+移除。
 
 ## 6. Windows patch overlay
 
@@ -105,7 +129,11 @@ Windows 代码更新临界区：
   memory lifecycle 循环和线程 churn，同时执行 `uninstall(0)` 与后续 flush；
 - 停止完成后继续执行至少 20,000 次分配，确认记录计数不再变化；
 - queue 的 `recordable = dequeued + dropped` 守恒；
-- 成功 stop 和 `FreeLibrary` 后模块仍被 pin，导出代码仍可执行；
+- patch rendezvous 单测：`.nlxhk` region 解析、空 region fail-closed、段内自旋线程有界判失败、
+  线程离开后判成功；
+- 成功 stop 和 `FreeLibrary` 后模块引用已释放，harness DLL 真正解除映射；
+- allocate 单 adapter、五 hook heap 组合和 NT memory 组合各自卸载复位后用新实例重装，分配/VM
+  操作仍被记录，再次卸载后引用同样释放；
 - 原有 writer final drain、MD/MT ABI 差分和全量回归。
 
 native profile 组合验证：九个逻辑 API 共用一个 queue；持续 heap/VM worker 与线程 churn

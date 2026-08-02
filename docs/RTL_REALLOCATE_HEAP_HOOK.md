@@ -10,7 +10,7 @@
 PVOID NTAPI RtlReAllocateHeap(PVOID heap, ULONG flags, PVOID address, SIZE_T size);
 ~~~
 
-replacement 与 allocate/free adapter 使用相同的固定 TEB guard、`ReplacementLifecycle`、模块 pin、
+replacement 与 allocate/free adapter 使用相同的固定 TEB guard、`ReplacementLifecycle`、模块引用、
 trampoline lifetime lease 和 quiescent teardown。只有 outermost 调用记录事件；recursive 与
 internal-thread 调用只透传 original。original 返回后立即保存 `LastError`，完成固定字段写入、栈捕获
 与无等待入队后恢复。SEH 第一遍 filter 只生成固定大小的 exception event，然后

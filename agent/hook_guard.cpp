@@ -197,4 +197,29 @@ std::uint32_t current_internal_depth() noexcept { return load_thread_state().int
 
 bool current_thread_is_internal() noexcept { return load_thread_state().internal_depth != 0U; }
 
+#pragma code_seg(push, ".nlxhk")
+
+namespace detail {
+
+HookGuardThreadState probe_hook_guard_thread_state() noexcept {
+#if defined(_WIN32)
+  const DWORD index = state_tls_index.load(std::memory_order_acquire);
+  if (index == TLS_OUT_OF_INDEXES || index >= TLS_MINIMUM_AVAILABLE) {
+    return {};
+  }
+  const auto packed = reinterpret_cast<std::uintptr_t>(NtCurrentTeb()->TlsSlots[index]);
+  return {static_cast<std::uint32_t>(packed & kDepthMask),
+          static_cast<std::uint32_t>((packed >> kDepthBits) & kDepthMask)};
+#else
+  if (!runtime_ready.load(std::memory_order_acquire)) {
+    return {};
+  }
+  return {thread_state.hook_depth, thread_state.internal_depth};
+#endif
+}
+
+}  // namespace detail
+
+#pragma code_seg(pop)
+
 }  // namespace noleax::agent
