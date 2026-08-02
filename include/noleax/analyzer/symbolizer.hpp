@@ -55,7 +55,19 @@ struct SymbolModuleResult {
 struct SymbolizerOptions {
   std::vector<std::filesystem::path> search_paths;
   std::vector<std::string> symbol_servers;
+  // Verbatim DbgHelp search path used only when search_paths and symbol_servers are both
+  // empty (the CLI fills this from _NT_SYMBOL_PATH/_NT_ALT_SYMBOL_PATH).
+  std::wstring raw_search_path;
 };
+
+// Joins search paths and symbol servers into a DbgHelp search path. Servers get an "srv*"
+// prefix unless they already carry one (case-insensitive), so "srv*cache*server" can select
+// the download cache. Returns raw_search_path verbatim when both lists are empty.
+[[nodiscard]] std::wstring build_symbol_search_path(const SymbolizerOptions& options);
+
+// DbgHelp-style search path from _NT_SYMBOL_PATH and _NT_ALT_SYMBOL_PATH joined with ';'.
+// Empty when neither variable is set.
+[[nodiscard]] std::wstring symbol_search_path_from_environment();
 
 class SymbolizerError final : public std::runtime_error {
  public:

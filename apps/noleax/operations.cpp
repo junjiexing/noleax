@@ -132,6 +132,11 @@ void ensure_output_directory(const std::filesystem::path& path) {
   noleax::analyzer::SymbolizerOptions options;
   options.search_paths = configuration.symbols.paths.value;
   options.symbol_servers = configuration.symbols.servers.value;
+  // DbgHelp convention: with no explicitly configured paths or servers, fall back to the
+  // _NT_SYMBOL_PATH/_NT_ALT_SYMBOL_PATH environment variables.
+  if (options.search_paths.empty() && options.symbol_servers.empty()) {
+    options.raw_search_path = noleax::analyzer::symbol_search_path_from_environment();
+  }
   return options;
 }
 

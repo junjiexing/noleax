@@ -118,6 +118,11 @@ standalone 激活参数烧进镜像，patched 副本可直接运行：agent 读�
 生命周期事件不被过滤。命令行指定该值时覆盖配置文件。完整规则见
 [WINDOWS_HOOK_PROFILES.md](WINDOWS_HOOK_PROFILES.md)。
 
+`symbols.paths` 与 `symbols.servers` 都为空时，analyzer 回退到 `_NT_SYMBOL_PATH` 与
+`_NT_ALT_SYMBOL_PATH` 环境变量（DbgHelp 惯例）；配置任一者则忽略环境变量。`symbols.servers`
+的值已带 `srv*` 前缀（大小写不敏感）时原样透传，可用 `srv*缓存目录*服务器地址` 指定本地
+下载缓存，否则自动补 `srv*` 前缀。
+
 ## 3. operation
 
 允许值：

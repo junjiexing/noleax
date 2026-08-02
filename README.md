@@ -234,9 +234,12 @@ noleax analyze [options] trace.nlx
 | `--status STATUS` | 全部 | success、failure、unmatched、preexisting |
 | `--symbols MODE` | auto | 符号解析模式 |
 | `--symbol-path PATH` | 空 | 本地符号路径 |
-| `--symbol-server URL` | 空 | 符号服务器 |
+| `--symbol-server URL` | 空 | 符号服务器；带 `srv*` 前缀的值原样透传（可用 `srv*缓存*地址` 指定缓存） |
 
 过滤规则：同一类别的重复选项为 OR，不同类别之间为 AND。
+
+`--symbol-path` 与 `--symbol-server` 都未配置时回退到 `_NT_SYMBOL_PATH`/`_NT_ALT_SYMBOL_PATH`
+环境变量（DbgHelp 惯例）；配置任一者则忽略环境变量。符号服务器下载由 DbgHelp 按需进行。
 
 ### config：配置验证与查看
 

@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -92,6 +93,30 @@ class LoadedImage {
   module.image_path = fixture_path();
   return module;
 }
+
+class EnvironmentVariableGuard {
+ public:
+  explicit EnvironmentVariableGuard(const wchar_t* name) : name_{name} {
+    const DWORD required = GetEnvironmentVariableW(name, nullptr, 0);
+    if (required != 0U) {
+      std::wstring value(required, L'\0');
+      const DWORD length = GetEnvironmentVariableW(name, value.data(), required);
+      value.resize(length);
+      saved_ = std::move(value);
+    }
+  }
+
+  ~EnvironmentVariableGuard() {
+    SetEnvironmentVariableW(name_.c_str(), saved_.has_value() ? saved_->c_str() : nullptr);
+  }
+
+  EnvironmentVariableGuard(const EnvironmentVariableGuard&) = delete;
+  EnvironmentVariableGuard& operator=(const EnvironmentVariableGuard&) = delete;
+
+ private:
+  std::wstring name_;
+  std::optional<std::wstring> saved_;
+};
 
 #endif
 
@@ -274,6 +299,87 @@ TEST_CASE("offline symbolizer validates modules and preserves fallback informati
     CHECK_THROWS_AS(noleax::analyzer::OfflineSymbolizer{options},
                     noleax::analyzer::SymbolizerError);
   }
+}
+
+TEST_CASE("symbol search path joins paths wraps servers and honors the raw fallback",
+          "[analyzer][symbolizer]") {
+  using noleax::analyzer::SymbolizerOptions;
+
+  SymbolizerOptions fallback;
+  fallback.raw_search_path = L"C:\\symcache;srv*https://symbols.example";
+  CHECK(noleax::analyzer::build_symbol_search_path(fallback) == fallback.raw_search_path);
+
+  const auto absolute = std::filesystem::absolute(std::filesystem::path{L"symbols"});
+  SymbolizerOptions paths;
+  paths.raw_search_path = L"ignored";
+  paths.search_paths.emplace_back(L"symbols");
+  CHECK(noleax::analyzer::build_symbol_search_path(paths) == absolute.wstring());
+
+  SymbolizerOptions servers;
+  servers.symbol_servers = {"https://one.example/symbols",
+                            "srv*C:\\cache*https://two.example/symbols",
+                            "SRV*D:\\cache*https://three.example/symbols"};
+  CHECK(noleax::analyzer::build_symbol_search_path(servers) ==
+        L"srv*https://one.example/symbols;srv*C:\\cache*https://two.example/symbols;"
+        L"SRV*D:\\cache*https://three.example/symbols");
+
+  SymbolizerOptions mixed;
+  mixed.search_paths.emplace_back(L"symbols");
+  mixed.symbol_servers = {"https://one.example"};
+  CHECK(noleax::analyzer::build_symbol_search_path(mixed) ==
+        absolute.wstring() + L";srv*https://one.example");
+
+  SymbolizerOptions invalid_path;
+  invalid_path.search_paths.emplace_back(L"invalid;path");
+  CHECK_THROWS_AS(noleax::analyzer::build_symbol_search_path(invalid_path),
+                  noleax::analyzer::SymbolizerError);
+
+  SymbolizerOptions invalid_server;
+  invalid_server.symbol_servers = {"https://one.example;symbols"};
+  CHECK_THROWS_AS(noleax::analyzer::build_symbol_search_path(invalid_server),
+                  noleax::analyzer::SymbolizerError);
+
+  SymbolizerOptions empty_server;
+  empty_server.symbol_servers = {""};
+  CHECK_THROWS_AS(noleax::analyzer::build_symbol_search_path(empty_server),
+                  noleax::analyzer::SymbolizerError);
+}
+
+TEST_CASE("symbol search path from environment joins the NT symbol variables",
+          "[analyzer][symbolizer]") {
+  const EnvironmentVariableGuard primary{L"_NT_SYMBOL_PATH"};
+  const EnvironmentVariableGuard alternate{L"_NT_ALT_SYMBOL_PATH"};
+
+  SetEnvironmentVariableW(L"_NT_SYMBOL_PATH", L"C:\\symcache;srv*https://symbols.example");
+  SetEnvironmentVariableW(L"_NT_ALT_SYMBOL_PATH", nullptr);
+  CHECK(noleax::analyzer::symbol_search_path_from_environment() ==
+        L"C:\\symcache;srv*https://symbols.example");
+
+  SetEnvironmentVariableW(L"_NT_ALT_SYMBOL_PATH", L"D:\\alt");
+  CHECK(noleax::analyzer::symbol_search_path_from_environment() ==
+        L"C:\\symcache;srv*https://symbols.example;D:\\alt");
+
+  SetEnvironmentVariableW(L"_NT_SYMBOL_PATH", nullptr);
+  CHECK(noleax::analyzer::symbol_search_path_from_environment() == L"D:\\alt");
+
+  SetEnvironmentVariableW(L"_NT_ALT_SYMBOL_PATH", nullptr);
+  CHECK(noleax::analyzer::symbol_search_path_from_environment().empty());
+}
+
+TEST_CASE("offline symbolizer falls back to the raw search path", "[analyzer][symbolizer]") {
+  constexpr std::uint64_t trace_base = 0x00007ff900000000ULL;
+  const LoadedImage image{fixture_path()};
+  const std::uint64_t function_offset = image.exported_offset("noleax_symbolizer_fixture_target");
+
+  noleax::analyzer::SymbolizerOptions options;
+  options.raw_search_path = fixture_path().parent_path().wstring();
+  noleax::analyzer::OfflineSymbolizer symbolizer{options};
+  const auto module = fixture_module(30U, trace_base, image.size());
+  const auto result = symbolizer.register_module(module);
+  CAPTURE(noleax::analyzer::symbol_module_status_name(result.status));
+  REQUIRE(result.status == noleax::analyzer::SymbolModuleStatus::kSymbolsLoaded);
+  const auto frame = symbolizer.resolve_frame(module.module_id, trace_base + function_offset);
+  CHECK(frame.symbol_name.has_value());
 }
 
 #else
