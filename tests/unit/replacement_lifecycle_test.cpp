@@ -93,3 +93,36 @@ TEST_CASE("replacement finalize gate parks new outer entries until reopened",
   CHECK(entered.load(std::memory_order_acquire));
   CHECK(ReplacementQuiescenceGate::waiter_count() == 0U);
 }
+
+TEST_CASE("replacement gate drain waits for parked entries to leave",
+          "[agent][replacement-lifecycle][quiescence]") {
+  using noleax::agent::ReplacementLifecycle;
+  using noleax::agent::ReplacementQuiescenceGate;
+
+  struct GateReset final {
+    ~GateReset() { ReplacementQuiescenceGate::open(); }
+  } reset;
+
+  ReplacementQuiescenceGate::open();
+  CHECK(ReplacementQuiescenceGate::wait_for_drain(0U));
+
+  ReplacementLifecycle lifecycle;
+  lifecycle.start_recording();
+  REQUIRE(ReplacementQuiescenceGate::close_and_wait(0U));
+
+  std::atomic<bool> entered{false};
+  std::thread blocked{[&] {
+    const auto entry = lifecycle.enter();
+    entered.store(true, std::memory_order_release);
+  }};
+  while (ReplacementQuiescenceGate::waiter_count() == 0U) {
+    std::this_thread::yield();
+  }
+  CHECK_FALSE(ReplacementQuiescenceGate::wait_for_drain(4U));
+
+  ReplacementQuiescenceGate::open();
+  REQUIRE(ReplacementQuiescenceGate::wait_for_drain(1'000'000U));
+  blocked.join();
+  CHECK(entered.load(std::memory_order_acquire));
+  CHECK(ReplacementQuiescenceGate::wait_for_drain(0U));
+}
