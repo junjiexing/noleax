@@ -65,7 +65,7 @@ Hoox `flush` 只知道其 trampoline 是否仍被使用。`replace_fast` 是直�
 
 backend 另提供 trampoline lifetime lease：lease 存在时允许 revert，但拒绝 flush/deinit。
 allocator adapter 在 Noleax replacement in-flight 归零后才释放 lease。完整的三路 gate、Windows
-RWX patch 暂停和 module pin 见 [HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)。该协议不能通过单纯增大
+RWX patch 暂停、模块引用和 patch rendezvous 见 [HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)。该协议不能通过单纯增大
 Hoox flush 次数替代。
 
 ## 5. 多实例与线程安全

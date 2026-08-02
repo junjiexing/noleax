@@ -99,7 +99,7 @@ int main() {
   noleax::agent::HookBackend backend;
   noleax::agent::windows::NtMemoryHooks hooks{backend, 1024U, 0U};
   const auto installed = hooks.install();
-  if (!installed.installed() || !hooks.replacement_module_is_pinned()) {
+  if (!installed.installed() || !hooks.replacement_module_is_referenced()) {
     return 3;
   }
 

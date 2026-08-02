@@ -119,3 +119,23 @@ TEST_CASE("hook guard state is isolated per thread", "[agent][hook-guard]") {
   CHECK_FALSE(noleax::agent::current_thread_is_internal());
   CHECK(noleax::agent::current_hook_depth() == 0U);
 }
+
+TEST_CASE("hook guard probe reports zero depths until the runtime is ready",
+          "[agent][hook-guard]") {
+  const auto not_ready = noleax::agent::detail::probe_hook_guard_thread_state();
+  CHECK(not_ready.hook_depth == 0U);
+  CHECK(not_ready.internal_depth == 0U);
+
+  REQUIRE(noleax::agent::acquire_hook_guard_runtime());
+  [[maybe_unused]] const HookGuardRuntimeLease runtime;
+  {
+    const noleax::agent::InternalThreadScope internal_scope;
+    const noleax::agent::HookInvocationGuard guard;
+    const auto inside = noleax::agent::detail::probe_hook_guard_thread_state();
+    CHECK(inside.hook_depth == 1U);
+    CHECK(inside.internal_depth == 1U);
+  }
+  const auto cleared = noleax::agent::detail::probe_hook_guard_thread_state();
+  CHECK(cleared.hook_depth == 0U);
+  CHECK(cleared.internal_depth == 0U);
+}

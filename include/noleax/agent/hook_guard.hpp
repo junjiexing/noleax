@@ -51,4 +51,18 @@ class InternalThreadScope final {
 [[nodiscard]] std::uint32_t current_internal_depth() noexcept;
 [[nodiscard]] bool current_thread_is_internal() noexcept;
 
+namespace detail {
+
+struct HookGuardThreadState {
+  std::uint32_t hook_depth{0U};
+  std::uint32_t internal_depth{0U};
+};
+
+// Non-terminating read of the calling thread's packed guard depths; reports zero depths while
+// the guard runtime is not ready. Called only from the replacement gate, which allows the
+// definition to live in the ".nlxhk" section without rendezvous false positives.
+[[nodiscard]] HookGuardThreadState probe_hook_guard_thread_state() noexcept;
+
+}  // namespace detail
+
 }  // namespace noleax::agent

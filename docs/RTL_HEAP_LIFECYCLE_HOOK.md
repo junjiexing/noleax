@@ -59,7 +59,7 @@ GenerationTracker 回读验证旧 ID 已结束、新 ID 不相同、destroy-with
 ## 3. Guard、安装与卸载
 
 两个 adapter 复用固定 TEB slot guard、replacement route、backend trampoline lifetime lease、模块
-pin 和 Hoox Windows RWX patch quiescence。`RtlHeapHooks` 按 create、allocate、reallocate、free、
+引用和 Hoox Windows RWX patch quiescence。`RtlHeapHooks` 按 create、allocate、reallocate、free、
 destroy 安装，并在安装/卸载协调路径使用 `InternalThreadScope`，防止 Hoox 自身的 heap 活动进入
 用户 trace。
 

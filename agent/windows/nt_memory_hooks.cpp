@@ -1,6 +1,7 @@
 #include "noleax/agent/windows/nt_memory_hooks.hpp"
 
 #include "noleax/agent/hook_guard.hpp"
+#include "noleax/agent/patch_rendezvous.hpp"
 #include "noleax/agent/replacement_lifecycle.hpp"
 
 #define WIN32_LEAN_AND_MEAN
@@ -76,7 +77,8 @@ std::atomic<void*> restored_unmap_target{nullptr};
 std::atomic<void*> restored_unmap_ex_target{nullptr};
 std::atomic<NtMemoryHooks*> active_owner{nullptr};
 std::atomic<bool> installation_retired{false};
-std::atomic<bool> replacement_module_pinned{false};
+std::atomic<bool> replacement_module_referenced{false};
+HMODULE replacement_module_handle{nullptr};
 
 [[noreturn]] void fail_broken_replacement_route() noexcept {
 #if defined(_MSC_VER)
@@ -326,18 +328,27 @@ NTSTATUS NTAPI replacement_nt_unmap_view_of_section_ex(HANDLE process, PVOID bas
   return reinterpret_cast<void*>(&replacement_nt_unmap_view_of_section_ex);
 }
 
-[[nodiscard]] bool pin_replacement_module() noexcept {
-  if (replacement_module_pinned.load(std::memory_order_acquire)) {
+[[nodiscard]] bool reference_replacement_module() noexcept {
+  if (replacement_module_referenced.load(std::memory_order_acquire)) {
     return true;
   }
   HMODULE module = nullptr;
-  const DWORD flags = GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN;
+  const DWORD flags = GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS;
   if (GetModuleHandleExW(flags, reinterpret_cast<LPCWSTR>(allocate_replacement_address()),
                          &module) == FALSE) {
     return false;
   }
-  replacement_module_pinned.store(true, std::memory_order_release);
+  replacement_module_handle = module;
+  replacement_module_referenced.store(true, std::memory_order_release);
   return true;
+}
+
+void release_replacement_module() noexcept {
+  if (!replacement_module_referenced.exchange(false, std::memory_order_acq_rel)) {
+    return;
+  }
+  static_cast<void>(FreeLibrary(replacement_module_handle));
+  replacement_module_handle = nullptr;
 }
 
 void release_owner(NtMemoryHooks* owner, bool clear_hook_state) noexcept {
@@ -526,6 +537,10 @@ LONG record_unmap_exception_filter(EXCEPTION_POINTERS* exception_pointers, Repla
 }
 
 #endif
+
+// The five replacement definitions stay in ".nlxhk" so the patch rendezvous covers the window
+// before each lifecycle's counters engage.
+#pragma code_seg(push, ".nlxhk")
 
 NTSTATUS NTAPI replacement_nt_allocate_virtual_memory(HANDLE process, PVOID* base_address,
                                                       ULONG_PTR zero_bits, PSIZE_T region_size,
@@ -985,6 +1000,8 @@ NTSTATUS NTAPI replacement_nt_unmap_view_of_section_ex(HANDLE process, PVOID bas
   return result;
 }
 
+#pragma code_seg(pop)
+
 }  // namespace
 
 NtMemoryHooks::NtMemoryHooks(HookBackend& backend, std::size_t event_queue_capacity,
@@ -1089,9 +1106,9 @@ NtMemoryHookInstallResult NtMemoryHooks::install() {
             {HookInstallStatus::kAlreadyReplaced, nullptr},
             {HookInstallStatus::kAlreadyReplaced, nullptr}};
   }
-  if (!pin_replacement_module()) {
+  if (!reference_replacement_module()) {
     release_owner(this, true);
-    throw HookBackendError{"the replacement module could not be pinned"};
+    throw HookBackendError{"the replacement module could not be referenced"};
   }
 
   hook_state_->reset_quiescent(maximum_stack_depth_);
@@ -1383,6 +1400,16 @@ bool NtMemoryHooks::try_finish_teardown(std::uint32_t max_attempts) noexcept {
   if (!backend_teardown_complete_) {
     return false;
   }
+  // The lifecycle counters cannot see a thread between the restored jump and the entry
+  // increment. All five replacements share one ".nlxhk" section; prove it is empty before
+  // releasing the module reference. On failure stay teardown-pending and keep both the
+  // reference and the retired flag so a later flush can retry.
+  if (!verify_replacement_evacuated(hook_code_region(allocate_replacement_address()),
+                                    kDefaultRendezvousMaxAttempts)) {
+    return false;
+  }
+  release_replacement_module();
+  installation_retired.store(false, std::memory_order_release);
   finish_teardown();
   return true;
 }
@@ -1445,8 +1472,8 @@ bool NtMemoryHooks::has_pending_teardown() const noexcept {
   return state_ == State::kTeardownPending;
 }
 
-bool NtMemoryHooks::replacement_module_is_pinned() const noexcept {
-  return replacement_module_pinned.load(std::memory_order_acquire);
+bool NtMemoryHooks::replacement_module_is_referenced() const noexcept {
+  return replacement_module_referenced.load(std::memory_order_acquire);
 }
 
 std::uint64_t NtMemoryHooks::replacement_in_flight_count() const noexcept {

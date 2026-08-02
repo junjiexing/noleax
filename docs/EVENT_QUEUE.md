@@ -35,7 +35,7 @@ consumer 只按 reservation 顺序读取。它 acquire-load slot sequence，复�
 
 `reset_quiescent` 只允许在没有 producer/consumer 时调用。独立 hook 拥有的 queue 在安装前重置；
 heap 组合对象和 `NtMemoryHooks` 各自拥有一个共享 queue 域；同一域内 API 共用 sequence，
-两个域之间不依赖时间戳合并。当前 adapter 每进程只允许一次成功安装。卸载后才允许最终 drain。
+两个域之间不依赖时间戳合并。卸载后才允许最终 drain。
 replacement lifecycle 保证 reset、final drain 和对象销毁前没有 producer；
 详见 [HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)。
 

@@ -83,6 +83,7 @@ if(WIN32)
     unit/ipc_named_pipe_test.cpp
     unit/hook_guard_test.cpp
     unit/hook_backend_test.cpp
+    unit/patch_rendezvous_test.cpp
     unit/pe_patch_test.cpp
     unit/stack_capture_test.cpp
     unit/stack_dictionary_test.cpp
@@ -680,6 +681,30 @@ if(WIN32)
   )
   noleax_set_project_warnings(noleax-nt-virtual-memory-quiescence-test)
 
+  add_executable(noleax-rtl-allocate-heap-reinstall-test
+    integration/rtl_allocate_heap_reinstall_test.cpp
+  )
+  target_link_libraries(noleax-rtl-allocate-heap-reinstall-test PRIVATE
+    noleax::hook-backend
+  )
+  noleax_set_project_warnings(noleax-rtl-allocate-heap-reinstall-test)
+
+  add_executable(noleax-rtl-heap-lifecycle-reinstall-test
+    integration/rtl_heap_lifecycle_reinstall_test.cpp
+  )
+  target_link_libraries(noleax-rtl-heap-lifecycle-reinstall-test PRIVATE
+    noleax::hook-backend
+  )
+  noleax_set_project_warnings(noleax-rtl-heap-lifecycle-reinstall-test)
+
+  add_executable(noleax-nt-virtual-memory-reinstall-test
+    integration/nt_virtual_memory_reinstall_test.cpp
+  )
+  target_link_libraries(noleax-nt-virtual-memory-reinstall-test PRIVATE
+    noleax::hook-backend
+  )
+  noleax_set_project_warnings(noleax-nt-virtual-memory-reinstall-test)
+
   if(MSVC)
     add_executable(noleax-rtl-free-heap-contract-test
       integration/rtl_free_heap_contract_test.cpp
@@ -927,7 +952,37 @@ if(WIN32)
   )
   set_tests_properties(hook.rtl-allocate-heap-module-retention PROPERTIES
     LABELS "hook;windows;rtl-heap;quiescence;unload"
-    PASS_REGULAR_EXPRESSION "^status=ok module-retained=1"
+    PASS_REGULAR_EXPRESSION "^status=ok module-released=1"
+    RUN_SERIAL TRUE
+    TIMEOUT 60
+  )
+
+  add_test(NAME hook.rtl-allocate-heap-reinstall
+    COMMAND noleax-rtl-allocate-heap-reinstall-test
+  )
+  set_tests_properties(hook.rtl-allocate-heap-reinstall PROPERTIES
+    LABELS "hook;windows;rtl-heap;quiescence;rendezvous;reinstall;unload"
+    PASS_REGULAR_EXPRESSION "^status=ok first=[1-9][0-9]* second=[1-9][0-9]*"
+    RUN_SERIAL TRUE
+    TIMEOUT 60
+  )
+
+  add_test(NAME hook.rtl-heap-lifecycle-reinstall
+    COMMAND noleax-rtl-heap-lifecycle-reinstall-test
+  )
+  set_tests_properties(hook.rtl-heap-lifecycle-reinstall PROPERTIES
+    LABELS "hook;windows;rtl-heap;lifecycle;quiescence;rendezvous;reinstall;unload"
+    PASS_REGULAR_EXPRESSION "^status=ok first=[1-9][0-9]* second=[1-9][0-9]*"
+    RUN_SERIAL TRUE
+    TIMEOUT 60
+  )
+
+  add_test(NAME hook.nt-virtual-memory-reinstall
+    COMMAND noleax-nt-virtual-memory-reinstall-test
+  )
+  set_tests_properties(hook.nt-virtual-memory-reinstall PROPERTIES
+    LABELS "hook;windows;nt-vm;quiescence;rendezvous;reinstall;unload"
+    PASS_REGULAR_EXPRESSION "^status=ok first=[1-9][0-9]* second=[1-9][0-9]*"
     RUN_SERIAL TRUE
     TIMEOUT 60
   )

@@ -94,8 +94,10 @@ allocation 和 free 可以来自不同线程。配对与调用栈去重都在 in
 释放 trampoline lease、完成 Hoox flush。`RtlHeapHooks` 负责让五个 hook 都达到完成态；任一仍处于
 teardown-pending 时，组合 writer 不允许写正常 EndOfTrace。
 
-当前 adapter 与 allocate hook 一样限制为每进程安装一次，replacement module pin 到进程退出。析构时若有限次
-flush 仍无法证明 quiescence，会把仍可能被旧 replacement 读取的 state 和 guard 引用转交进程生命期。
+replacement 所在模块由 adapter 持有普通 +1 引用；patch rendezvous 证明 `.nlxhk` 段已排空后释放引用并允许
+新实例重装（见 [HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md) §5）。析构时若有限次
+flush 仍无法证明 quiescence 或 rendezvous 无法通过，会把仍可能被旧 replacement 读取的 state、guard 引用
+和模块引用转交进程生命期。
 组合对象同时释放共享 queue 的所有权，使 queue 也保留到进程退出；不能只保留 hook state 却析构其
 指向的外部 queue。正常 quiescent 路径仍按常规顺序释放全部对象。
 

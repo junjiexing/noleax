@@ -40,7 +40,7 @@ class RtlFreeHeapHook {
   [[nodiscard]] bool is_recording() const noexcept;
   [[nodiscard]] std::uint64_t recording_in_flight_count() const noexcept;
   [[nodiscard]] bool has_pending_teardown() const noexcept;
-  [[nodiscard]] bool replacement_module_is_pinned() const noexcept;
+  [[nodiscard]] bool replacement_module_is_referenced() const noexcept;
   [[nodiscard]] std::uint64_t replacement_in_flight_count() const noexcept;
   [[nodiscard]] std::uint64_t call_count() const noexcept;
   [[nodiscard]] std::uint64_t recordable_call_count() const noexcept;

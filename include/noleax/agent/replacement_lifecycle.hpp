@@ -20,6 +20,13 @@ inline std::atomic<std::uint64_t> replacement_gate_transitions{0U};
 inline std::atomic<std::uint64_t> replacement_active_calls{0U};
 inline std::atomic<std::uint64_t> replacement_gate_waiters{0U};
 
+// The uncounted window between a replacement's first instruction and the lifecycle counters
+// lives in the dedicated ".nlxhk" section so the patch rendezvous can prove the section is
+// empty before the module reference is released. Keep the section limited to these helpers and
+// the unscoped entry/exit pair below; everything else must stay out to avoid rendezvous false
+// positives from unrelated agent code.
+#pragma code_seg(push, ".nlxhk")
+
 inline void increment_or_terminate(std::atomic<std::uint64_t>& value) noexcept {
   if (value.fetch_add(1U, std::memory_order_seq_cst) == std::numeric_limits<std::uint64_t>::max()) {
     std::terminate();
@@ -33,12 +40,14 @@ inline void decrement_or_terminate(std::atomic<std::uint64_t>& value) noexcept {
 }
 
 inline void enter_replacement_gate() noexcept {
-  const bool guard_ready = hook_guard_runtime_is_ready();
-  const std::uint32_t internal_depth = guard_ready ? current_internal_depth() : 0U;
-  const std::uint32_t hook_depth = guard_ready ? current_hook_depth() : 0U;
+  // Read the guard depths through the dedicated probe: it is called only from here, so it can
+  // live in ".nlxhk" with the rest of the gate. Calling the shared guard queries instead would
+  // let an in-transit thread sit in their out-of-section bodies, invisible to the rendezvous.
+  const HookGuardThreadState guard_state = probe_hook_guard_thread_state();
   // Nested hook calls must finish their outer callback. The coordinator owns two internal scopes
   // so it alone can service IPC and teardown while ordinary internal workers are parked.
-  if (hook_depth != 0U || internal_depth >= kReplacementGateCoordinatorDepth) {
+  if (guard_state.hook_depth != 0U ||
+      guard_state.internal_depth >= kReplacementGateCoordinatorDepth) {
     increment_or_terminate(replacement_active_calls);
     return;
   }
@@ -65,6 +74,8 @@ inline void enter_replacement_gate() noexcept {
 }
 
 inline void leave_replacement_gate() noexcept { decrement_or_terminate(replacement_active_calls); }
+
+#pragma code_seg(pop)
 
 }  // namespace detail
 
@@ -163,46 +174,11 @@ class ReplacementLifecycle final {
   [[nodiscard]] Entry enter() noexcept { return Entry{*this, enter_unscoped()}; }
 
   // The unscoped pair exists for Windows replacements that require SEH __finally cleanup.
-  // Every successful enter must be paired with exactly one leave.
-  [[nodiscard]] ReplacementRoute enter_unscoped() noexcept {
-    detail::enter_replacement_gate();
-    const std::uint64_t previous_transition =
-        entry_transitions_.fetch_add(1U, std::memory_order_seq_cst);
-    if (previous_transition == std::numeric_limits<std::uint64_t>::max()) {
-      std::terminate();
-    }
-    const ReplacementRoute route = route_.load(std::memory_order_seq_cst);
-    const std::uint64_t previous = in_flight_.fetch_add(1U, std::memory_order_seq_cst);
-    if (previous == std::numeric_limits<std::uint64_t>::max()) {
-      std::terminate();
-    }
-    if (route == ReplacementRoute::kRecord) {
-      const std::uint64_t previous_recording =
-          recording_in_flight_.fetch_add(1U, std::memory_order_seq_cst);
-      if (previous_recording == std::numeric_limits<std::uint64_t>::max()) {
-        std::terminate();
-      }
-    }
-    if (entry_transitions_.fetch_sub(1U, std::memory_order_seq_cst) == 0U) {
-      std::terminate();
-    }
-    return route;
-  }
+  // Every successful enter must be paired with exactly one leave. Both are defined below the
+  // class inside the ".nlxhk" section together with the gate helpers.
+  [[nodiscard]] ReplacementRoute enter_unscoped() noexcept;
 
-  void leave_unscoped(ReplacementRoute route) noexcept {
-    if (route == ReplacementRoute::kRecord) {
-      const std::uint64_t previous_recording =
-          recording_in_flight_.fetch_sub(1U, std::memory_order_seq_cst);
-      if (previous_recording == 0U) {
-        std::terminate();
-      }
-    }
-    const std::uint64_t previous = in_flight_.fetch_sub(1U, std::memory_order_seq_cst);
-    if (previous == 0U) {
-      std::terminate();
-    }
-    detail::leave_replacement_gate();
-  }
+  void leave_unscoped(ReplacementRoute route) noexcept;
 
   void start_recording() noexcept {
     route_.store(ReplacementRoute::kRecord, std::memory_order_seq_cst);
@@ -263,5 +239,49 @@ class ReplacementLifecycle final {
   std::atomic<std::uint64_t> in_flight_{0U};
   std::atomic<std::uint64_t> recording_in_flight_{0U};
 };
+
+#pragma code_seg(push, ".nlxhk")
+
+inline ReplacementRoute ReplacementLifecycle::enter_unscoped() noexcept {
+  detail::enter_replacement_gate();
+  const std::uint64_t previous_transition =
+      entry_transitions_.fetch_add(1U, std::memory_order_seq_cst);
+  if (previous_transition == std::numeric_limits<std::uint64_t>::max()) {
+    std::terminate();
+  }
+  const ReplacementRoute route = route_.load(std::memory_order_seq_cst);
+  const std::uint64_t previous = in_flight_.fetch_add(1U, std::memory_order_seq_cst);
+  if (previous == std::numeric_limits<std::uint64_t>::max()) {
+    std::terminate();
+  }
+  if (route == ReplacementRoute::kRecord) {
+    const std::uint64_t previous_recording =
+        recording_in_flight_.fetch_add(1U, std::memory_order_seq_cst);
+    if (previous_recording == std::numeric_limits<std::uint64_t>::max()) {
+      std::terminate();
+    }
+  }
+  if (entry_transitions_.fetch_sub(1U, std::memory_order_seq_cst) == 0U) {
+    std::terminate();
+  }
+  return route;
+}
+
+inline void ReplacementLifecycle::leave_unscoped(ReplacementRoute route) noexcept {
+  if (route == ReplacementRoute::kRecord) {
+    const std::uint64_t previous_recording =
+        recording_in_flight_.fetch_sub(1U, std::memory_order_seq_cst);
+    if (previous_recording == 0U) {
+      std::terminate();
+    }
+  }
+  const std::uint64_t previous = in_flight_.fetch_sub(1U, std::memory_order_seq_cst);
+  if (previous == 0U) {
+    std::terminate();
+  }
+  detail::leave_replacement_gate();
+}
+
+#pragma code_seg(pop)
 
 }  // namespace noleax::agent

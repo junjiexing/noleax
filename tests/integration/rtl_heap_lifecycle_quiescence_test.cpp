@@ -95,11 +95,11 @@ int main() {
   noleax::agent::HookBackend backend;
   noleax::agent::windows::RtlHeapHooks hooks{backend, 1024U, 0U};
   const auto installed = hooks.install();
-  if (!installed.installed() || !hooks.create_hook().replacement_module_is_pinned() ||
-      !hooks.allocate_hook().replacement_module_is_pinned() ||
-      !hooks.reallocate_hook().replacement_module_is_pinned() ||
-      !hooks.free_hook().replacement_module_is_pinned() ||
-      !hooks.destroy_hook().replacement_module_is_pinned()) {
+  if (!installed.installed() || !hooks.create_hook().replacement_module_is_referenced() ||
+      !hooks.allocate_hook().replacement_module_is_referenced() ||
+      !hooks.reallocate_hook().replacement_module_is_referenced() ||
+      !hooks.free_hook().replacement_module_is_referenced() ||
+      !hooks.destroy_hook().replacement_module_is_referenced()) {
     return 4;
   }
 

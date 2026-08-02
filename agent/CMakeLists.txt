@@ -1,6 +1,7 @@
 add_library(noleax-hook-backend STATIC
   hook_guard.cpp
   hook_backend.cpp
+  patch_rendezvous.cpp
 )
 
 if(WIN32)
@@ -64,6 +65,12 @@ endif()
 
 target_compile_definitions(noleax-agent PRIVATE NOLEAX_AGENT_BUILD)
 noleax_set_project_warnings(noleax-agent)
+
+if(WIN32)
+  # No incremental link thunks: the patch rendezvous must see every replacement's real entry
+  # inside the ".nlxhk" section, not a .text ILT stub.
+  target_link_options(noleax-agent PRIVATE "LINKER:/INCREMENTAL:NO")
+endif()
 
 set_target_properties(noleax-agent PROPERTIES
   OUTPUT_NAME "noleax-agent"

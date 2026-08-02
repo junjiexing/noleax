@@ -444,6 +444,11 @@ NOLEAX_HOOK_HARNESS_EXPORT std::uint64_t noleax_test_rtl_allocate_heap_hook_call
   return allocate_hook != nullptr ? allocate_hook->call_count() : 0U;
 }
 
+NOLEAX_HOOK_HARNESS_EXPORT std::uint32_t
+noleax_test_rtl_allocate_heap_hook_module_referenced() noexcept {
+  return allocate_hook != nullptr && allocate_hook->replacement_module_is_referenced() ? 1U : 0U;
+}
+
 NOLEAX_HOOK_HARNESS_EXPORT std::uint32_t noleax_test_rtl_allocate_heap_hook_stop() noexcept {
   return stop_harness();
 }

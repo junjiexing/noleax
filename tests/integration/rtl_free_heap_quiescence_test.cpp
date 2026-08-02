@@ -85,7 +85,7 @@ int main() {
   noleax::agent::HookBackend backend;
   noleax::agent::windows::RtlFreeHeapHook hook{backend, 1024U, 0U};
   const auto installed = hook.install();
-  if (!installed.installed() || !hook.replacement_module_is_pinned()) {
+  if (!installed.installed() || !hook.replacement_module_is_referenced()) {
     return 4;
   }
 
