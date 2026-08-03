@@ -277,6 +277,7 @@ PVOID NTAPI replacement_rtl_create_heap(ULONG flags, PVOID heap_base, SIZE_T res
   }
   replacement_module_handle = module;
   replacement_module_referenced.store(true, std::memory_order_release);
+  note_agent_module_reference_acquired();
   return true;
 }
 
@@ -284,6 +285,7 @@ void release_replacement_module() noexcept {
   if (!replacement_module_referenced.exchange(false, std::memory_order_acq_rel)) {
     return;
   }
+  note_agent_module_reference_released();
   static_cast<void>(FreeLibrary(replacement_module_handle));
   replacement_module_handle = nullptr;
 }

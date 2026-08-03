@@ -91,6 +91,7 @@ TEST_CASE("IPC payload codecs preserve capture contracts", "[ipc][protocol]") {
   start.flush_interval_ns = 10U * 1000U * 1000U;
   start.compression_level = 1;
   start.trace_path_utf8 = "C:/traces/app.nlx";
+  start.unload_on_stop = true;
   CHECK(noleax::ipc::decode_start_capture(noleax::ipc::encode_start_capture(start)) == start);
 
   const noleax::ipc::CaptureStatus status{

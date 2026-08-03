@@ -105,6 +105,8 @@ struct StartCaptureRequest {
   std::uint64_t flush_interval_ns{250U * 1000U * 1000U};
   std::int32_t compression_level{0};
   std::string trace_path_utf8;
+  // Unload the agent module from the target after the capture finalizes (attach).
+  bool unload_on_stop{false};
 
   bool operator==(const StartCaptureRequest&) const = default;
 };

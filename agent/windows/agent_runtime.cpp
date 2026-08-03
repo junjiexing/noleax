@@ -25,6 +25,7 @@
 #include <utility>
 
 #include "noleax/agent/hook_backend.hpp"
+#include "noleax/agent/patch_rendezvous.hpp"
 #include "noleax/agent/replacement_lifecycle.hpp"
 #include "noleax/agent/windows/rtl_allocate_heap_trace_writer.hpp"
 #include "noleax/agent/windows/windows_memory_hooks.hpp"
@@ -173,6 +174,7 @@ class CaptureRuntime final {
       throw std::logic_error{"capture session has already started"};
     }
     state_ = noleax::ipc::AgentState::kStarting;
+    unload_on_stop_ = request.unload_on_stop;
     const std::filesystem::path path = utf8_path(request.trace_path_utf8);
     output_ = std::make_unique<std::ofstream>(path, std::ios::binary | std::ios::trunc);
     if (!*output_) {
@@ -399,6 +401,10 @@ class CaptureRuntime final {
 
   [[nodiscard]] noleax::ipc::AgentState state() const noexcept { return state_; }
 
+  // attach --unload-on-stop: the worker consults this after finalize before scheduling the
+  // agent module unload.
+  [[nodiscard]] bool unload_on_stop() const noexcept { return unload_on_stop_; }
+
  private:
   std::array<std::byte, 16U> session_token_{};
   noleax::ipc::AgentState state_{noleax::ipc::AgentState::kIdle};
@@ -408,6 +414,7 @@ class CaptureRuntime final {
   std::unique_ptr<RtlAllocateHeapTraceWriter> writer_;
   std::optional<RtlAllocateHeapTraceWriterResult> result_;
   bool finalize_gate_closed_{false};
+  bool unload_on_stop_{false};
 };
 
 [[nodiscard]] noleax::ipc::Architecture current_architecture() noexcept {
@@ -426,6 +433,50 @@ void send_status(noleax::ipc::windows::PipeChannel& channel, noleax::ipc::Messag
                  std::uint64_t request_id, const CaptureRuntime& runtime,
                  std::chrono::milliseconds timeout) {
   channel.send({type, request_id, noleax::ipc::encode_capture_status(runtime.status())}, timeout);
+}
+
+// attach --unload-on-stop: unmaps the agent module once every teardown proof holds. The live
+// attach flow freezes target workers during finalize, so parked gate waiters can only drain
+// after the controller resumes them — a watchdog thread polls instead of unloading inline.
+// FreeLibraryAndExitThread exits the calling thread and never returns.
+[[noreturn]] void unload_agent_module() {
+  HMODULE module = nullptr;
+  const DWORD flags =
+      GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
+  if (GetModuleHandleExW(flags, reinterpret_cast<LPCWSTR>(&unload_agent_module), &module) ==
+          FALSE ||
+      module == nullptr) {
+    std::terminate();
+  }
+  FreeLibraryAndExitThread(module, 0U);  // never returns, even when the unmap fails
+}
+
+[[nodiscard]] bool unload_proofs_hold() noexcept {
+  return noleax::agent::agent_module_reference_count() == 0U &&
+         noleax::agent::ReplacementQuiescenceGate::wait_for_drain(250U);
+}
+
+DWORD WINAPI agent_unload_watchdog(void* /*parameter*/) noexcept {
+  const auto deadline = GetTickCount64() + 60'000U;
+  for (;;) {
+    if (unload_proofs_hold()) {
+      unload_agent_module();
+    }
+    if (GetTickCount64() >= deadline) {
+      return 0U;  // fail-safe: stay loaded
+    }
+    Sleep(100U);
+  }
+}
+
+void schedule_agent_unload(const CaptureRuntime& runtime) noexcept {
+  if (!runtime.unload_on_stop()) {
+    return;
+  }
+  const HANDLE thread = CreateThread(nullptr, 0U, &agent_unload_watchdog, nullptr, 0U, nullptr);
+  if (thread != nullptr) {
+    static_cast<void>(CloseHandle(thread));
+  }
 }
 
 DWORD WINAPI agent_worker(void* parameter) noexcept {
@@ -477,6 +528,9 @@ DWORD WINAPI agent_worker(void* parameter) noexcept {
           runtime->finalize();
           send_status(channel, noleax::ipc::MessageType::kCaptureFinalized, request.request_id,
                       *runtime, timeout);
+          // attach --unload-on-stop: returns false and keeps the module loaded when any
+          // teardown proof is missing; on success the call never returns.
+          schedule_agent_unload(*runtime);
           return 0U;
         }
         throw std::runtime_error{"controller sent a message invalid for the agent state"};
@@ -612,6 +666,7 @@ void standalone_report(const std::string& message) noexcept {
   const std::filesystem::path trace_path = configuration.trace.path.value.value_or(
       executable.parent_path() / (executable.stem().wstring() + L".nlx"));
   request.trace_path_utf8 = noleax::config::path_to_utf8(trace_path);
+  request.unload_on_stop = configuration.injection.unload_on_stop.value;
   return request;
 }
 
@@ -686,6 +741,10 @@ DWORD WINAPI standalone_worker(void* parameter) noexcept {
       if (!exit_finalize_started.exchange(true, std::memory_order_acq_rel)) {
         static_cast<void>(standalone_runtime.exchange(nullptr, std::memory_order_acq_rel));
         runtime->finalize_timed();
+        // attach --unload-on-stop: the target keeps running after a duration-bounded
+        // capture, so unmap the agent when every teardown proof holds; on success the
+        // call never returns.
+        schedule_agent_unload(*runtime);
       }
     }
     static_cast<void>(runtime.release());

@@ -285,6 +285,7 @@ std::vector<std::byte> encode_start_capture(const StartCaptureRequest& request) 
   writer.integer(request.compression_level);
   writer.integer(std::uint32_t{0U});
   writer.string(request.trace_path_utf8);
+  writer.integer(static_cast<std::uint8_t>(request.unload_on_stop ? 1U : 0U));
   return std::move(writer).finish();
 }
 
@@ -304,6 +305,7 @@ StartCaptureRequest decode_start_capture(std::span<const std::byte> payload) {
   request.compression_level = reader.integer<std::int32_t>();
   const std::uint32_t reserved32 = reader.integer<std::uint32_t>();
   request.trace_path_utf8 = reader.string();
+  request.unload_on_stop = reader.integer<std::uint8_t>() != 0U;
   reader.finish();
   if (reserved8 != 0U || reserved16 != 0U || reserved32 != 0U ||
       !valid_capture_kind(request.capture_kind) || !valid_hook_profile(request.hook_profile) ||

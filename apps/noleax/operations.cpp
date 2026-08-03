@@ -490,6 +490,7 @@ class ConsoleControlGuard final {
       static_cast<std::uint64_t>(configuration.trace.flush_interval.value.count());
   capture.start.compression_level = configuration.trace.compression_level.value;
   capture.start.trace_path_utf8 = noleax::config::path_to_utf8(trace_path);
+  capture.start.unload_on_stop = configuration.injection.unload_on_stop.value;
   return capture;
 }
 
@@ -498,8 +499,9 @@ void validate_capture_support(const noleax::config::Configuration& configuration
       configuration.trace.max_files.value != 1U) {
     unsupported("P6 supports only --on-trace-full stop with --max-trace-files 1");
   }
-  if (configuration.injection.unload_on_stop.value) {
-    unsupported("--unload-on-stop is not implemented in P6");
+  if (configuration.injection.unload_on_stop.value &&
+      *configuration.operation.value != noleax::config::Operation::kAttach) {
+    unsupported("--unload-on-stop is only supported for attach");
   }
 }
 

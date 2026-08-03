@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <iostream>
 
+#include "noleax/version.hpp"
+
 namespace {
 
 using AgentAbiVersion = std::uint32_t (*)() noexcept;
@@ -29,7 +31,7 @@ int wmain(int argc, wchar_t* argv[]) {
       GetProcAddress(agent, "noleax_agent_verify_hook_backend_linkage"));
 
   int result = 0;
-  if (abi_version == nullptr || abi_version() != 1U) {
+  if (abi_version == nullptr || abi_version() != noleax::kAgentAbiVersion) {
     std::cerr << "agent ABI export is missing or incompatible\n";
     result = 3;
   } else if (verify_backend == nullptr || !verify_backend()) {
