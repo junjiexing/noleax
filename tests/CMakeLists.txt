@@ -371,6 +371,33 @@ if(WIN32)
     TIMEOUT 300
   )
 
+  add_library(noleax-slow-bootstrap-agent SHARED
+    targets/slow_bootstrap_agent.cpp
+  )
+  set_target_properties(noleax-slow-bootstrap-agent PROPERTIES PREFIX "")
+  noleax_set_project_warnings(noleax-slow-bootstrap-agent)
+
+  add_executable(noleax-thread-hijack-timeout-test
+    integration/thread_hijack_timeout_test.cpp
+  )
+  target_link_libraries(noleax-thread-hijack-timeout-test PRIVATE
+    noleax::controller
+  )
+  noleax_set_project_warnings(noleax-thread-hijack-timeout-test)
+  add_dependencies(noleax-thread-hijack-timeout-test noleax-slow-bootstrap-agent)
+
+  add_test(NAME controller.thread-hijack-timeout
+    COMMAND noleax-thread-hijack-timeout-test
+      "$<TARGET_FILE:noleax-slow-bootstrap-agent>"
+      "$<TARGET_FILE_DIR:noleax-thread-hijack-timeout-test>/hijack-timeout-work"
+  )
+  set_tests_properties(controller.thread-hijack-timeout PROPERTIES
+    LABELS "controller;injection;thread-hijack;timeout;windows"
+    PASS_REGULAR_EXPRESSION "^status=ok waited=1 forced=1"
+    RUN_SERIAL TRUE
+    TIMEOUT 90
+  )
+
   add_test(NAME cli.doctor
     COMMAND noleax doctor
       --agent "$<TARGET_FILE:noleax-agent>"
