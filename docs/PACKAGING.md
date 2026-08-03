@@ -44,6 +44,7 @@ noleax-0.1.0-windows-x64/
     roadmap.md
     schema/
       noleax-analysis-v1.schema.json
+      noleax-analysis-v2.schema.json
   examples/
   licenses/
   README.md

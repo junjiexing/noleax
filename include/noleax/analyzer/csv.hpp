@@ -14,7 +14,7 @@
 
 namespace noleax::analyzer {
 
-inline constexpr std::uint32_t kAnalysisCsvSchemaVersion = 1U;
+inline constexpr std::uint32_t kAnalysisCsvSchemaVersion = 2U;
 
 class CsvFormatError final : public std::runtime_error {
  public:

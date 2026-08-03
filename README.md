@@ -219,8 +219,8 @@ noleax analyze [options] trace.nlx
 | `--mode MODE` | events | events、leaks |
 | `--format FORMAT` | console | console、json、csv |
 | `--output PATH` | stdout | 输出文件 |
-| `--from TIME` / `--to TIME` | trace 起点 / trace 终点 | 创建时间窗（相对 trace 起点，超过终点截断） |
-| `--end TIME` | trace 终点 | leaks 观察点（超过终点截断） |
+| `--from TIME\|#SEQ` / `--to TIME\|#SEQ` | trace 起点 / trace 终点 | 创建窗口；时间相对 trace 起点，sequence 使用 `#` 前缀 |
+| `--end TIME\|#SEQ` | trace 终点 | leaks 观察点；超过终点时使用包含最后事件的位置 |
 | `--group-by DIM` | 不聚合 | 聚合维度，当前唯一取值 stack |
 | `--sort KEY` | events 聚合 alloc-bytes,leaks 聚合 bytes | 聚合排序键 |
 | `--trim-agent-frames` / `--no-trim-agent-frames` | true | 展示调用栈时隐藏 noleax-agent 自身的帧 |

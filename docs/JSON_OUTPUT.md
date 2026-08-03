@@ -1,11 +1,11 @@
 # Noleax JSON 输出
 
-> schema：`docs/schema/noleax-analysis-v1.schema.json`
-> 日期：2026-07-29
+> schema：`docs/schema/noleax-analysis-v2.schema.json`
+> 日期：2026-08-03
 
 ## 1. 目标与边界
 
-JSON 输出是面向程序消费的版本化接口。V1 提供 `JsonWriter`、`analyze_events_to_json` 和
+JSON 输出是面向程序消费的版本化接口。V2 提供 `JsonWriter`、`analyze_events_to_json` 和
 `analyze_outstanding_to_json`。公开 CLI 已统一接入文件、退出码和真实符号展示，三种格式
 共享 filter 和 presentation resolver。
 
@@ -18,20 +18,20 @@ events 输出可能包含已完成校验的前序记录，但不会包含闭合�
 
 每个文档固定包含：
 
-| 字段 | V1 含义 |
+| 字段 | V2 含义 |
 |---|---|
 | `schema` | 固定为 `noleax.analysis` |
-| `schema_version` | 固定为整数 `1` |
+| `schema_version` | 固定为整数 `2` |
 | `mode` | `events`、`leaks` 或 `stacks` |
 | `metadata` | trace header 和 capture scope |
 | `filters` | 本次实际使用的全部过滤条件；未设置的范围为 `null`，空枚举为 `[]` |
 | `summary` | trace、完整性、统计和对应 mode 的计数 |
 
 events 文档另有 `events` 数组；leaks 文档另有 `window` 和 `allocations`；stacks 文档另有
-`dataset`、`window` 和 `groups`。V1 schema 对根对象、
-所有已定义对象及九类 payload 禁止未知字段。向后兼容的可空字段增补不提升 schema version（窗口
-sequence 字段即属此类）；其他新增字段需要新的 schema version，仅新增枚举值也必须按消费者无法
-静默误解的兼容策略处理。
+`dataset`、`window` 和 `groups`。V2 schema 对根对象、所有已定义对象及九类 payload 禁止未知字段。
+V2 相对 V1 增加窗口 sequence 字段，并允许对应的时间字段为 `null`；这是结构和类型变化，因此提升
+schema version。仓库保留只接受旧结构的 V1 schema。后续新增字段、改变字段类型或新增枚举值也必须
+按消费者无法静默误解的兼容策略处理。
 
 ## 3. 基础编码规则
 
@@ -58,7 +58,7 @@ integer 的 parser，或把数值 token 作为十进制字符串解析。地址�
 
 过滤器只决定 Event 是否进入数组；Loss 始终保留，用于解释完整性。九类 payload 的 `kind` 为
 `heap_create`、`heap_destroy`、`allocation`、`reallocation`、`free`、`vm_allocation`、`vm_free`、
-`map` 和 `unmap`，各自字段由 v1 schema 严格定义。
+`map` 和 `unmap`，各自字段由 v2 schema 严格定义。
 
 summary 的 mode 专属字段为 `matched_events` 和 `filtered_events`。公共字段包括 trace event/Loss 数、
 读取字节、已知末尾、截断与格式理解状态、capture statistics、termination 和 completeness。
@@ -69,9 +69,10 @@ summary 的 mode 专属字段为 `matched_events` 和 `filtered_events`。公共
 实际 `effective_c_ns`、c 是否采用 trace end，以及原始 `trace_end_monotonic_ticks`。每个窗口界
 同时有一个可空的 sequence 对应字段（`a_sequence`、`b_sequence`、`effective_b_sequence`、
 `requested_c_sequence`、`effective_c_sequence`）：时间界填写 `_ns` 字段而 sequence 字段为
-`null`，sequence 界反之；截断到 trace 终点的 effective 界同时携带 trace 终点的时间与最终
-sequence。窗口语义为在 `[a,effective_b)` 创建并在包含 c 时刻（时间或 sequence 均在 c 之内）
-所有结束事件后仍存活；`b` 缺省或超过 trace 终点时按 trace 终点截断。
+`null`，sequence 界反之。窗口语义为在 `[a,effective_b)` 创建并在包含 c 时刻（时间或 sequence
+均在 c 之内）所有结束事件后仍存活。`b` 缺省或超过 trace 终点时，effective b 使用严格位于最后
+事件之后的纳秒/sequence 边界，保证半开窗口仍包含最后事件；effective c 使用包含最后事件的 trace
+终点。程序化 API 的混合界按分量独立截断，未越界分量继续生效。
 
 `allocations` 中每项包含 generation kind、allocation/mapping/heap ID、heap handle、地址、size 和
 完整的 `created_by` Event。非 heap generation 的 `heap_handle` 为 `null`。summary 另外包含候选数、

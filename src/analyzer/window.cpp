@@ -51,11 +51,12 @@ bool window_at_or_before(const WindowBound& bound, const noleax::trace::FileHead
 }
 
 bool window_bounds_in_order(const WindowBound& lower, const WindowBound& upper) noexcept {
-  if (lower.time.has_value() && upper.time.has_value()) {
-    return *lower.time <= *upper.time;
+  if (lower.time.has_value() && upper.time.has_value() && *lower.time > *upper.time) {
+    return false;
   }
-  if (lower.sequence.has_value() && upper.sequence.has_value()) {
-    return *lower.sequence <= *upper.sequence;
+  if (lower.sequence.has_value() && upper.sequence.has_value() &&
+      *lower.sequence > *upper.sequence) {
+    return false;
   }
   return true;
 }

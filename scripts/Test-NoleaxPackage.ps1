@@ -134,6 +134,7 @@ function Assert-PackageLayout {
         'docs/hook-profiles.md',
         'docs/roadmap.md',
         'docs/schema/noleax-analysis-v1.schema.json',
+        'docs/schema/noleax-analysis-v2.schema.json',
         'examples/README.md',
         'examples/run-nt-heap.toml',
         'examples/analyze-events.toml',

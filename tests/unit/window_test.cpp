@@ -120,4 +120,16 @@ TEST_CASE("window bounds order only within the same kind", "[analyzer][window]")
   CHECK(noleax::analyzer::window_bounds_in_order(seq(100U), at(1ns)));
   CHECK(noleax::analyzer::window_bounds_in_order({}, at(1ns)));
   CHECK(noleax::analyzer::window_bounds_in_order(seq(1U), {}));
+
+  auto mixed_lower = at(10ns);
+  mixed_lower.sequence = 5U;
+  auto mixed_upper = at(20ns);
+  mixed_upper.sequence = 6U;
+  CHECK(noleax::analyzer::window_bounds_in_order(mixed_lower, mixed_upper));
+
+  mixed_lower.sequence = 7U;
+  CHECK_FALSE(noleax::analyzer::window_bounds_in_order(mixed_lower, mixed_upper));
+  mixed_lower = at(30ns);
+  mixed_lower.sequence = 5U;
+  CHECK_FALSE(noleax::analyzer::window_bounds_in_order(mixed_lower, mixed_upper));
 }

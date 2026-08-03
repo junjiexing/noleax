@@ -208,11 +208,12 @@ void validate_window_bound(const std::optional<WindowBound>& bound, std::string_
 // Orders only bounds of the same kind (time against time, sequence against sequence); different
 // kinds have no defined order and pass.
 [[nodiscard]] bool window_bounds_out_of_order(const WindowBound& lower, const WindowBound& upper) {
-  if (lower.time.has_value() && upper.time.has_value()) {
-    return *lower.time > *upper.time;
+  if (lower.time.has_value() && upper.time.has_value() && *lower.time > *upper.time) {
+    return true;
   }
-  if (lower.sequence.has_value() && upper.sequence.has_value()) {
-    return *lower.sequence > *upper.sequence;
+  if (lower.sequence.has_value() && upper.sequence.has_value() &&
+      *lower.sequence > *upper.sequence) {
+    return true;
   }
   return false;
 }

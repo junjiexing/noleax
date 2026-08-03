@@ -312,7 +312,8 @@ TEST_CASE("leak stacks default the window to the whole trace", "[analyzer][stack
   REQUIRE(result.groups.size() == 1U);
   CHECK(result.groups.front().calls == 1U);
   CHECK(result.groups.front().bytes == 48U);
-  CHECK(result.outstanding.effective_b == result.outstanding.effective_c);
+  CHECK(result.outstanding.effective_b.sequence == 4U);
+  CHECK(result.outstanding.effective_c.sequence == 3U);
   CHECK(result.outstanding.observation_uses_trace_end);
 }
 

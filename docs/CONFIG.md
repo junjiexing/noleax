@@ -129,7 +129,8 @@ DbgHelp（不探测映像、不下载符号），与 `symbols.paths`/`symbols.se
 
 `analysis.from`、`analysis.to`、`analysis.end` 接受两种窗口界：相对 trace 起点的时长
 （如 `"10s"`），或 `"#"` 前缀加事件 sequence（如 `"#123456"`）。空串表示未设置。三类界可以
-混用；超出 trace 终点（时间轴或最终 sequence）的界由 analyzer 按终点截断。
+混用；超出 trace 终点（时间轴或最终 sequence）的 `analysis.to` 使用最后事件之后的排他边界，
+`analysis.end` 使用包含最后事件的观察点。
 
 ## 3. operation
 
