@@ -31,7 +31,7 @@ target_include_directories(noleax-hook-backend
 
 target_link_libraries(noleax-hook-backend
   PRIVATE
-    hoox::hoox
+    noleax-hoox
     noleax::trace
 )
 

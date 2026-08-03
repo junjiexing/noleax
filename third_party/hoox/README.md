@@ -1,0 +1,22 @@
+# Vendored hoox amalgamation
+
+Single-file build of [hoox](https://github.com/junjiexing/hoox), the inline-hook
+library used by the noleax agent. These files are upstream release artifacts,
+not hand-written code; do not edit them here.
+
+- Upstream version: **v0.2.0** (release asset `hoox-v0.2.0-amalgamation.zip`)
+- `hoox.c` SHA512: `7b7924c685a8328f12eac008566fbc63ca8ac88947f4d4a6556e7d5306a605872d666ccdc3d8326ee101caa1bb296d6926a76bb87fdb6a9e55974f2de93530f2`
+- `hoox.h` SHA512: `0b1915b31658218082d4dacae81cca6d694bcda964c1b454f89ee658a7c292e1f514192f752cb54ac1c2e0c35cc68f0214294a1892e7bcee2e3a2b98a23eb53a`
+
+## Build integration
+
+`CMakeLists.txt` in this directory compiles `hoox.c` into the `noleax-hoox`
+static target with `HOOX_WINDOWS_PATCH_PC_GUARD` defined (thread-PC scan during
+patch writes; off by default upstream). Platform and architecture macros are
+auto-detected from the compiler (`_WIN32`, `_M_X64`).
+
+## Updating
+
+1. Download `hoox-v<version>-amalgamation.zip` from the hoox release page.
+2. Replace `hoox.c`, `hoox.h`, `COPYING` and `NOTICE` with the archive contents.
+3. Update the version and SHA512 values above and review the resulting diff.

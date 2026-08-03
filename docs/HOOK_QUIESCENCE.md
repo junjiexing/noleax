@@ -105,23 +105,32 @@ worker 恢复后 in-transit 线程按 `target` 路由排空，后续 flush 即�
 `abandon_pending_teardown` 路径不变：失败就故意保留全部状态与模块引用。
 
 当前仍保留一个刻意限制：产品 profile 不承诺在目标线程持续运行时安全物理 revert；controller 必须
-先停住目标 worker。rendezvous 证明的是"没有线程还在 replacement 代码段内"，它不解决线程 RIP 停在
-patch 区 mid-instruction、或恢复执行时流水线仍持有旧字节的问题，因此不改 Hoox port、不做 RIP
-relocation。早先的另外两条限制（模块永久 pin、每进程只允许一次成功安装）随 rendezvous 的排空证明
-移除。
+先停住目标 worker。rendezvous 证明的是"没有线程还在 replacement 代码段内"；线程 RIP 停在 patch 区
+mid-instruction 的窗口由上游 hoox 的 PC guard 覆盖（见 §6），与 rendezvous 是两个不同的窗口。早先的
+另外两条限制（模块永久 pin、每进程只允许一次成功安装）随 rendezvous 的排空证明移除。
 
-## 6. Windows patch overlay
+## 6. Windows patch 写入安全
 
-`ports/hoox/windows-rwx-patch-quiescence.patch` 不改变 Hoox 版本、relocator 或 trampoline 布局，只修改
-Windows 代码更新临界区：
+Hoox（上游 v0.2.0，以 amalgamation 形式 vendor 在 `third_party/hoox`）在 Windows 代码更新临界区
+一律暂停 peer threads，只做临界区安全的最小改动：
 
 - RWX 页面也暂停 peer threads；
 - 重复枚举并去重 thread ID，覆盖卸载同时发生的线程创建；
 - 检查 `SuspendThread`/`ResumeThread` 返回值；
 - 使用 Hoox 已有的 VirtualAlloc-backed metal array，patch apply 临界区不走 process heap。
 
-无法打开或暂停的受保护线程仍是当前边界；当前版本不支持 protected process。运行中安装的线程 PC
-重定位也不在当前范围内，只在 hook 激活后创建压力线程并验证并发停止。
+PC guard（上游默认关闭，noleax 在编译 hoox.c 的 target 上定义 `HOOX_WINDOWS_PATCH_PC_GUARD`
+启用）：`hoox_memory_patch_code_pages_guarded` 接收调用方给出的 guard 区间；
+`hoox_interceptor_transaction_end` 从 pending update tasks 为每个被 patch 函数生成一条
+`(function_address, function_address+overwritten_prologue_len)` 开区间。挂起窗口内逐线程
+OpenThread + `GetThreadContext` 读取 RIP，任何 RIP 落在区间内即恢复全部线程、Sleep(1)、
+重新挂起并重扫，最多 100 次；耗尽则 patch 失败走 `hx_abort`。读取线程上下文失败同样按"不干净"处理
+（fail-closed）。开区间设计对两个方向都安全：apply 时停在 addr+0 的线程恢复后执行 jump 进
+replacement，revert 时停在 addr+0 的线程执行已恢复的原指令；patch 激活期间不可能有线程 PC 停在
+开区间内，因此 revert 方向实践中不触发重试。
+
+无法打开或暂停的受保护线程仍是当前边界；当前版本不支持 protected process。线程 PC 停在 patch 区
+mid-instruction 的风险已由上述 PC guard 覆盖，不再是"运行中安装/卸载必须停 worker"的原因。
 
 ## 7. 自动验证
 
@@ -135,6 +144,9 @@ Windows 代码更新临界区：
 - queue 的 `recordable = dequeued + dropped` 守恒；
 - patch rendezvous 单测：`.nlxhk` region 解析、空 region fail-closed、段内自旋线程有界判失败、
   线程离开后判成功；
+- patch PC guard 确定性集成测试：worker 线程自旋在待 patch 的 stub 字节内，`install_fast_forced`
+  被 guard 阻塞、直到 worker 离开区间后才成功；随后 stub 走 replacement、original trampoline 正常
+  返回、uninstall 成功；
 - 成功 stop 和 `FreeLibrary` 后模块引用已释放，harness DLL 真正解除映射；
 - allocate 单 adapter、五 hook heap 组合和 NT memory 组合各自卸载复位后用新实例重装，分配/VM
   操作仍被记录，再次卸载后引用同样释放；

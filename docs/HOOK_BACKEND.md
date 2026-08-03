@@ -1,6 +1,6 @@
 # Noleax HookBackend
 
-> 后端：Hoox v0.1.1 `replace_fast`
+> 后端：Hoox v0.2.0 `replace_fast`（以 amalgamation 形式 vendor 在 `third_party/hoox`）
 
 ## 1. 边界
 
@@ -81,21 +81,20 @@ Hoox transaction 属于进程 singleton，而不是某个 `HookBackend` 实例�
 control mutex 覆盖完整的 begin/end 区间，防止两个 backend 实例的 transaction 跨线程嵌套，保证
 `install_fast` 返回时本次 patch 已经激活。该锁只用于安装和批量 shutdown，不进入 replacement。
 
-## 6. Hoox v0.1.1 生命周期补丁
+## 6. Hoox 生命周期修复
 
-Hoox v0.1.1 的 `HxPrivate` 在 Windows 上通过 `FlsAlloc` 注册 DLL 内部回调，但
+Hoox 早期的 `HxPrivate` 在 Windows 上通过 `FlsAlloc` 注册 DLL 内部回调，但
 `_hoox_interceptor_deinit` 未释放该 FLS index。agent 静态链接 Hoox 后，如果 DLL 被
 `FreeLibrary` 卸载，进程退出时 `ntdll!RtlpFlsDataCleanup` 仍可能跳到已经卸载的回调地址。
 
-overlay port 中的 `windows-fls-lifecycle.patch` 为私有线程键增加显式 clear：
+该修复已上游化（v0.2.0，`hx_private_clear`）并随 vendored amalgamation 带入：
 
 - deinit 清理当前 interceptor context 后注销 FLS index；
 - `FlsFree` 触发仍有值的 fiber callback，并从进程注销 callback；
 - 将 key 复位，后续 `hoox_init` 可以重新分配；
 - 提供 `pthread_key_delete` 对称实现，保持 POSIX 源码可编译，但当前只验证 Windows x64。
 
-补丁不改变 `replace_fast`、relocator 或 trampoline 行为，也不升级 Hoox。上游来源仍固定为
-v0.1.1 和原 SHA-512；补丁文件随 Noleax 源码 review。
+修复不改变 `replace_fast`、relocator 或 trampoline 行为。
 
 ## 7. 测试
 
