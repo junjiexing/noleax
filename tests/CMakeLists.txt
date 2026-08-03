@@ -467,6 +467,29 @@ if(WIN32)
     TIMEOUT 60
   )
 
+  add_executable(noleax-controller-attach-unload-test
+    integration/controller_attach_unload_test.cpp
+  )
+  target_link_libraries(noleax-controller-attach-unload-test PRIVATE
+    noleax::analyzer
+    noleax::controller
+  )
+  noleax_set_project_warnings(noleax-controller-attach-unload-test)
+
+  add_test(NAME controller.attach-unload-on-stop
+    COMMAND noleax-controller-attach-unload-test
+      "$<TARGET_FILE:noleax-agent>"
+      "$<TARGET_FILE:noleax-controller-target>"
+      "$<TARGET_FILE_DIR:noleax-controller-attach-unload-test>/attach-unload"
+      "$<TARGET_FILE_DIR:noleax-controller-attach-unload-test>/attach-unload.ready"
+  )
+  set_tests_properties(controller.attach-unload-on-stop PROPERTIES
+    LABELS "controller;agent;injection;attach;unload;windows"
+    PASS_REGULAR_EXPRESSION "^status=ok live=1 direct=1"
+    RUN_SERIAL TRUE
+    TIMEOUT 120
+  )
+
   add_executable(noleax-controller-lifecycle-test
     integration/controller_lifecycle_test.cpp
   )
@@ -1151,6 +1174,7 @@ if(WIN32)
   add_executable(noleax-agent-smoke
     integration/agent_smoke.cpp
   )
+  target_include_directories(noleax-agent-smoke PRIVATE "${PROJECT_SOURCE_DIR}/include")
   noleax_set_project_warnings(noleax-agent-smoke)
 
   add_test(NAME agent.load-and-link-hoox

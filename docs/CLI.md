@@ -106,7 +106,9 @@ noleax attach --pid PID [capture-options] [injection-options]
 - thread-hijack
 
 两种 attach 注入方法均已实现（`entrypoint-code` 仅适用于 launch，attach 选择它会被配置校验
-拒绝），且 `--unload-on-stop` 当前只接受 false。attach 成功不表示
+拒绝）。`--unload-on-stop` 让 agent 在捕获收尾完成后从仍在运行的目标卸载自身 DLL：
+仅在全部 teardown 证明成立时执行（replacement 模块引用已释放、gate 无 parked 线程且计数
+归零），任一不满足则保持驻留兜底。`run` 不支持该选项。attach 成功不表示
 trace 完整；分析输出必须标记注入前分配未知。默认模式（agent 直写）下
 `--capture-duration` 由 agent 自行执行，无 duration 时记录到目标退出；attach 的退出码同样由
 trace 完整性驱动（preexisting 盲点使结果为 2）。`--live` 恢复管道会话语义（见 run 一节）。

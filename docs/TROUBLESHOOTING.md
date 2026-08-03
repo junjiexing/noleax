@@ -6,7 +6,7 @@ Noleax 的完整 stderr、退出码和 capture summary。
 | 现象 | 常见原因 | 处理方法 |
 |---|---|---|
 | 返回 3，agent 无法初始化 | 权限不同、目标已退出、安全软件拦截或 agent 不匹配 | 让 Noleax 与目标处于相同权限级别；确认 `noleax-agent.dll` 与 exe 同目录；用 `doctor --target` 检查架构 |
-| 返回 5 | 使用了不受支持的平台、架构或方法组合 | 核对注入方法与操作的兼容矩阵（`run`/`attach`/`patch`）；trace rotation 与 unload-on-stop 尚未实现 |
+| 返回 5 | 使用了不受支持的平台、架构或方法组合 | 核对注入方法与操作的兼容矩阵（`run`/`attach`/`patch`）；trace rotation 尚未实现；`--unload-on-stop` 仅 attach 支持 |
 | attach 返回 2 | 注入前 allocation 不可见 | 这是预期的不完整性标记；需要完整生命周期时改用 `run` |
 | analyze 返回 2 但有输出 | trace 达到上限、记录丢失、栈捕获失败或尾部可恢复 | 检查 completeness reasons；增大 buffer/file limit、缩短 workload 或提高 `--capture-min-size` 后重跑 |
 | 返回 4 | 文件头/完整 chunk 损坏或 trace major version 不兼容 | 保留原文件，不要手工修补；使用同版本 Noleax 重试并检查存储介质 |

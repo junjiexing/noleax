@@ -9,9 +9,8 @@ Noleax 当前版本的已知边界。这里只列**未实现**的能力；已实
 拒绝，不会静默降级。跨文件的 sequence、module generation 与机器输出 schema 尚未定稿，因此
 `analyze` 每次也只接受一个 trace，跨文件分析随轮转一并提供。
 
-## attach 时卸载 agent
+## attach 注入方法限制
 
-`--unload-on-stop` 目前只接受 `false`：捕获结束后 agent 不会从运行中的目标卸载。
 `entrypoint-code` 不适用于 attach（目标主线程上下文不可恢复）。
 
 ## 分析窗口表达式

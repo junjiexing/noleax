@@ -9,6 +9,13 @@ struct HookCodeRegion {
   const void* end{nullptr};
 };
 
+// Process-wide count of replacement-module references currently held by adapters. The
+// agent unload path (attach --unload-on-stop) refuses to unmap while any adapter still
+// holds its reference, because a retained teardown can still execute replacement code.
+void note_agent_module_reference_acquired() noexcept;
+void note_agent_module_reference_released() noexcept;
+[[nodiscard]] std::uint32_t agent_module_reference_count() noexcept;
+
 // Default per-call attempt budget for the rendezvous. Teardown is retried by the flush driver,
 // so a single call stays cheap and leaves scheduling headroom instead of spinning for long.
 inline constexpr std::uint32_t kDefaultRendezvousMaxAttempts = 50U;

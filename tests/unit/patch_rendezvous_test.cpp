@@ -89,3 +89,13 @@ TEST_CASE("replacement evacuation observes threads inside the section",
   spinner.join();
   CHECK(verify_replacement_evacuated(region, 100U));
 }
+
+TEST_CASE("agent module reference counter round-trips", "[agent][patch-rendezvous]") {
+  const std::uint32_t base = noleax::agent::agent_module_reference_count();
+  noleax::agent::note_agent_module_reference_acquired();
+  noleax::agent::note_agent_module_reference_acquired();
+  CHECK(noleax::agent::agent_module_reference_count() == base + 2U);
+  noleax::agent::note_agent_module_reference_released();
+  noleax::agent::note_agent_module_reference_released();
+  CHECK(noleax::agent::agent_module_reference_count() == base);
+}

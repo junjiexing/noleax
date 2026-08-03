@@ -99,7 +99,7 @@ color = "auto"
 示例展示 schema，不表示所有键在所有 operation 中都有效。与当前 operation 无关但非默认的配置键应报错，避免用户误以为设置已生效。
 
 当前 Windows x64 对尚未实现但已为后续阶段预留的组合返回 5：`trace.on_full` 仅支持 `stop`、
-`trace.max_files` 仅支持 1，attach 的 `injection.unload_on_stop` 仅支持 false，analysis
+`trace.max_files` 仅支持 1，`injection.unload_on_stop` 仅 attach 支持，analysis
 每次仅支持一个 input。`injection.method` 在 run 下支持 `remote-thread`、`thread-hijack`、
 `entrypoint-code` 和 `static-pe-patch`（后者要求 `noleax patch` 产物），attach 下支持
 `remote-thread` 和 `thread-hijack`（其余组合由配置校验以退出码 1 拒绝）。配置值不会被

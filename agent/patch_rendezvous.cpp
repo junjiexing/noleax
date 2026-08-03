@@ -1,5 +1,36 @@
 #include "noleax/agent/patch_rendezvous.hpp"
 
+#include <atomic>
+#include <cstdint>
+#include <exception>
+#include <limits>
+
+namespace noleax::agent {
+namespace {
+
+std::atomic<std::uint32_t> agent_module_references{0U};
+
+}  // namespace
+
+void note_agent_module_reference_acquired() noexcept {
+  if (agent_module_references.fetch_add(1U, std::memory_order_acq_rel) ==
+      std::numeric_limits<std::uint32_t>::max()) {
+    std::terminate();
+  }
+}
+
+void note_agent_module_reference_released() noexcept {
+  if (agent_module_references.fetch_sub(1U, std::memory_order_acq_rel) == 0U) {
+    std::terminate();
+  }
+}
+
+std::uint32_t agent_module_reference_count() noexcept {
+  return agent_module_references.load(std::memory_order_acquire);
+}
+
+}  // namespace noleax::agent
+
 #if defined(_WIN32)
 
 #define WIN32_LEAN_AND_MEAN

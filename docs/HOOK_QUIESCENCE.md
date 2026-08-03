@@ -104,6 +104,14 @@ rendezvous 成功后 adapter 才 `FreeLibrary` 释放模块引用（DLL 之后�
 worker 恢复后 in-transit 线程按 `target` 路由排空，后续 flush 即可成功。
 `abandon_pending_teardown` 路径不变：失败就故意保留全部状态与模块引用。
 
+`--unload-on-stop`（仅 attach）在收尾完成后把 agent DLL 从仍在运行的目标卸载：agent 在
+finalize 后启动一个卸载 watchdog，轮询全部证明——全部 adapter 的 replacement 模块引用都已
+释放（进程级引用计数为零）、`wait_for_drain` 确认 gate 无 parked 线程且 transition/active
+归零。watchdog 而不是 finalize 同步点卸载的原因：live attach 的 finalize 会冻结目标 worker，
+parked waiter 要等 controller 恢复后才能排空，同步点永远等不到。证明成立后 watchdog 调
+`FreeLibraryAndExitThread`（该调用不再返回）；60 秒仍不成立则保持驻留（现状语义）。live 管道
+模式在 `kCaptureFinalized` 应答后启动 watchdog，直写模式在 duration 收尾后启动。
+
 当前仍保留一个刻意限制：产品 profile 不承诺在目标线程持续运行时安全物理 revert；controller 必须
 先停住目标 worker。rendezvous 证明的是"没有线程还在 replacement 代码段内"；线程 RIP 停在 patch 区
 mid-instruction 的窗口由上游 hoox 的 PC guard 覆盖（见 §6），与 rendezvous 是两个不同的窗口。早先的
