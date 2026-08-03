@@ -24,23 +24,66 @@ namespace {
 
 struct CandidateState {
   MemoryGeneration generation;
-  std::optional<std::uint64_t> ended_at;
+  std::optional<noleax::trace::Event> ended_by;
 };
 
 void validate_window(const OutstandingWindow& window) {
-  if (window.a.count() < 0 || (window.b.has_value() && window.b->count() < 0) ||
-      (window.c.has_value() && window.c->count() < 0)) {
+  const auto negative_time = [](const std::optional<WindowBound>& bound) {
+    return bound.has_value() && bound->time.has_value() && bound->time->count() < 0;
+  };
+  if ((window.a.time.has_value() && window.a.time->count() < 0) || negative_time(window.b) ||
+      negative_time(window.c)) {
     throw OutstandingAnalysisError{"outstanding window times must not be negative"};
   }
-  if (window.b.has_value() && window.a > *window.b) {
+  if (window.b.has_value() && !window_bounds_in_order(window.a, *window.b)) {
     throw OutstandingAnalysisError{"outstanding window requires a <= b"};
   }
-  if (window.b.has_value() && window.c.has_value() && *window.b > *window.c) {
+  if (window.b.has_value() && window.c.has_value() &&
+      !window_bounds_in_order(*window.b, *window.c)) {
     throw OutstandingAnalysisError{"outstanding window requires b <= c"};
   }
-  if (!window.b.has_value() && window.c.has_value() && window.a > *window.c) {
+  if (!window.b.has_value() && window.c.has_value() &&
+      !window_bounds_in_order(window.a, *window.c)) {
     throw OutstandingAnalysisError{"outstanding window requires a <= c"};
   }
+}
+
+// Bounds beyond the trace end clamp to the trace end instead of failing. A single-kind bound
+// that exceeds collapses to the physical trace end point; a mixed bound clamps per component.
+[[nodiscard]] bool window_bound_exceeds_trace_end(
+    const WindowBound& bound, const noleax::trace::FileHeader& header, std::uint64_t trace_end,
+    const std::optional<std::uint64_t>& trace_end_sequence) {
+  if (bound.time.has_value() &&
+      compare_trace_time(trace_end, header, *bound.time) == std::strong_ordering::less) {
+    return true;
+  }
+  return bound.sequence.has_value() && trace_end_sequence.has_value() &&
+         *bound.sequence > *trace_end_sequence;
+}
+
+[[nodiscard]] WindowBound effective_upper_bound(
+    const std::optional<WindowBound>& bound, const WindowBound& trace_end_bound,
+    const noleax::trace::FileHeader& header, std::uint64_t trace_end,
+    const std::optional<std::uint64_t>& trace_end_sequence) {
+  if (!bound.has_value() || window_bound_empty(*bound)) {
+    return trace_end_bound;
+  }
+  const bool mixed = bound->time.has_value() && bound->sequence.has_value();
+  if (!mixed) {
+    return window_bound_exceeds_trace_end(*bound, header, trace_end, trace_end_sequence)
+               ? trace_end_bound
+               : *bound;
+  }
+  WindowBound effective = *bound;
+  if (effective.time.has_value() &&
+      compare_trace_time(trace_end, header, *effective.time) == std::strong_ordering::less) {
+    effective.time = trace_end_bound.time;
+  }
+  if (effective.sequence.has_value() && trace_end_sequence.has_value() &&
+      *effective.sequence > *trace_end_sequence) {
+    effective.sequence = trace_end_sequence;
+  }
+  return effective;
 }
 
 void checked_increment(std::uint64_t& value, const char* message) {
@@ -82,27 +125,30 @@ class OutstandingCollector {
             ? result.trace.end_of_trace->final_monotonic_ticks
             : std::max(result.trace.known_monotonic_end, header.monotonic_origin);
     result.trace_end_monotonic_ticks = trace_end;
+    std::optional<std::uint64_t> trace_end_sequence;
+    if (result.trace.end_of_trace.has_value() &&
+        result.trace.end_of_trace->final_sequence.is_valid()) {
+      trace_end_sequence = result.trace.end_of_trace->final_sequence.value();
+    } else if (result.trace.known_sequence_end.is_valid()) {
+      trace_end_sequence = result.trace.known_sequence_end.value();
+    }
+    const WindowBound trace_end_bound{trace_time_floor(trace_end, header), trace_end_sequence};
     result.effective_b =
-        window_.b.has_value() &&
-                compare_trace_time(trace_end, header, *window_.b) != std::strong_ordering::less
-            ? *window_.b
-            : trace_time_floor(trace_end, header);
+        effective_upper_bound(window_.b, trace_end_bound, header, trace_end, trace_end_sequence);
 
-    const bool omitted_c = !window_.c.has_value();
+    const bool omitted_c = !window_.c.has_value() || window_bound_empty(*window_.c);
     const bool c_exceeds_trace =
-        window_.c.has_value() &&
-        compare_trace_time(trace_end, header, *window_.c) == std::strong_ordering::less;
+        !omitted_c &&
+        window_bound_exceeds_trace_end(*window_.c, header, trace_end, trace_end_sequence);
     result.observation_uses_trace_end = omitted_c || c_exceeds_trace;
-    result.effective_c =
-        result.observation_uses_trace_end ? trace_time_floor(trace_end, header) : *window_.c;
+    result.effective_c = result.observation_uses_trace_end ? trace_end_bound : *window_.c;
     result.candidate_count = static_cast<std::uint64_t>(candidates_.size());
 
     for (const auto& candidate : candidates_) {
       const bool ended_by_c =
-          candidate.ended_at.has_value() &&
+          candidate.ended_by.has_value() &&
           (result.observation_uses_trace_end ||
-           compare_trace_time(*candidate.ended_at, header, result.effective_c) !=
-               std::strong_ordering::greater);
+           window_at_or_before(result.effective_c, header, *candidate.ended_by));
       if (ended_by_c) {
         checked_increment(result.ended_by_c_count, "ended candidate count overflow");
         continue;
@@ -128,10 +174,9 @@ class OutstandingCollector {
     if (!file_header_.has_value()) {
       throw OutstandingAnalysisError{"generation appeared before FileHeader"};
     }
-    const auto ticks = generation.created_by.header.monotonic_ticks;
-    if (compare_trace_time(ticks, *file_header_, window_.a) == std::strong_ordering::less ||
+    if (!window_at_or_after(window_.a, *file_header_, generation.created_by) ||
         (window_.b.has_value() &&
-         compare_trace_time(ticks, *file_header_, *window_.b) != std::strong_ordering::less)) {
+         !window_before(*window_.b, *file_header_, generation.created_by))) {
       return;
     }
 
@@ -156,10 +201,10 @@ class OutstandingCollector {
       return;
     }
     auto& state = candidates_.at(candidate->second);
-    if (state.ended_at.has_value()) {
+    if (state.ended_by.has_value()) {
       throw OutstandingAnalysisError{"candidate generation ended more than once"};
     }
-    state.ended_at = event.header.monotonic_ticks;
+    state.ended_by = event;
   }
 
   OutstandingWindow window_;

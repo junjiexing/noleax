@@ -255,6 +255,27 @@ template <typename Identifier>
   return "+" + std::to_string(trace_time_floor(ticks, header).count()) + "ns";
 }
 
+// Window endpoint text: time as "123ns", sequence as "#123", both joined with '+', and an empty
+// (unbounded) endpoint as "0ns".
+[[nodiscard]] std::string window_bound_text(const WindowBound& bound) {
+  std::string result;
+  if (bound.time.has_value()) {
+    result.append(std::to_string(bound.time->count()));
+    result.append("ns");
+  }
+  if (bound.sequence.has_value()) {
+    if (!result.empty()) {
+      result.push_back('+');
+    }
+    result.push_back('#');
+    result.append(std::to_string(*bound.sequence));
+  }
+  if (result.empty()) {
+    result.append("0ns");
+  }
+  return result;
+}
+
 [[nodiscard]] std::string process_target_text(const noleax::trace::ProcessTarget& target,
                                               const noleax::trace::FileHeader& header) {
   std::string result{"scope="};
@@ -410,9 +431,10 @@ void ConsoleWriter::write_outstanding(const OutstandingResult& result,
   header_ = result.trace.file_header;
   capture_scope_ = result.trace.capture_scope;
   write_preamble("noleax leaks", *header_, *capture_scope_);
-  output_ << "window: [" << result.requested_window.a.count() << "ns, "
-          << result.effective_b.count() << "ns) observed-at=" << result.effective_c.count()
-          << "ns (" << (result.observation_uses_trace_end ? "trace-end" : "configured") << ")\n"
+  output_ << "window: [" << window_bound_text(result.requested_window.a) << ", "
+          << window_bound_text(result.effective_b)
+          << ") observed-at=" << window_bound_text(result.effective_c) << " ("
+          << (result.observation_uses_trace_end ? "trace-end" : "configured") << ")\n"
           << "trace-end: " << trace_time_floor(result.trace_end_monotonic_ticks, *header_).count()
           << "ns [ticks=" << result.trace_end_monotonic_ticks << "]\n"
           << "outstanding:\n";
@@ -452,13 +474,13 @@ void ConsoleWriter::write_event_stacks(const EventsStacksResult& result,
   header_ = result.trace.file_header;
   capture_scope_ = result.trace.capture_scope;
   write_preamble("noleax event stacks", *header_, *capture_scope_);
-  output_ << "window: [" << result.window.from.count() << "ns, ";
+  output_ << "window: [" << window_bound_text(result.window.from) << ", ";
   if (result.window.to.has_value()) {
-    output_ << result.window.to->count();
+    output_ << window_bound_text(*result.window.to);
   } else {
     output_ << "trace-end";
   }
-  output_ << "ns)\ngroups:\n";
+  output_ << ")\ngroups:\n";
 
   std::uint64_t rank = 0U;
   std::uint64_t total_calls = 0U;
@@ -511,9 +533,9 @@ void ConsoleWriter::write_leak_stacks(const LeaksStacksResult& result,
   header_ = outstanding.trace.file_header;
   capture_scope_ = outstanding.trace.capture_scope;
   write_preamble("noleax leak stacks", *header_, *capture_scope_);
-  output_ << "window: [" << outstanding.requested_window.a.count() << "ns, "
-          << outstanding.effective_b.count()
-          << "ns) observed-at=" << outstanding.effective_c.count() << "ns ("
+  output_ << "window: [" << window_bound_text(outstanding.requested_window.a) << ", "
+          << window_bound_text(outstanding.effective_b)
+          << ") observed-at=" << window_bound_text(outstanding.effective_c) << " ("
           << (outstanding.observation_uses_trace_end ? "trace-end" : "configured")
           << ")\ngroups:\n";
 
@@ -798,7 +820,8 @@ FilteredEventsResult analyze_events_to_console(std::istream& input, std::ostream
                                                const EventMetadataResolver& filter_resolver,
                                                const ConsoleMetadataResolver& console_resolver,
                                                ConsoleOptions console_options,
-                                               EventStreamOptions stream_options) {
+                                               EventStreamOptions stream_options,
+                                               FilteredEventsWindow window) {
   ConsoleWriter writer{output, console_options};
   std::optional<noleax::trace::FileHeader> file_header;
   EventStreamCallbacks callbacks;
@@ -816,7 +839,8 @@ FilteredEventsResult analyze_events_to_console(std::istream& input, std::ostream
   };
   callbacks.on_loss = [&writer](const noleax::trace::LossRecord& loss) { writer.write_loss(loss); };
 
-  auto result = analyze_filtered_events(input, filter, callbacks, filter_resolver, stream_options);
+  auto result =
+      analyze_filtered_events(input, filter, callbacks, filter_resolver, stream_options, window);
   writer.finish_events(result);
   return result;
 }

@@ -212,6 +212,15 @@ template <typename Enum>
   }
 }
 
+[[nodiscard]] config::WindowBound parse_cli_window_bound(std::string_view value,
+                                                         std::string_view option) {
+  try {
+    return config::parse_window_bound(value);
+  } catch (const config::ValueParseError& error) {
+    conversion_error(option, error);
+  }
+}
+
 [[nodiscard]] std::uint64_t parse_cli_unsigned(std::string_view value, std::uint64_t maximum,
                                                std::string_view option) {
   try {
@@ -426,13 +435,13 @@ void apply_analyze_bindings(const AnalyzeBindings& bindings,
         parse_cli_path(bindings.output.value, "--output", current_directory));
   }
   if (was_set(bindings.from)) {
-    overrides.analysis.from.set(parse_cli_duration(bindings.from.value, "--from"));
+    overrides.analysis.from.set(parse_cli_window_bound(bindings.from.value, "--from"));
   }
   if (was_set(bindings.to)) {
-    overrides.analysis.to.set(parse_cli_duration(bindings.to.value, "--to"));
+    overrides.analysis.to.set(parse_cli_window_bound(bindings.to.value, "--to"));
   }
   if (was_set(bindings.end)) {
-    overrides.analysis.end.set(parse_cli_duration(bindings.end.value, "--end"));
+    overrides.analysis.end.set(parse_cli_window_bound(bindings.end.value, "--end"));
   }
   if (was_set(bindings.group_by)) {
     overrides.analysis.group_by.set(
@@ -606,9 +615,12 @@ ParsedCommandLine parse_command_line(int argc, const char* const* argv,
   add_text_option(*analyze, analyze_bindings.mode, "--mode", "Analysis mode");
   add_text_option(*analyze, analyze_bindings.format, "--format", "Output format");
   add_text_option(*analyze, analyze_bindings.output, "--output", "Output path");
-  add_text_option(*analyze, analyze_bindings.from, "--from", "Allocation window start time");
-  add_text_option(*analyze, analyze_bindings.to, "--to", "Allocation window end time");
-  add_text_option(*analyze, analyze_bindings.end, "--end", "Observation time for leaks");
+  add_text_option(*analyze, analyze_bindings.from, "--from", "Allocation window start");
+  add_text_option(*analyze, analyze_bindings.to, "--to", "Allocation window end");
+  add_text_option(*analyze, analyze_bindings.end, "--end", "Observation point for leaks");
+  analyze_bindings.from.option->type_name("TIME|#SEQ");
+  analyze_bindings.to.option->type_name("TIME|#SEQ");
+  analyze_bindings.end.option->type_name("TIME|#SEQ");
   add_text_option(*analyze, analyze_bindings.group_by, "--group-by",
                   "Group results by this dimension");
   add_text_option(*analyze, analyze_bindings.sort, "--sort", "Group sort order");

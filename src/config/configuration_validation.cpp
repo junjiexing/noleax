@@ -199,6 +199,24 @@ void validate_output_parent(const std::optional<std::filesystem::path>& path,
   }
 }
 
+void validate_window_bound(const std::optional<WindowBound>& bound, std::string_view key) {
+  if (bound.has_value() && bound->time.has_value() && bound->sequence.has_value()) {
+    fail(key, "must be a duration or a #sequence, not both");
+  }
+}
+
+// Orders only bounds of the same kind (time against time, sequence against sequence); different
+// kinds have no defined order and pass.
+[[nodiscard]] bool window_bounds_out_of_order(const WindowBound& lower, const WindowBound& upper) {
+  if (lower.time.has_value() && upper.time.has_value()) {
+    return *lower.time > *upper.time;
+  }
+  if (lower.sequence.has_value() && upper.sequence.has_value()) {
+    return *lower.sequence > *upper.sequence;
+  }
+  return false;
+}
+
 void validate_common_capture(const Configuration& configuration) {
   if (configuration.capture.max_stack_depth.value < 1U ||
       configuration.capture.max_stack_depth.value > 256U) {
@@ -328,19 +346,25 @@ void validate_analyze(const Configuration& configuration, const Configuration& d
   if (events_mode && configuration.analysis.end.value.has_value()) {
     fail("analysis.end", "is only valid in leaks mode");
   }
+  validate_window_bound(configuration.analysis.from.value, "analysis.from");
+  validate_window_bound(configuration.analysis.to.value, "analysis.to");
+  validate_window_bound(configuration.analysis.end.value, "analysis.end");
   if (configuration.analysis.from.value.has_value() &&
       configuration.analysis.to.value.has_value() &&
-      *configuration.analysis.from.value > *configuration.analysis.to.value) {
+      window_bounds_out_of_order(*configuration.analysis.from.value,
+                                 *configuration.analysis.to.value)) {
     fail("analysis.from", "must be less than or equal to analysis.to");
   }
   if (configuration.analysis.end.value.has_value() && configuration.analysis.to.value.has_value() &&
-      *configuration.analysis.end.value < *configuration.analysis.to.value) {
+      window_bounds_out_of_order(*configuration.analysis.to.value,
+                                 *configuration.analysis.end.value)) {
     fail("analysis.end", "must be greater than or equal to analysis.to");
   }
   if (configuration.analysis.end.value.has_value() &&
       !configuration.analysis.to.value.has_value() &&
       configuration.analysis.from.value.has_value() &&
-      *configuration.analysis.from.value > *configuration.analysis.end.value) {
+      window_bounds_out_of_order(*configuration.analysis.from.value,
+                                 *configuration.analysis.end.value)) {
     fail("analysis.end", "must be greater than or equal to analysis.from when --to is omitted");
   }
   const bool sort_specified = configuration.analysis.sort.source != ValueSource::kDefault;

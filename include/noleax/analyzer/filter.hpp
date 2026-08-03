@@ -10,6 +10,7 @@
 
 #include "noleax/analyzer/event_stream.hpp"
 #include "noleax/analyzer/generation_tracker.hpp"
+#include "noleax/analyzer/window.hpp"
 #include "noleax/trace/event.hpp"
 
 namespace noleax::analyzer {
@@ -66,8 +67,16 @@ struct FilteredEventsResult {
   std::uint64_t filtered_event_count{0};
 };
 
+// Optional event window for non-aggregated events analysis; events outside [from, to) count as
+// filtered.
+struct FilteredEventsWindow {
+  WindowBound from;
+  std::optional<WindowBound> to;
+};
+
 [[nodiscard]] FilteredEventsResult analyze_filtered_events(
     std::istream& input, const AnalysisFilter& filter, const EventStreamCallbacks& callbacks = {},
-    const EventMetadataResolver& resolver = {}, EventStreamOptions options = {});
+    const EventMetadataResolver& resolver = {}, EventStreamOptions options = {},
+    FilteredEventsWindow window = {});
 
 }  // namespace noleax::analyzer

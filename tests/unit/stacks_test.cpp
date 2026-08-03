@@ -101,6 +101,18 @@ using namespace std::chrono_literals;
   return builder.finish_normally().build();
 }
 
+[[nodiscard]] noleax::analyzer::WindowBound at(std::chrono::nanoseconds time) {
+  noleax::analyzer::WindowBound bound;
+  bound.time = time;
+  return bound;
+}
+
+[[nodiscard]] noleax::analyzer::WindowBound seq(std::uint64_t sequence) {
+  noleax::analyzer::WindowBound bound;
+  bound.sequence = sequence;
+  return bound;
+}
+
 [[nodiscard]] noleax::analyzer::EventsStacksResult analyze_events(
     const std::string& encoded, noleax::analyzer::StacksSort sort,
     noleax::analyzer::StacksWindow window = {},
@@ -167,8 +179,26 @@ TEST_CASE("event stacks skip failed calls and events outside the window", "[anal
   });
 
   noleax::analyzer::StacksWindow window;
-  window.from = 15ns;
-  window.to = 25ns;
+  window.from = at(15ns);
+  window.to = at(25ns);
+  const auto result = analyze_events(encoded, noleax::analyzer::StacksSort::kCalls, window);
+  REQUIRE(result.groups.size() == 1U);
+  CHECK(result.groups.front().calls == 1U);
+  CHECK(result.groups.front().alloc_bytes == 32U);
+  CHECK(result.aggregated_event_count == 1U);
+}
+
+TEST_CASE("event stacks apply sequence bounds like time bounds", "[analyzer][stacks][window]") {
+  const auto encoded = make_trace({
+      failed_allocation_event(1U, 105U, 11U),
+      allocation_event(2U, 110U, 11U, 1U, 64U),
+      allocation_event(3U, 120U, 11U, 2U, 32U),
+      allocation_event(4U, 130U, 11U, 3U, 16U),
+  });
+
+  noleax::analyzer::StacksWindow window;
+  window.from = seq(3U);
+  window.to = seq(4U);
   const auto result = analyze_events(encoded, noleax::analyzer::StacksSort::kCalls, window);
   REQUIRE(result.groups.size() == 1U);
   CHECK(result.groups.front().calls == 1U);
@@ -243,7 +273,7 @@ TEST_CASE("leak stacks respect the creation window and sort by calls", "[analyze
   });
 
   noleax::analyzer::OutstandingWindow window;
-  window.a = 12ns;
+  window.a = at(12ns);
   const auto result = analyze_leaks(encoded, noleax::analyzer::StacksSort::kCalls, window);
   REQUIRE(result.groups.size() == 2U);
   CHECK(result.groups[0].stack_id == noleax::trace::StackId{22U});
@@ -251,6 +281,24 @@ TEST_CASE("leak stacks respect the creation window and sort by calls", "[analyze
   CHECK(result.groups[0].bytes == 16U);
   CHECK(result.groups[1].stack_id == noleax::trace::StackId{11U});
   CHECK(result.groups[1].calls == 1U);
+}
+
+TEST_CASE("leak stacks apply sequence creation windows", "[analyzer][stacks][window]") {
+  const auto encoded = make_trace({
+      allocation_event(1U, 105U, 11U, 1U, 64U),
+      allocation_event(2U, 115U, 11U, 2U, 64U),
+      allocation_event(3U, 125U, 22U, 3U, 8U),
+      allocation_event(4U, 135U, 22U, 4U, 8U),
+  });
+
+  noleax::analyzer::OutstandingWindow window;
+  window.a = seq(2U);
+  window.b = seq(3U);
+  const auto result = analyze_leaks(encoded, noleax::analyzer::StacksSort::kCalls, window);
+  REQUIRE(result.groups.size() == 1U);
+  CHECK(result.groups[0].stack_id == noleax::trace::StackId{11U});
+  CHECK(result.groups[0].calls == 1U);
+  CHECK(result.outstanding.candidate_count == 1U);
 }
 
 TEST_CASE("leak stacks default the window to the whole trace", "[analyzer][stacks]") {

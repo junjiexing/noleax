@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "noleax/config/config_io.hpp"
 #include "noleax/config/configuration.hpp"
 
 namespace {
@@ -194,9 +195,9 @@ TEST_CASE("analyze CLI replaces arrays and maps all filters", "[cli][config]") {
   CHECK(overrides.analysis.mode.value == noleax::config::AnalysisMode::kOutstanding);
   CHECK(overrides.analysis.format.value == noleax::config::OutputFormat::kCsv);
   CHECK(overrides.analysis.output.value == current_directory / "result.csv");
-  CHECK(overrides.analysis.from.value == 1s);
-  CHECK(overrides.analysis.to.value == 2s);
-  CHECK(overrides.analysis.end.value == 3s);
+  CHECK(overrides.analysis.from.value->time == 1s);
+  CHECK(overrides.analysis.to.value->time == 2s);
+  CHECK(overrides.analysis.end.value->time == 3s);
   CHECK(overrides.analysis.group_by.value == noleax::config::AnalysisGroupBy::kStack);
   CHECK(overrides.analysis.sort.value == noleax::config::AnalysisSort::kCalls);
   CHECK(overrides.filters.min_size.value == 16U);
@@ -213,6 +214,33 @@ TEST_CASE("analyze CLI replaces arrays and maps all filters", "[cli][config]") {
   CHECK(overrides.symbols.paths.value ==
         std::vector<std::filesystem::path>{current_directory / "symbols"});
   CHECK(overrides.symbols.servers.value == std::vector<std::string>{"https://server"});
+}
+
+TEST_CASE("analyze CLI parses time and sequence window bounds", "[cli][config]") {
+  using namespace std::chrono_literals;
+  const auto current_directory = std::filesystem::current_path();
+
+  const auto time = parse({"analyze", "--from", "10s", "--to", "20s", "--end", "30s", "one.nlx"},
+                          current_directory);
+  REQUIRE(time.overrides.analysis.from.value.has_value());
+  CHECK(time.overrides.analysis.from.value->time == 10s);
+  CHECK_FALSE(time.overrides.analysis.from.value->sequence.has_value());
+  CHECK(time.overrides.analysis.to.value->time == 20s);
+  CHECK(time.overrides.analysis.end.value->time == 30s);
+
+  const auto sequence = parse(
+      {"analyze", "--from", "#123", "--to", "#456", "--end", "#789", "one.nlx"}, current_directory);
+  REQUIRE(sequence.overrides.analysis.from.value.has_value());
+  CHECK(sequence.overrides.analysis.from.value->sequence == 123U);
+  CHECK_FALSE(sequence.overrides.analysis.from.value->time.has_value());
+  CHECK(sequence.overrides.analysis.to.value->sequence == 456U);
+  CHECK(sequence.overrides.analysis.end.value->sequence == 789U);
+
+  for (const auto* invalid : {"#", "#abc", "#18446744073709551616"}) {
+    CAPTURE(invalid);
+    CHECK_THROWS_AS(parse({"analyze", "--from", invalid, "one.nlx"}, current_directory),
+                    noleax::config::ConfigError);
+  }
 }
 
 TEST_CASE("config commands and command line diagnostics are explicit", "[cli][config]") {

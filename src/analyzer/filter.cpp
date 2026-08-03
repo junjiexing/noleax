@@ -270,16 +270,31 @@ bool AnalysisFilter::matches_generation(const MemoryGeneration& generation,
 FilteredEventsResult analyze_filtered_events(std::istream& input, const AnalysisFilter& filter,
                                              const EventStreamCallbacks& callbacks,
                                              const EventMetadataResolver& resolver,
-                                             EventStreamOptions options) {
+                                             EventStreamOptions options,
+                                             FilteredEventsWindow window) {
   if (filter.requires_metadata() && !resolver) {
     throw AnalysisFilterError{"API and module filters require an event metadata resolver"};
   }
 
   FilteredEventsResult result;
+  std::optional<noleax::trace::FileHeader> file_header;
   EventStreamCallbacks stream_callbacks = callbacks;
-  stream_callbacks.on_event = [&filter, &callbacks, &resolver,
-                               &result](const noleax::trace::Event& event) {
-    if (!filter.matches_event(event, resolver)) {
+  stream_callbacks.on_file_header = [&file_header,
+                                     &callbacks](const noleax::trace::FileHeader& header) {
+    file_header = header;
+    if (callbacks.on_file_header) {
+      callbacks.on_file_header(header);
+    }
+  };
+  stream_callbacks.on_event = [&filter, &callbacks, &resolver, &result, &window,
+                               &file_header](const noleax::trace::Event& event) {
+    if (!file_header.has_value()) {
+      throw AnalysisFilterError{"event appeared before FileHeader"};
+    }
+    const bool in_window =
+        window_at_or_after(window.from, *file_header, event) &&
+        (!window.to.has_value() || window_before(*window.to, *file_header, event));
+    if (!in_window || !filter.matches_event(event, resolver)) {
       checked_increment(result.filtered_event_count, "filtered event");
       return;
     }

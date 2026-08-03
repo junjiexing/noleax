@@ -299,6 +299,35 @@ int main(int argc, char* argv[]) {
       throw std::runtime_error{"CSV analysis omitted API or stack metadata"};
     }
 
+    const auto seq_console = output_directory / "cli-seq.txt";
+    const auto seq_json = output_directory / "cli-seq.json";
+    for (const auto& path : {seq_console, seq_json}) {
+      remove_file(path);
+    }
+    const ChildResult sequence_window = run_child(
+        noleax,
+        {"analyze", "--mode", "events", "--format", "console", "--output", utf8_path(seq_console),
+         "--from", "#2", "--to", "#1000000000", utf8_path(run_trace)},
+        run_log);
+    const std::string sequence_text = read_file(seq_console);
+    if (!analysis_completed(sequence_window.exit_code) ||
+        sequence_text.find("event #1 ") != std::string::npos ||
+        sequence_text.find("event #2 ") == std::string::npos ||
+        sequence_text.find("matched-events:") == std::string::npos) {
+      throw std::runtime_error{"events sequence window did not exclude the first event"};
+    }
+    const ChildResult sequence_stacks = run_child(
+        noleax,
+        {"analyze", "--mode", "events", "--group-by", "stack", "--sort", "alloc-bytes", "--format",
+         "json", "--output", utf8_path(seq_json), "--from", "#2", utf8_path(run_trace)},
+        run_log);
+    const auto sequence_document = noleax::testing::parse_json(read_file(seq_json));
+    if (!analysis_completed(sequence_stacks.exit_code) ||
+        sequence_document.at("window").at("from_ns").type() != noleax::testing::JsonType::kNull ||
+        sequence_document.at("window").at("from_sequence").unsigned_value() != 2U) {
+      throw std::runtime_error{"stacks sequence window did not round-trip into JSON"};
+    }
+
     const auto stacks_json = output_directory / "cli-stacks.json";
     const auto leak_stacks_json = output_directory / "cli-leak-stacks.json";
     for (const auto& path : {stacks_json, leak_stacks_json}) {
@@ -540,7 +569,7 @@ int main(int argc, char* argv[]) {
     }
 
     std::cout << "status=ok run=1 attach=1 hijack=1 entrypoint=1 patch=1 static=1 agent=1 "
-                 "outstanding=1 console=1 json=1 csv=1 stacks=1 errors=1\n";
+                 "outstanding=1 console=1 json=1 csv=1 stacks=1 seqwindow=1 errors=1\n";
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "status=error message=" << error.what() << '\n';

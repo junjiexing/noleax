@@ -770,6 +770,10 @@ enum class OutstandingColumn : std::uint8_t {
   kWindowBNs,
   kRequestedCNs,
   kEffectiveCNs,
+  kWindowASequence,
+  kWindowBSequence,
+  kRequestedCSequence,
+  kEffectiveCSequence,
   kObservationUsesTraceEnd,
   kTraceEndMonotonicTicks,
   kCreationSequence,
@@ -826,6 +830,10 @@ constexpr std::array<std::string_view, kOutstandingColumnCount> kOutstandingHead
     "window_b_ns",
     "requested_c_ns",
     "effective_c_ns",
+    "window_a_sequence",
+    "window_b_sequence",
+    "requested_c_sequence",
+    "effective_c_sequence",
     "observation_uses_trace_end",
     "trace_end_monotonic_ticks",
     "creation_sequence",
@@ -899,6 +907,8 @@ enum class EventStacksColumn : std::uint8_t {
   kStackFrames,
   kWindowFromNs,
   kWindowToNs,
+  kWindowFromSequence,
+  kWindowToSequence,
   kGroups,
   kAggregatedEvents,
   kUnmatchedFrees,
@@ -937,6 +947,8 @@ constexpr std::array<std::string_view, kEventStacksColumnCount> kEventStacksHead
     "stack_frames",
     "window_from_ns",
     "window_to_ns",
+    "window_from_sequence",
+    "window_to_sequence",
     "groups",
     "aggregated_events",
     "unmatched_frees",
@@ -973,6 +985,10 @@ enum class LeakStacksColumn : std::uint8_t {
   kWindowBNs,
   kRequestedCNs,
   kEffectiveCNs,
+  kWindowASequence,
+  kWindowBSequence,
+  kRequestedCSequence,
+  kEffectiveCSequence,
   kObservationUsesTraceEnd,
   kGroups,
   kTraceEvents,
@@ -1008,6 +1024,10 @@ constexpr std::array<std::string_view, kLeakStacksColumnCount> kLeakStacksHeader
     "window_b_ns",
     "requested_c_ns",
     "effective_c_ns",
+    "window_a_sequence",
+    "window_b_sequence",
+    "requested_c_sequence",
+    "effective_c_sequence",
     "observation_uses_trace_end",
     "groups",
     "trace_events",
@@ -1027,6 +1047,18 @@ constexpr std::array<std::string_view, kLeakStacksColumnCount> kLeakStacksHeader
 
 void set(LeakStacksRow& row, LeakStacksColumn column, std::string value) {
   row[column_index(column)] = std::move(value);
+}
+
+// Fills the window endpoint column pair for one bound; unset components stay empty.
+template <typename Row, typename Column>
+void set_window_bound(Row& row, Column ns_column, Column sequence_column,
+                      const WindowBound& bound) {
+  if (bound.time.has_value()) {
+    set(row, ns_column, decimal(bound.time->count()));
+  }
+  if (bound.sequence.has_value()) {
+    set(row, sequence_column, decimal(*bound.sequence));
+  }
 }
 
 void set_common_outstanding_summary(OutstandingRow& row, const EventStreamResult& trace) {
@@ -1222,16 +1254,17 @@ void CsvWriter::write_outstanding_summary(const OutstandingResult& result) {
   OutstandingRow row;
   set(row, OutstandingColumn::kCsvSchemaVersion, decimal(kAnalysisCsvSchemaVersion));
   set(row, OutstandingColumn::kRecordType, "summary");
-  set(row, OutstandingColumn::kWindowANs, decimal(result.requested_window.a.count()));
-  if (result.requested_window.b.has_value()) {
-    set(row, OutstandingColumn::kWindowBNs, decimal(result.requested_window.b->count()));
-  } else {
-    set(row, OutstandingColumn::kWindowBNs, decimal(result.effective_b.count()));
-  }
+  set_window_bound(row, OutstandingColumn::kWindowANs, OutstandingColumn::kWindowASequence,
+                   result.requested_window.a);
+  const WindowBound& b =
+      result.requested_window.b.has_value() ? *result.requested_window.b : result.effective_b;
+  set_window_bound(row, OutstandingColumn::kWindowBNs, OutstandingColumn::kWindowBSequence, b);
   if (result.requested_window.c.has_value()) {
-    set(row, OutstandingColumn::kRequestedCNs, decimal(result.requested_window.c->count()));
+    set_window_bound(row, OutstandingColumn::kRequestedCNs, OutstandingColumn::kRequestedCSequence,
+                     *result.requested_window.c);
   }
-  set(row, OutstandingColumn::kEffectiveCNs, decimal(result.effective_c.count()));
+  set_window_bound(row, OutstandingColumn::kEffectiveCNs, OutstandingColumn::kEffectiveCSequence,
+                   result.effective_c);
   set(row, OutstandingColumn::kObservationUsesTraceEnd,
       result.observation_uses_trace_end ? "true" : "false");
   set(row, OutstandingColumn::kTraceEndMonotonicTicks, decimal(result.trace_end_monotonic_ticks));
@@ -1284,9 +1317,11 @@ void CsvWriter::write_event_stacks_summary(const EventsStacksResult& result) {
   EventStacksRow row;
   set(row, EventStacksColumn::kCsvSchemaVersion, decimal(kAnalysisCsvSchemaVersion));
   set(row, EventStacksColumn::kRecordType, "summary");
-  set(row, EventStacksColumn::kWindowFromNs, decimal(result.window.from.count()));
+  set_window_bound(row, EventStacksColumn::kWindowFromNs, EventStacksColumn::kWindowFromSequence,
+                   result.window.from);
   if (result.window.to.has_value()) {
-    set(row, EventStacksColumn::kWindowToNs, decimal(result.window.to->count()));
+    set_window_bound(row, EventStacksColumn::kWindowToNs, EventStacksColumn::kWindowToSequence,
+                     *result.window.to);
   }
   std::uint64_t total_calls = 0U;
   std::uint64_t total_alloc_bytes = 0U;
@@ -1381,16 +1416,18 @@ void CsvWriter::write_leak_stacks_summary(const LeaksStacksResult& result) {
   LeakStacksRow row;
   set(row, LeakStacksColumn::kCsvSchemaVersion, decimal(kAnalysisCsvSchemaVersion));
   set(row, LeakStacksColumn::kRecordType, "summary");
-  set(row, LeakStacksColumn::kWindowANs, decimal(outstanding.requested_window.a.count()));
-  if (outstanding.requested_window.b.has_value()) {
-    set(row, LeakStacksColumn::kWindowBNs, decimal(outstanding.requested_window.b->count()));
-  } else {
-    set(row, LeakStacksColumn::kWindowBNs, decimal(outstanding.effective_b.count()));
-  }
+  set_window_bound(row, LeakStacksColumn::kWindowANs, LeakStacksColumn::kWindowASequence,
+                   outstanding.requested_window.a);
+  const WindowBound& b = outstanding.requested_window.b.has_value()
+                             ? *outstanding.requested_window.b
+                             : outstanding.effective_b;
+  set_window_bound(row, LeakStacksColumn::kWindowBNs, LeakStacksColumn::kWindowBSequence, b);
   if (outstanding.requested_window.c.has_value()) {
-    set(row, LeakStacksColumn::kRequestedCNs, decimal(outstanding.requested_window.c->count()));
+    set_window_bound(row, LeakStacksColumn::kRequestedCNs, LeakStacksColumn::kRequestedCSequence,
+                     *outstanding.requested_window.c);
   }
-  set(row, LeakStacksColumn::kEffectiveCNs, decimal(outstanding.effective_c.count()));
+  set_window_bound(row, LeakStacksColumn::kEffectiveCNs, LeakStacksColumn::kEffectiveCSequence,
+                   outstanding.effective_c);
   set(row, LeakStacksColumn::kObservationUsesTraceEnd,
       outstanding.observation_uses_trace_end ? "true" : "false");
   std::uint64_t total_calls = 0U;
@@ -1461,7 +1498,8 @@ FilteredEventsResult analyze_events_to_csv(std::istream& input, std::ostream& ou
                                            const AnalysisFilter& filter,
                                            const EventMetadataResolver& filter_resolver,
                                            const EventPresentationResolver& presentation_resolver,
-                                           EventStreamOptions stream_options) {
+                                           EventStreamOptions stream_options,
+                                           FilteredEventsWindow window) {
   CsvWriter writer{output};
   std::optional<noleax::trace::FileHeader> file_header;
   EventStreamCallbacks callbacks;
@@ -1480,7 +1518,8 @@ FilteredEventsResult analyze_events_to_csv(std::istream& input, std::ostream& ou
   };
   callbacks.on_loss = [&writer](const noleax::trace::LossRecord& loss) { writer.write_loss(loss); };
 
-  auto result = analyze_filtered_events(input, filter, callbacks, filter_resolver, stream_options);
+  auto result =
+      analyze_filtered_events(input, filter, callbacks, filter_resolver, stream_options, window);
   writer.finish_events(result);
   return result;
 }

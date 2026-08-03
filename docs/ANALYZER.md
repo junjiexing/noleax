@@ -68,14 +68,15 @@ allocation_id 或 mapping_id 作为身份，不以可复用的地址作为身份
 
 `analyze_outstanding` 将 EventStream 与 GenerationTracker 组合，语义固定为：
 
-- 候选 creation time 满足 `a <= time < b`。
-- 要求 `0 <= a <= b <= c`（b 缺省时要求 `a <= c`）；b、c 省略或超过 trace end 时按 trace end
-  截断（effective_b/effective_c 写入结果），不再因超出终点报错。
-- 观察点包含 time 等于 c 的全部 end event，因此恰好在 c free/realloc/destroy/unmap 的候选不再
-  outstanding。
+- 候选 creation time 满足 `a <= time < b`；窗口界也可以是事件 sequence（`a <= sequence < b`）。
+- 要求 `0 <= a <= b <= c`（b 缺省时要求 `a <= c`），顺序校验只在同种类的界之间进行；b、c 省略
+  或超过 trace end（时间轴或最终 sequence）时按 trace end 截断（effective_b/effective_c 写入
+  结果），不再因超出终点报错。
+- 观察点包含 time 或 sequence 等于 c 的全部 end event，因此恰好在 c free/realloc/destroy/unmap
+  的候选不再 outstanding。
 - c 之后才结束的候选仍在 c outstanding，即使读取完整 trace 后它已不在 tracker 的最终 live
   集合中。
-- 只保存 `[a,b)` 中的候选及其可选结束时间；状态还原仍消费全部事件。
+- 只保存 `[a,b)` 中的候选及其可选结束事件；状态还原仍消费全部事件。
 - 输出保持候选创建顺序，覆盖 heap allocation、当前进程 virtual allocation 和 mapped view。
 
 用户时间是相对 FileHeader.monotonic_origin 的纳秒数。边界比较直接比较 tick/frequency 与纳秒

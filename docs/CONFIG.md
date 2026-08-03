@@ -127,6 +127,10 @@ standalone 激活参数烧进镜像，patched 副本可直接运行：agent 读�
 DbgHelp（不探测映像、不下载符号），与 `symbols.paths`/`symbols.servers` 同时配置校验报错；
 `required` 要求每个模块都解析出符号（symbols_loaded 或 exports_only），否则分析失败。
 
+`analysis.from`、`analysis.to`、`analysis.end` 接受两种窗口界：相对 trace 起点的时长
+（如 `"10s"`），或 `"#"` 前缀加事件 sequence（如 `"#123456"`）。空串表示未设置。三类界可以
+混用；超出 trace 终点（时间轴或最终 sequence）的界由 analyzer 按终点截断。
+
 ## 3. operation
 
 允许值：
@@ -211,8 +215,10 @@ analyze：
 - events 模式不得设置 analysis.end。
 - analysis.sort 必须搭配 analysis.group_by（当前唯一取值 "stack"）；events 聚合接受 calls、alloc-bytes、free-bytes 和
   net-bytes，leaks 聚合接受 calls 和 bytes。
-- from 小于等于 to；end 若设置，必须大于等于 to。
-- to 和 end 超过 trace 结束时间时由 analyzer 按结束时间截断，不再报错。
+- from 小于等于 to；end 若设置，必须大于等于 to。顺序校验只在同种类的界之间进行
+  （时间比时间、sequence 比 sequence）；不同种类混用允许但不检查顺序。同一个界只能是时间或
+  sequence 之一。
+- to 和 end 超过 trace 结束时间或最终 sequence 时由 analyzer 按结束位置截断，不再报错。
 - min_size 不得大于 max_size。
 - filters.statuses 接受 success、failure、unmatched 和 preexisting。
 - filters.events、threads、apis、modules、stack_modules、allocation_ids 和 statuses 中，同一数组的

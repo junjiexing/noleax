@@ -375,6 +375,43 @@ void write_process_target(JsonEmitter& json, const noleax::trace::ProcessTarget&
   json.raw("}");
 }
 
+void write_nullable_signed(JsonEmitter& json, std::string_view key,
+                           const std::optional<std::chrono::nanoseconds>& value) {
+  json.raw(",\"");
+  json.raw(key);
+  json.raw("\":");
+  if (value.has_value()) {
+    json.signed_number(value->count());
+  } else {
+    json.null();
+  }
+}
+
+void write_nullable_unsigned(JsonEmitter& json, std::string_view key,
+                             const std::optional<std::uint64_t>& value) {
+  json.raw(",\"");
+  json.raw(key);
+  json.raw("\":");
+  if (value.has_value()) {
+    json.unsigned_number(*value);
+  } else {
+    json.null();
+  }
+}
+
+// Emits one window endpoint as a nullable "<name>_ns" and "<name>_sequence" field pair.
+void write_window_bound(JsonEmitter& json, std::string_view ns_key, std::string_view sequence_key,
+                        const WindowBound& bound) {
+  write_nullable_signed(json, ns_key, bound.time);
+  write_nullable_unsigned(json, sequence_key, bound.sequence);
+}
+
+void write_optional_window_bound(JsonEmitter& json, std::string_view ns_key,
+                                 std::string_view sequence_key,
+                                 const std::optional<WindowBound>& bound) {
+  write_window_bound(json, ns_key, sequence_key, bound.has_value() ? *bound : WindowBound{});
+}
+
 void write_filter(JsonEmitter& json, const AnalysisFilter& filter) {
   const auto& criteria = filter.criteria();
   json.raw("{\"minimum_size\":");
@@ -630,23 +667,17 @@ void JsonWriter::write_outstanding(const OutstandingResult& result, const Analys
   write_document_prefix("leaks", header_, capture_scope_, filter);
   JsonEmitter json{output_};
   json.raw(",\"window\":{\"a_ns\":");
-  json.signed_number(result.requested_window.a.count());
-  json.raw(",\"b_ns\":");
-  if (result.requested_window.b.has_value()) {
-    json.signed_number(result.requested_window.b->count());
+  if (result.requested_window.a.time.has_value()) {
+    json.signed_number(result.requested_window.a.time->count());
   } else {
     json.null();
   }
-  json.raw(",\"effective_b_ns\":");
-  json.signed_number(result.effective_b.count());
-  json.raw(",\"requested_c_ns\":");
-  if (result.requested_window.c.has_value()) {
-    json.signed_number(result.requested_window.c->count());
-  } else {
-    json.null();
-  }
-  json.raw(",\"effective_c_ns\":");
-  json.signed_number(result.effective_c.count());
+  write_nullable_unsigned(json, "a_sequence", result.requested_window.a.sequence);
+  write_optional_window_bound(json, "b_ns", "b_sequence", result.requested_window.b);
+  write_window_bound(json, "effective_b_ns", "effective_b_sequence", result.effective_b);
+  write_optional_window_bound(json, "requested_c_ns", "requested_c_sequence",
+                              result.requested_window.c);
+  write_window_bound(json, "effective_c_ns", "effective_c_sequence", result.effective_c);
   json.raw(",\"observation_uses_trace_end\":");
   json.boolean(result.observation_uses_trace_end);
   json.raw(",\"trace_end_monotonic_ticks\":");
@@ -711,13 +742,13 @@ void JsonWriter::write_event_stacks(const EventsStacksResult& result, const Anal
   write_document_prefix("stacks", header_, capture_scope_, filter);
   JsonEmitter json{output_};
   json.raw(",\"dataset\":\"events\",\"window\":{\"from_ns\":");
-  json.signed_number(result.window.from.count());
-  json.raw(",\"to_ns\":");
-  if (result.window.to.has_value()) {
-    json.signed_number(result.window.to->count());
+  if (result.window.from.time.has_value()) {
+    json.signed_number(result.window.from.time->count());
   } else {
     json.null();
   }
+  write_nullable_unsigned(json, "from_sequence", result.window.from.sequence);
+  write_optional_window_bound(json, "to_ns", "to_sequence", result.window.to);
   json.raw("},\"groups\":[");
 
   bool first = true;
@@ -796,23 +827,17 @@ void JsonWriter::write_leak_stacks(const LeaksStacksResult& result, const Analys
   write_document_prefix("stacks", header_, capture_scope_, filter);
   JsonEmitter json{output_};
   json.raw(",\"dataset\":\"leaks\",\"window\":{\"a_ns\":");
-  json.signed_number(outstanding.requested_window.a.count());
-  json.raw(",\"b_ns\":");
-  if (outstanding.requested_window.b.has_value()) {
-    json.signed_number(outstanding.requested_window.b->count());
+  if (outstanding.requested_window.a.time.has_value()) {
+    json.signed_number(outstanding.requested_window.a.time->count());
   } else {
     json.null();
   }
-  json.raw(",\"effective_b_ns\":");
-  json.signed_number(outstanding.effective_b.count());
-  json.raw(",\"requested_c_ns\":");
-  if (outstanding.requested_window.c.has_value()) {
-    json.signed_number(outstanding.requested_window.c->count());
-  } else {
-    json.null();
-  }
-  json.raw(",\"effective_c_ns\":");
-  json.signed_number(outstanding.effective_c.count());
+  write_nullable_unsigned(json, "a_sequence", outstanding.requested_window.a.sequence);
+  write_optional_window_bound(json, "b_ns", "b_sequence", outstanding.requested_window.b);
+  write_window_bound(json, "effective_b_ns", "effective_b_sequence", outstanding.effective_b);
+  write_optional_window_bound(json, "requested_c_ns", "requested_c_sequence",
+                              outstanding.requested_window.c);
+  write_window_bound(json, "effective_c_ns", "effective_c_sequence", outstanding.effective_c);
   json.raw(",\"observation_uses_trace_end\":");
   json.boolean(outstanding.observation_uses_trace_end);
   json.raw("},\"groups\":[");
@@ -1208,7 +1233,8 @@ FilteredEventsResult analyze_events_to_json(std::istream& input, std::ostream& o
                                             const AnalysisFilter& filter,
                                             const EventMetadataResolver& filter_resolver,
                                             const EventPresentationResolver& presentation_resolver,
-                                            EventStreamOptions stream_options) {
+                                            EventStreamOptions stream_options,
+                                            FilteredEventsWindow window) {
   JsonWriter writer{output};
   std::optional<noleax::trace::FileHeader> file_header;
   EventStreamCallbacks callbacks;
@@ -1228,7 +1254,8 @@ FilteredEventsResult analyze_events_to_json(std::istream& input, std::ostream& o
   };
   callbacks.on_loss = [&writer](const noleax::trace::LossRecord& loss) { writer.write_loss(loss); };
 
-  auto result = analyze_filtered_events(input, filter, callbacks, filter_resolver, stream_options);
+  auto result =
+      analyze_filtered_events(input, filter, callbacks, filter_resolver, stream_options, window);
   writer.finish_events(result);
   return result;
 }

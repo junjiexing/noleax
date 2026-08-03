@@ -211,9 +211,9 @@ generation 和机器输出 schema 在实现前不做猜测式拼接。
 | --mode MODE | analysis.mode | events |
 | --format FORMAT | analysis.format | console |
 | --output PATH | analysis.output | stdout |
-| --from TIME | analysis.from | trace 起点 |
-| --to TIME | analysis.to | trace 终点 |
-| --end TIME | analysis.end | trace 终点 |
+| --from TIME\|#SEQ | analysis.from | trace 起点 |
+| --to TIME\|#SEQ | analysis.to | trace 终点 |
+| --end TIME\|#SEQ | analysis.end | trace 终点 |
 | --group-by DIM | analysis.group_by | 不聚合 |
 | --sort KEY | analysis.sort | events 聚合 alloc-bytes,leaks 聚合 bytes |
 | --trim-agent-frames / --no-trim-agent-frames | analysis.trim_agent_frames | true |
@@ -237,8 +237,10 @@ mode：
   outstanding 语义）。三个窗口参数全部可选，裸 `--mode leaks` 即“任何时间申请、trace 结束时
   仍未释放”。
 
-时间一律相对 trace 起点。`--to`/`--end` 超过 trace 终点时按终点截断，不再报错；要求
-`from <= to`、`to <= end`。events 模式不接受 `--end`。
+每个窗口界可以是相对 trace 起点的时间（如 `10s`），也可以是事件 sequence（`#` 前缀加序号，
+如 `#123456`）。`--to`/`--end` 超过 trace 终点（时间轴或最终 sequence）时按终点截断，不再
+报错；顺序校验只在同种类的界之间进行（时间比时间、sequence 比 sequence，`from <= to`、
+`to <= end`），不同种类混用允许但不检查顺序。events 模式不接受 `--end`。
 
 --group-by：按指定维度聚合结果，当前唯一取值 `stack`（按调用栈）。events 下聚合成功的
 alloc/realloc/free：每组输出
@@ -378,6 +380,12 @@ noleax analyze --mode leaks app.nlx
 
 ~~~powershell
 noleax analyze --mode leaks --from 5s --to 20s --end 60s --group-by stack --sort bytes --min-size 1KiB --max-size 1MiB --format json --output leaks.json app.nlx
+~~~
+
+窗口界也可以用事件 sequence（`#` 前缀）：
+
+~~~powershell
+noleax analyze --mode events --from '#1000' --to '#5000' app.nlx
 ~~~
 
 按调用栈聚合全部 alloc/realloc/free 并按净字节排序：

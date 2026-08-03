@@ -76,6 +76,18 @@ void write_file(const std::filesystem::path& path, std::string_view contents = {
   return normalized;
 }
 
+[[nodiscard]] noleax::config::WindowBound time_bound(std::chrono::nanoseconds time) {
+  noleax::config::WindowBound bound;
+  bound.time = time;
+  return bound;
+}
+
+[[nodiscard]] noleax::config::WindowBound sequence_bound(std::uint64_t sequence) {
+  noleax::config::WindowBound bound;
+  bound.sequence = sequence;
+  return bound;
+}
+
 }  // namespace
 
 TEST_CASE("default configuration has stable values and serialization", "[config]") {
@@ -290,6 +302,85 @@ TEST_CASE("effective TOML is accepted as a complete current-schema configuration
   CHECK_NOTHROW(noleax::config::validate_configuration(round_trip));
 }
 
+TEST_CASE("TOML loader parses time and sequence window bounds", "[config][toml]") {
+  using namespace std::chrono_literals;
+  TemporaryDirectory temporary;
+  const auto config_path = temporary.path() / "windows.toml";
+  write_file(config_path, R"toml(schema_version = 1
+operation = "analyze"
+
+[analysis]
+from = "#123"
+to = "10s"
+end = "#999"
+)toml");
+
+  const auto overrides = noleax::config::load_toml_config(config_path);
+  REQUIRE(overrides.analysis.from.specified);
+  CHECK(overrides.analysis.from.value->sequence == 123U);
+  CHECK_FALSE(overrides.analysis.from.value->time.has_value());
+  CHECK(overrides.analysis.to.value->time == 10s);
+  CHECK_FALSE(overrides.analysis.to.value->sequence.has_value());
+  CHECK(overrides.analysis.end.value->sequence == 999U);
+}
+
+TEST_CASE("effective TOML round-trips sequence window bounds", "[config][toml]") {
+  using namespace std::chrono_literals;
+  TemporaryDirectory temporary;
+  auto configuration = noleax::config::make_default_configuration();
+  configuration.operation.value = noleax::config::Operation::kDoctor;
+  configuration.analysis.from.value = sequence_bound(123U);
+  configuration.analysis.to.value = time_bound(10s);
+
+  const auto path = temporary.path() / "effective.toml";
+  write_file(path, noleax::config::serialize_effective_config(configuration));
+  const auto serialized = normalize_newlines(read_file(path));
+  CHECK(serialized.find("from = \"#123\"") != std::string::npos);
+  CHECK(serialized.find("to = \"10s\"") != std::string::npos);
+
+  const auto overrides = noleax::config::load_toml_config(path);
+  REQUIRE(overrides.analysis.from.specified);
+  CHECK(overrides.analysis.from.value->sequence == 123U);
+  CHECK(overrides.analysis.to.value->time == 10s);
+}
+
+TEST_CASE("analysis window validation orders only same-kind bounds", "[config]") {
+  using namespace std::chrono_literals;
+  TemporaryDirectory temporary;
+  const auto trace = temporary.path() / "input.nlx";
+  write_file(trace);
+
+  auto configuration = noleax::config::make_default_configuration();
+  configuration.operation.value = noleax::config::Operation::kAnalyze;
+  configuration.analysis.inputs.value = {trace};
+  configuration.analysis.mode.value = noleax::config::AnalysisMode::kOutstanding;
+
+  // Different kinds have no defined order and pass.
+  configuration.analysis.from.value = time_bound(10s);
+  configuration.analysis.to.value = sequence_bound(5U);
+  configuration.analysis.end.value = time_bound(1s);
+  CHECK_NOTHROW(noleax::config::validate_configuration(configuration));
+
+  // Same-kind sequence bounds must be ordered.
+  configuration.analysis.from.value = sequence_bound(9U);
+  configuration.analysis.to.value = sequence_bound(5U);
+  CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
+                  noleax::config::ConfigError);
+  configuration.analysis.from.value = sequence_bound(5U);
+  CHECK_NOTHROW(noleax::config::validate_configuration(configuration));
+
+  configuration.analysis.end.value = sequence_bound(4U);
+  CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
+                  noleax::config::ConfigError);
+  configuration.analysis.end.value = sequence_bound(5U);
+  CHECK_NOTHROW(noleax::config::validate_configuration(configuration));
+
+  // events mode still rejects analysis.end.
+  configuration.analysis.mode.value = noleax::config::AnalysisMode::kEvents;
+  CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
+                  noleax::config::ConfigError);
+}
+
 TEST_CASE("configuration layers preserve precedence, source, and array replacement", "[config]") {
   auto configuration = noleax::config::make_default_configuration();
 
@@ -362,21 +453,21 @@ TEST_CASE("analysis validation enforces window sort and group rules", "[config]"
   configuration.analysis.mode.value = noleax::config::AnalysisMode::kOutstanding;
   CHECK_NOTHROW(noleax::config::validate_configuration(configuration));
 
-  configuration.analysis.from.value = 1s;
-  configuration.analysis.to.value = 2s;
-  configuration.analysis.end.value = 3s;
+  configuration.analysis.from.value = time_bound(1s);
+  configuration.analysis.to.value = time_bound(2s);
+  configuration.analysis.end.value = time_bound(3s);
   configuration.filters.min_size.value = 16U;
   configuration.filters.max_size.value = 1024U;
   CHECK_NOTHROW(noleax::config::validate_configuration(configuration));
 
-  configuration.analysis.from.value = 3s;
+  configuration.analysis.from.value = time_bound(3s);
   CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
                   noleax::config::ConfigError);
-  configuration.analysis.from.value = 1s;
-  configuration.analysis.end.value = 1s;
+  configuration.analysis.from.value = time_bound(1s);
+  configuration.analysis.end.value = time_bound(1s);
   CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
                   noleax::config::ConfigError);
-  configuration.analysis.end.value = 3s;
+  configuration.analysis.end.value = time_bound(3s);
   configuration.filters.min_size.value = 2048U;
   CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
                   noleax::config::ConfigError);
@@ -400,15 +491,15 @@ TEST_CASE("analysis validation enforces window sort and group rules", "[config]"
                   noleax::config::ConfigError);
 
   configuration.analysis.mode.value = noleax::config::AnalysisMode::kOutstanding;
-  configuration.analysis.end.value = 2s;
+  configuration.analysis.end.value = time_bound(2s);
   configuration.analysis.end.source = noleax::config::ValueSource::kCommandLine;
-  configuration.analysis.from.value = 3s;
+  configuration.analysis.from.value = time_bound(3s);
   configuration.analysis.to.value.reset();
   CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
                   noleax::config::ConfigError);
-  configuration.analysis.from.value = 1s;
+  configuration.analysis.from.value = time_bound(1s);
   configuration.analysis.end.value.reset();
-  configuration.analysis.to.value = 2s;
+  configuration.analysis.to.value = time_bound(2s);
 
   configuration.analysis.mode.value = noleax::config::AnalysisMode::kOutstanding;
   configuration.analysis.sort.value = noleax::config::AnalysisSort::kCalls;

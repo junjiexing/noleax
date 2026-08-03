@@ -11,6 +11,7 @@ add_library(noleax-analyzer STATIC
   time.cpp
   trace_metadata.cpp
   utf8.cpp
+  window.cpp
 )
 
 add_library(noleax::analyzer ALIAS noleax-analyzer)

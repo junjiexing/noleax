@@ -32,6 +32,18 @@ namespace {
   return header;
 }
 
+[[nodiscard]] noleax::analyzer::WindowBound at(std::chrono::nanoseconds time) {
+  noleax::analyzer::WindowBound bound;
+  bound.time = time;
+  return bound;
+}
+
+[[nodiscard]] noleax::analyzer::WindowBound seq(std::uint64_t sequence) {
+  noleax::analyzer::WindowBound bound;
+  bound.sequence = sequence;
+  return bound;
+}
+
 [[nodiscard]] noleax::trace::CaptureScope capture_scope() { return {true, false}; }
 
 [[nodiscard]] noleax::trace::Event allocation_event() {
@@ -188,9 +200,9 @@ TEST_CASE("console outstanding output has a stable snapshot", "[analyzer][consol
   noleax::analyzer::OutstandingResult result;
   result.trace = trace_result(false);
   result.trace.event_count = 3U;
-  result.requested_window = {10ns, 20ns, 30ns};
-  result.effective_b = 20ns;
-  result.effective_c = 30ns;
+  result.requested_window = {at(10ns), at(20ns), at(30ns)};
+  result.effective_b = at(20ns);
+  result.effective_c = at(30ns);
   result.trace_end_monotonic_ticks = 140U;
   result.candidate_count = 3U;
   result.ended_by_c_count = 1U;
@@ -346,6 +358,62 @@ TEST_CASE("console summary names every completeness issue including future bits"
   CHECK(output.str().find("unknown-issue-bits=0x80000000") != std::string::npos);
 }
 
+TEST_CASE("console reports print sequence window bounds", "[analyzer][console][window]") {
+  using namespace std::chrono_literals;
+
+  SECTION("leaks window") {
+    noleax::analyzer::OutstandingResult result;
+    result.trace = trace_result(false);
+    result.requested_window = {seq(10U), seq(20U), seq(30U)};
+    result.effective_b = seq(20U);
+    result.effective_c = seq(30U);
+    result.trace_end_monotonic_ticks = 140U;
+
+    std::ostringstream output;
+    noleax::analyzer::ConsoleWriter writer{output};
+    writer.write_outstanding(result);
+    CHECK(output.str().find("window: [#10, #20) observed-at=#30 (configured)") !=
+          std::string::npos);
+  }
+
+  SECTION("mixed leaks window") {
+    noleax::analyzer::OutstandingResult result;
+    result.trace = trace_result(false);
+    result.requested_window = {at(10ns), seq(20U), at(30ns)};
+    result.effective_b = seq(20U);
+    result.effective_c = at(30ns);
+    result.trace_end_monotonic_ticks = 140U;
+
+    std::ostringstream output;
+    noleax::analyzer::ConsoleWriter writer{output};
+    writer.write_outstanding(result);
+    CHECK(output.str().find("window: [10ns, #20) observed-at=30ns (configured)") !=
+          std::string::npos);
+  }
+
+  SECTION("event stacks window") {
+    noleax::analyzer::EventsStacksResult result;
+    result.trace = trace_result(false);
+    result.window.from = seq(10U);
+    result.window.to = at(20ns);
+
+    std::ostringstream output;
+    noleax::analyzer::ConsoleWriter writer{output};
+    writer.write_event_stacks(result);
+    CHECK(output.str().find("window: [#10, 20ns)") != std::string::npos);
+  }
+
+  SECTION("event stacks window defaults to the whole trace") {
+    noleax::analyzer::EventsStacksResult result;
+    result.trace = trace_result(false);
+
+    std::ostringstream output;
+    noleax::analyzer::ConsoleWriter writer{output};
+    writer.write_event_stacks(result);
+    CHECK(output.str().find("window: [0ns, trace-end)") != std::string::npos);
+  }
+}
+
 TEST_CASE("console event stacks output lists group api names", "[analyzer][console]") {
   noleax::analyzer::EventsStacksResult result;
   result.trace = trace_result(false);
@@ -372,7 +440,7 @@ TEST_CASE("console event stacks output lists group api names", "[analyzer][conso
 trace: platform=windows architecture=x64 pointer-width=64 file-index=0
 clock: frequency=1000000000Hz origin=100 utc-origin-ns=1000
 capture: process-start
-window: [0ns, trace-endns)
+window: [0ns, trace-end)
 groups:
 #1 calls=3 alloc=2/128B free=1/64B net=64B apis=RtlAllocateHeap,RtlFreeHeap
   stack #11 (complete):

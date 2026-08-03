@@ -81,7 +81,7 @@ class ConsoleWriter {
     std::istream& input, std::ostream& output, const AnalysisFilter& filter,
     const EventMetadataResolver& filter_resolver = {},
     const ConsoleMetadataResolver& console_resolver = {}, ConsoleOptions console_options = {},
-    EventStreamOptions stream_options = {});
+    EventStreamOptions stream_options = {}, FilteredEventsWindow window = {});
 
 [[nodiscard]] OutstandingResult analyze_outstanding_to_console(
     std::istream& input, std::ostream& output, OutstandingWindow window,

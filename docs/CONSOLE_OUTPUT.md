@@ -46,6 +46,7 @@ stack status 使用 complete、truncated-by-depth、unwind-failed 或 unavailabl
 
 leaks（原 outstanding）报告标题为 `noleax leaks`。窗口显示 `[from,effective_to)`、有效观察点 c、
 c 来自配置还是 trace end，以及原始 trace-end ticks；`--to` 缺省或超过 trace 终点时按终点截断。
+窗口界按种类显示：时间界为 `123ns`，sequence 界为 `#123`；未设置的 to 显示 `trace-end`。
 每个结果显示 generation kind、allocation/mapping ID、size、地址、heap 信息、创建事件和创建栈。
 summary 分别显示候选数、截至 c 已结束数、最终过滤数和 outstanding 数。
 

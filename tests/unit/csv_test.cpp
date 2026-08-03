@@ -38,6 +38,18 @@ namespace {
   return header;
 }
 
+[[nodiscard]] noleax::analyzer::WindowBound at(std::chrono::nanoseconds time) {
+  noleax::analyzer::WindowBound bound;
+  bound.time = time;
+  return bound;
+}
+
+[[nodiscard]] noleax::analyzer::WindowBound seq(std::uint64_t sequence) {
+  noleax::analyzer::WindowBound bound;
+  bound.sequence = sequence;
+  return bound;
+}
+
 [[nodiscard]] noleax::trace::CaptureScope capture_scope() { return {true, false}; }
 
 [[nodiscard]] noleax::trace::Event allocation_event(std::uint64_t sequence = 1U,
@@ -230,6 +242,10 @@ namespace {
       "window_b_ns",
       "requested_c_ns",
       "effective_c_ns",
+      "window_a_sequence",
+      "window_b_sequence",
+      "requested_c_sequence",
+      "effective_c_sequence",
       "observation_uses_trace_end",
       "trace_end_monotonic_ticks",
       "creation_sequence",
@@ -381,7 +397,7 @@ TEST_CASE("outstanding CSV pipeline emits allocation and window summary rows", "
   std::istringstream input{encoded, std::ios::binary};
   std::ostringstream output;
   const auto result = noleax::analyzer::analyze_outstanding_to_csv(
-      input, output, {10ns, 20ns, std::nullopt}, filter, {},
+      input, output, {at(10ns), at(20ns), std::nullopt}, filter, {},
       [](const noleax::trace::Event&) { return presentation(); });
 
   REQUIRE(result.outstanding.size() == 1U);
@@ -401,6 +417,60 @@ TEST_CASE("outstanding CSV pipeline emits allocation and window summary rows", "
   CHECK(table.at(1U, "effective_c_ns") == "40");
   CHECK(table.at(1U, "observation_uses_trace_end") == "true");
   CHECK(table.at(1U, "outstanding") == "1");
+}
+
+TEST_CASE("outstanding CSV pipeline emits sequence window columns", "[analyzer][csv][window]") {
+  noleax::testing::SyntheticTraceBuilder builder{file_header(), capture_scope()};
+  builder.add_event(allocation_event());
+  builder.add_event(failed_allocation_event(2U, 140U));
+  const auto encoded = builder.finish_normally().build();
+
+  std::istringstream input{encoded, std::ios::binary};
+  std::ostringstream output;
+  const auto result = noleax::analyzer::analyze_outstanding_to_csv(
+      input, output, {seq(1U), seq(2U), std::nullopt}, noleax::analyzer::AnalysisFilter{}, {},
+      [](const noleax::trace::Event&) { return presentation(); });
+
+  REQUIRE(result.outstanding.size() == 1U);
+  const auto table = noleax::testing::parse_csv(output.str());
+  REQUIRE(table.rows.size() == 2U);
+  CHECK(table.column("window_a_sequence") == table.column("effective_c_ns") + 1U);
+  CHECK(table.column("effective_c_sequence") == table.column("requested_c_sequence") + 1U);
+  CHECK(table.at(1U, "window_a_ns").empty());
+  CHECK(table.at(1U, "window_a_sequence") == "1");
+  CHECK(table.at(1U, "window_b_ns").empty());
+  CHECK(table.at(1U, "window_b_sequence") == "2");
+  CHECK(table.at(1U, "requested_c_ns").empty());
+  CHECK(table.at(1U, "requested_c_sequence").empty());
+  CHECK(table.at(1U, "effective_c_ns") == "40");
+  CHECK(table.at(1U, "effective_c_sequence") == "2");
+}
+
+TEST_CASE("event stacks CSV pipeline emits sequence window columns", "[analyzer][csv][window]") {
+  noleax::testing::SyntheticTraceBuilder builder{file_header(), capture_scope()};
+  builder.add_event(allocation_event());
+  builder.add_event(failed_allocation_event(2U, 140U));
+  const auto encoded = builder.finish_normally().build();
+
+  noleax::analyzer::StacksWindow window;
+  window.from = seq(1U);
+  window.to = seq(2U);
+  std::istringstream input{encoded, std::ios::binary};
+  std::ostringstream output;
+  const auto result = noleax::analyzer::analyze_event_stacks_to_csv(
+      input, output, window, noleax::analyzer::StacksSort::kAllocBytes,
+      noleax::analyzer::AnalysisFilter{}, {},
+      [](const noleax::trace::Event&) { return presentation(); });
+
+  REQUIRE(result.groups.size() == 1U);
+  const auto table = noleax::testing::parse_csv(output.str());
+  REQUIRE(table.rows.size() == 2U);
+  CHECK(table.column("window_from_sequence") == table.column("window_to_ns") + 1U);
+  CHECK(table.column("window_to_sequence") == table.column("window_from_sequence") + 1U);
+  CHECK(table.at(1U, "window_from_ns").empty());
+  CHECK(table.at(1U, "window_from_sequence") == "1");
+  CHECK(table.at(1U, "window_to_ns").empty());
+  CHECK(table.at(1U, "window_to_sequence") == "2");
 }
 
 TEST_CASE("events CSV writes exact 64-bit integer and hexadecimal boundaries", "[analyzer][csv]") {

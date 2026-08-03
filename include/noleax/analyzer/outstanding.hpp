@@ -1,6 +1,5 @@
 #pragma once
 
-#include <chrono>
 #include <cstdint>
 #include <iosfwd>
 #include <optional>
@@ -10,20 +9,21 @@
 #include "noleax/analyzer/event_stream.hpp"
 #include "noleax/analyzer/filter.hpp"
 #include "noleax/analyzer/generation_tracker.hpp"
+#include "noleax/analyzer/window.hpp"
 
 namespace noleax::analyzer {
 
 struct OutstandingWindow {
-  std::chrono::nanoseconds a{0};
-  std::optional<std::chrono::nanoseconds> b;
-  std::optional<std::chrono::nanoseconds> c;
+  WindowBound a;
+  std::optional<WindowBound> b;
+  std::optional<WindowBound> c;
 };
 
 struct OutstandingResult {
   EventStreamResult trace;
   OutstandingWindow requested_window;
-  std::chrono::nanoseconds effective_b{0};
-  std::chrono::nanoseconds effective_c{0};
+  WindowBound effective_b;
+  WindowBound effective_c;
   std::uint64_t trace_end_monotonic_ticks{0};
   std::uint64_t candidate_count{0};
   std::uint64_t ended_by_c_count{0};
