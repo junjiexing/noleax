@@ -232,6 +232,20 @@ template <typename Enum>
   }
 }
 
+[[nodiscard]] std::optional<WindowBound> read_optional_window_bound(const toml::node& node,
+                                                                    std::string_view key,
+                                                                    std::string_view cli_option) {
+  const auto value = read_string(node, key, cli_option);
+  if (value.empty()) {
+    return std::nullopt;
+  }
+  try {
+    return parse_window_bound(value);
+  } catch (const ValueParseError& error) {
+    throw ConfigError{key_error(key, cli_option, error.what())};
+  }
+}
+
 [[nodiscard]] std::optional<std::filesystem::path> read_optional_path(
     const toml::node& node, std::string_view key, std::string_view cli_option,
     const std::filesystem::path& base_directory) {
@@ -413,13 +427,13 @@ void load_analysis(const toml::table& table, ConfigurationOverrides& result,
         read_optional_path(*node, "analysis.output", "--output", base_directory));
   }
   if (const auto* node = optional_node(table, "from")) {
-    result.analysis.from.set(read_optional_duration(*node, "analysis.from", "--from"));
+    result.analysis.from.set(read_optional_window_bound(*node, "analysis.from", "--from"));
   }
   if (const auto* node = optional_node(table, "to")) {
-    result.analysis.to.set(read_optional_duration(*node, "analysis.to", "--to"));
+    result.analysis.to.set(read_optional_window_bound(*node, "analysis.to", "--to"));
   }
   if (const auto* node = optional_node(table, "end")) {
-    result.analysis.end.set(read_optional_duration(*node, "analysis.end", "--end"));
+    result.analysis.end.set(read_optional_window_bound(*node, "analysis.end", "--end"));
   }
   if (const auto* node = optional_node(table, "group_by")) {
     if (const auto text = node->value<std::string>(); !text.has_value() || !text->empty()) {

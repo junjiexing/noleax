@@ -76,7 +76,7 @@ class JsonWriter {
     std::istream& input, std::ostream& output, const AnalysisFilter& filter,
     const EventMetadataResolver& filter_resolver = {},
     const EventPresentationResolver& presentation_resolver = {},
-    EventStreamOptions stream_options = {});
+    EventStreamOptions stream_options = {}, FilteredEventsWindow window = {});
 
 [[nodiscard]] OutstandingResult analyze_outstanding_to_json(
     std::istream& input, std::ostream& output, OutstandingWindow window,

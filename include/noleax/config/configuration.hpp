@@ -120,6 +120,19 @@ enum class EventStatus : std::uint8_t {
   kPreexisting,
 };
 
+// One analysis window endpoint: a duration relative to the trace start ("10s") or an event
+// sequence ("#123456"). Exactly one component is set for values accepted from configuration;
+// an empty bound is unbounded.
+struct WindowBound {
+  std::optional<std::chrono::nanoseconds> time;
+  std::optional<std::uint64_t> sequence;
+
+  bool operator==(const WindowBound&) const = default;
+};
+
+// Parses "#123" as a sequence endpoint and anything else as a duration endpoint.
+[[nodiscard]] WindowBound parse_window_bound(std::string_view input);
+
 template <typename Enum>
 struct EnumTraits;
 
@@ -344,9 +357,9 @@ struct AnalysisSettings {
   Setting<AnalysisMode> mode;
   Setting<OutputFormat> format;
   Setting<std::optional<std::filesystem::path>> output;
-  Setting<std::optional<std::chrono::nanoseconds>> from;
-  Setting<std::optional<std::chrono::nanoseconds>> to;
-  Setting<std::optional<std::chrono::nanoseconds>> end;
+  Setting<std::optional<WindowBound>> from;
+  Setting<std::optional<WindowBound>> to;
+  Setting<std::optional<WindowBound>> end;
   Setting<std::optional<AnalysisGroupBy>> group_by;
   Setting<AnalysisSort> sort;
   Setting<bool> trim_agent_frames;
@@ -437,9 +450,9 @@ struct AnalysisOverrides {
   SettingOverride<AnalysisMode> mode;
   SettingOverride<OutputFormat> format;
   SettingOverride<std::optional<std::filesystem::path>> output;
-  SettingOverride<std::optional<std::chrono::nanoseconds>> from;
-  SettingOverride<std::optional<std::chrono::nanoseconds>> to;
-  SettingOverride<std::optional<std::chrono::nanoseconds>> end;
+  SettingOverride<std::optional<WindowBound>> from;
+  SettingOverride<std::optional<WindowBound>> to;
+  SettingOverride<std::optional<WindowBound>> end;
   SettingOverride<std::optional<AnalysisGroupBy>> group_by;
   SettingOverride<AnalysisSort> sort;
   SettingOverride<bool> trim_agent_frames;

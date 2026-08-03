@@ -11,6 +11,7 @@
 #include <variant>
 #include <vector>
 
+#include "noleax/analyzer/console.hpp"
 #include "noleax/analyzer/outstanding.hpp"
 #include "noleax/trace/event.hpp"
 #include "noleax/trace/identifiers.hpp"
@@ -18,6 +19,18 @@
 #include "support/synthetic_trace.hpp"
 
 namespace {
+
+[[nodiscard]] noleax::analyzer::WindowBound at(std::chrono::nanoseconds time) {
+  noleax::analyzer::WindowBound bound;
+  bound.time = time;
+  return bound;
+}
+
+[[nodiscard]] noleax::analyzer::WindowBound seq(std::uint64_t sequence) {
+  noleax::analyzer::WindowBound bound;
+  bound.sequence = sequence;
+  return bound;
+}
 
 [[nodiscard]] noleax::trace::FileHeader file_header() {
   noleax::trace::FileHeader header;
@@ -222,6 +235,88 @@ TEST_CASE("events mode streams only matching events", "[analyzer][filter]") {
                   noleax::analyzer::AnalysisFilterError);
 }
 
+TEST_CASE("events mode applies the analysis window before the filter",
+          "[analyzer][filter][window]") {
+  using namespace std::chrono_literals;
+  const auto encoded =
+      make_trace({allocation_event(1U, 110U, 1U, 64U, 7U), allocation_event(2U, 111U, 2U, 64U, 7U),
+                  allocation_event(3U, 112U, 3U, 64U, 7U)});
+
+  SECTION("time window") {
+    noleax::analyzer::FilteredEventsWindow window;
+    window.from = at(11ns);
+    window.to = at(12ns);
+    std::vector<std::uint64_t> matched_ids;
+    noleax::analyzer::EventStreamCallbacks callbacks;
+    callbacks.on_event = [&matched_ids](const noleax::trace::Event& event) {
+      matched_ids.push_back(
+          std::get<noleax::trace::AllocationEvent>(event.payload).allocation_id.value());
+    };
+    std::istringstream input{encoded, std::ios::binary};
+    const auto result = noleax::analyzer::analyze_filtered_events(
+        input, noleax::analyzer::AnalysisFilter{}, callbacks, {}, {}, window);
+    CHECK(matched_ids == std::vector<std::uint64_t>{2U});
+    CHECK(result.matched_event_count == 1U);
+    CHECK(result.filtered_event_count == 2U);
+    CHECK(result.trace.event_count == 3U);
+  }
+
+  SECTION("sequence window") {
+    noleax::analyzer::FilteredEventsWindow window;
+    window.from = seq(2U);
+    window.to = seq(3U);
+    std::vector<std::uint64_t> matched_ids;
+    noleax::analyzer::EventStreamCallbacks callbacks;
+    callbacks.on_event = [&matched_ids](const noleax::trace::Event& event) {
+      matched_ids.push_back(
+          std::get<noleax::trace::AllocationEvent>(event.payload).allocation_id.value());
+    };
+    std::istringstream input{encoded, std::ios::binary};
+    const auto result = noleax::analyzer::analyze_filtered_events(
+        input, noleax::analyzer::AnalysisFilter{}, callbacks, {}, {}, window);
+    CHECK(matched_ids == std::vector<std::uint64_t>{2U});
+    CHECK(result.matched_event_count == 1U);
+    CHECK(result.filtered_event_count == 2U);
+  }
+
+  SECTION("mixed window requires time and sequence") {
+    noleax::analyzer::FilteredEventsWindow window;
+    window.from = at(11ns);
+    window.from.sequence = 3U;
+    std::istringstream input{encoded, std::ios::binary};
+    const auto result = noleax::analyzer::analyze_filtered_events(
+        input, noleax::analyzer::AnalysisFilter{}, {}, {}, {}, window);
+    CHECK(result.matched_event_count == 1U);
+    CHECK(result.filtered_event_count == 2U);
+  }
+
+  SECTION("default window keeps every event") {
+    std::istringstream input{encoded, std::ios::binary};
+    const auto result =
+        noleax::analyzer::analyze_filtered_events(input, noleax::analyzer::AnalysisFilter{});
+    CHECK(result.matched_event_count == 3U);
+    CHECK(result.filtered_event_count == 0U);
+  }
+}
+
+TEST_CASE("events console pipeline honors the analysis window", "[analyzer][filter][window]") {
+  const auto encoded =
+      make_trace({allocation_event(1U, 110U, 1U, 64U, 7U), allocation_event(2U, 111U, 2U, 64U, 7U),
+                  allocation_event(3U, 112U, 3U, 64U, 7U)});
+  noleax::analyzer::FilteredEventsWindow window;
+  window.from = seq(2U);
+
+  std::istringstream input{encoded, std::ios::binary};
+  std::ostringstream output;
+  const auto result = noleax::analyzer::analyze_events_to_console(
+      input, output, noleax::analyzer::AnalysisFilter{}, {}, {}, {}, {}, window);
+  CHECK(result.matched_event_count == 2U);
+  CHECK(result.filtered_event_count == 1U);
+  CHECK(output.str().find("event #1 ") == std::string::npos);
+  CHECK(output.str().find("event #2 ") != std::string::npos);
+  CHECK(output.str().find("event #3 ") != std::string::npos);
+}
+
 TEST_CASE("outstanding mode restores all state before filtering final candidates",
           "[analyzer][filter][outstanding]") {
   using namespace std::chrono_literals;
@@ -234,7 +329,7 @@ TEST_CASE("outstanding mode restores all state before filtering final candidates
 
   std::istringstream input{encoded, std::ios::binary};
   const auto result =
-      noleax::analyzer::analyze_filtered_outstanding(input, {10ns, 12ns, 20ns}, filter);
+      noleax::analyzer::analyze_filtered_outstanding(input, {at(10ns), at(12ns), at(20ns)}, filter);
 
   CHECK(result.candidate_count == 2U);
   CHECK(result.ended_by_c_count == 1U);

@@ -180,6 +180,20 @@ void append_table(std::string& output, std::string_view name) {
   return quote_toml(value.has_value() ? format_duration(*value) : std::string{});
 }
 
+[[nodiscard]] std::string format_window_bound(const WindowBound& bound) {
+  if (bound.sequence.has_value()) {
+    return "#" + std::to_string(*bound.sequence);
+  }
+  if (bound.time.has_value()) {
+    return format_duration(*bound.time);
+  }
+  return {};
+}
+
+[[nodiscard]] std::string format_optional_window_bound(const std::optional<WindowBound>& value) {
+  return quote_toml(value.has_value() ? format_window_bound(*value) : std::string{});
+}
+
 }  // namespace
 
 std::string serialize_effective_config(const Configuration& configuration) {
@@ -264,11 +278,11 @@ std::string serialize_effective_config(const Configuration& configuration) {
                  configuration.analysis.format.source);
   append_setting(output, "output", format_path(configuration.analysis.output.value),
                  configuration.analysis.output.source);
-  append_setting(output, "from", format_optional_duration(configuration.analysis.from.value),
+  append_setting(output, "from", format_optional_window_bound(configuration.analysis.from.value),
                  configuration.analysis.from.source);
-  append_setting(output, "to", format_optional_duration(configuration.analysis.to.value),
+  append_setting(output, "to", format_optional_window_bound(configuration.analysis.to.value),
                  configuration.analysis.to.source);
-  append_setting(output, "end", format_optional_duration(configuration.analysis.end.value),
+  append_setting(output, "end", format_optional_window_bound(configuration.analysis.end.value),
                  configuration.analysis.end.source);
   append_setting(output, "group_by",
                  quote_toml(configuration.analysis.group_by.value.has_value()

@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <optional>
 
 namespace noleax::config {
@@ -28,6 +29,17 @@ std::string_view value_source_name(ValueSource source) noexcept {
       return "cli";
   }
   return "unknown";
+}
+
+WindowBound parse_window_bound(std::string_view input) {
+  WindowBound bound;
+  if (!input.empty() && input.front() == '#') {
+    bound.sequence = parse_unsigned_integer(
+        input.substr(1U), (std::numeric_limits<std::uint64_t>::max)(), "window bound");
+    return bound;
+  }
+  bound.time = parse_duration(input);
+  return bound;
 }
 
 Configuration make_default_configuration() {

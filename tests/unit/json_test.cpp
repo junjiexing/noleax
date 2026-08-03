@@ -47,6 +47,18 @@ namespace {
   return header;
 }
 
+[[nodiscard]] noleax::analyzer::WindowBound at(std::chrono::nanoseconds time) {
+  noleax::analyzer::WindowBound bound;
+  bound.time = time;
+  return bound;
+}
+
+[[nodiscard]] noleax::analyzer::WindowBound seq(std::uint64_t sequence) {
+  noleax::analyzer::WindowBound bound;
+  bound.sequence = sequence;
+  return bound;
+}
+
 [[nodiscard]] noleax::trace::CaptureScope capture_scope() { return {true, false}; }
 
 [[nodiscard]] noleax::trace::Event allocation_event(std::uint64_t sequence = 1U,
@@ -264,14 +276,22 @@ TEST_CASE("outstanding JSON pipeline emits its effective observation window", "[
   std::istringstream input{encoded, std::ios::binary};
   std::ostringstream output;
   const auto result = noleax::analyzer::analyze_outstanding_to_json(
-      input, output, {10ns, 20ns, std::nullopt}, filter, {},
+      input, output, {at(10ns), at(20ns), std::nullopt}, filter, {},
       [](const noleax::trace::Event&) { return allocation_presentation(); });
 
   REQUIRE(result.outstanding.size() == 1U);
   const auto document = parse_and_validate(output.str());
   CHECK(document.at("mode").scalar() == "leaks");
+  CHECK(document.at("window").at("a_ns").signed_value() == 10);
+  CHECK(document.at("window").at("a_sequence").type() == noleax::testing::JsonType::kNull);
+  CHECK(document.at("window").at("b_sequence").type() == noleax::testing::JsonType::kNull);
+  CHECK(document.at("window").at("effective_b_sequence").type() ==
+        noleax::testing::JsonType::kNull);
   CHECK(document.at("window").at("requested_c_ns").type() == noleax::testing::JsonType::kNull);
+  CHECK(document.at("window").at("requested_c_sequence").type() ==
+        noleax::testing::JsonType::kNull);
   CHECK(document.at("window").at("effective_c_ns").signed_value() == 40);
+  CHECK(document.at("window").at("effective_c_sequence").unsigned_value() == 2U);
   CHECK(document.at("window").at("observation_uses_trace_end").boolean_value());
 
   const auto& allocations = document.at("allocations").array_items();
@@ -280,6 +300,60 @@ TEST_CASE("outstanding JSON pipeline emits its effective observation window", "[
   CHECK(allocations[0].at("allocation_id").unsigned_value() == 10U);
   CHECK(allocations[0].at("created_by").at("api").at("name").scalar() == "RtlAllocateHeap");
   CHECK(document.at("summary").at("outstanding").unsigned_value() == 1U);
+}
+
+TEST_CASE("outstanding JSON pipeline emits sequence window bounds", "[analyzer][json][window]") {
+  noleax::testing::SyntheticTraceBuilder builder{file_header(), capture_scope()};
+  builder.add_event(allocation_event());
+  builder.add_event(failed_allocation_event(2U, 140U));
+  const auto encoded = builder.finish_normally().build();
+
+  std::istringstream input{encoded, std::ios::binary};
+  std::ostringstream output;
+  const auto result = noleax::analyzer::analyze_outstanding_to_json(
+      input, output, {seq(1U), seq(2U), std::nullopt}, noleax::analyzer::AnalysisFilter{}, {},
+      [](const noleax::trace::Event&) { return allocation_presentation(); });
+
+  REQUIRE(result.outstanding.size() == 1U);
+  const auto document = parse_and_validate(output.str());
+  const auto& window = document.at("window");
+  CHECK(window.at("a_ns").type() == noleax::testing::JsonType::kNull);
+  CHECK(window.at("a_sequence").unsigned_value() == 1U);
+  CHECK(window.at("b_ns").type() == noleax::testing::JsonType::kNull);
+  CHECK(window.at("b_sequence").unsigned_value() == 2U);
+  CHECK(window.at("effective_b_ns").type() == noleax::testing::JsonType::kNull);
+  CHECK(window.at("effective_b_sequence").unsigned_value() == 2U);
+  CHECK(window.at("requested_c_ns").type() == noleax::testing::JsonType::kNull);
+  CHECK(window.at("requested_c_sequence").type() == noleax::testing::JsonType::kNull);
+  CHECK(window.at("effective_c_ns").signed_value() == 40);
+  CHECK(window.at("effective_c_sequence").unsigned_value() == 2U);
+  CHECK(window.at("observation_uses_trace_end").boolean_value());
+}
+
+TEST_CASE("event stacks JSON pipeline emits sequence window bounds", "[analyzer][json][window]") {
+  noleax::testing::SyntheticTraceBuilder builder{file_header(), capture_scope()};
+  builder.add_event(allocation_event());
+  builder.add_event(failed_allocation_event(2U, 140U));
+  const auto encoded = builder.finish_normally().build();
+
+  noleax::analyzer::StacksWindow window;
+  window.from = seq(1U);
+  window.to = seq(2U);
+  std::istringstream input{encoded, std::ios::binary};
+  std::ostringstream output;
+  const auto result = noleax::analyzer::analyze_event_stacks_to_json(
+      input, output, window, noleax::analyzer::StacksSort::kAllocBytes,
+      noleax::analyzer::AnalysisFilter{}, {},
+      [](const noleax::trace::Event&) { return allocation_presentation(); });
+
+  REQUIRE(result.groups.size() == 1U);
+  const auto document = parse_and_validate(output.str());
+  const auto& window_json = document.at("window");
+  CHECK(document.at("dataset").scalar() == "events");
+  CHECK(window_json.at("from_ns").type() == noleax::testing::JsonType::kNull);
+  CHECK(window_json.at("from_sequence").unsigned_value() == 1U);
+  CHECK(window_json.at("to_ns").type() == noleax::testing::JsonType::kNull);
+  CHECK(window_json.at("to_sequence").unsigned_value() == 2U);
 }
 
 TEST_CASE("events JSON has a strict schema for every normalized payload", "[analyzer][json]") {

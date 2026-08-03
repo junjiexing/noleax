@@ -127,6 +127,27 @@ void ensure_output_directory(const std::filesystem::path& path) {
   return noleax::analyzer::AnalysisFilter{std::move(criteria)};
 }
 
+// Unset from/a endpoints map to the trace start so default output keeps showing 0ns.
+[[nodiscard]] noleax::analyzer::WindowBound make_window_bound(
+    const std::optional<noleax::config::WindowBound>& bound) {
+  noleax::analyzer::WindowBound result;
+  if (bound.has_value()) {
+    result.time = bound->time;
+    result.sequence = bound->sequence;
+  } else {
+    result.time = std::chrono::nanoseconds{0};
+  }
+  return result;
+}
+
+[[nodiscard]] std::optional<noleax::analyzer::WindowBound> make_optional_window_bound(
+    const std::optional<noleax::config::WindowBound>& bound) {
+  if (!bound.has_value()) {
+    return std::nullopt;
+  }
+  return make_window_bound(bound);
+}
+
 [[nodiscard]] noleax::analyzer::SymbolizerOptions make_symbolizer_options(
     const noleax::config::Configuration& configuration) {
   noleax::analyzer::SymbolizerOptions options;
@@ -221,8 +242,8 @@ struct AnalysisResult {
     if (configuration.analysis.mode.value == noleax::config::AnalysisMode::kEvents) {
       if (group_by) {
         noleax::analyzer::StacksWindow window;
-        window.from = configuration.analysis.from.value.value_or(std::chrono::nanoseconds{0});
-        window.to = configuration.analysis.to.value;
+        window.from = make_window_bound(configuration.analysis.from.value);
+        window.to = make_optional_window_bound(configuration.analysis.to.value);
         const auto sort = stacks_sort(configuration.analysis.sort.value);
         noleax::analyzer::EventsStacksResult result;
         switch (configuration.analysis.format.value) {
@@ -242,29 +263,32 @@ struct AnalysisResult {
         }
         return {result.trace.completeness};
       }
+      noleax::analyzer::FilteredEventsWindow window;
+      window.from = make_window_bound(configuration.analysis.from.value);
+      window.to = make_optional_window_bound(configuration.analysis.to.value);
       noleax::analyzer::FilteredEventsResult result;
       switch (configuration.analysis.format.value) {
         case noleax::config::OutputFormat::kConsole:
           result = noleax::analyzer::analyze_events_to_console(
               input, output, filter, filter_resolver, presentation_resolver,
-              {console_color_enabled(configuration, writing_stdout)});
+              {console_color_enabled(configuration, writing_stdout)}, {}, window);
           break;
         case noleax::config::OutputFormat::kJson:
           result = noleax::analyzer::analyze_events_to_json(input, output, filter, filter_resolver,
-                                                            presentation_resolver);
+                                                            presentation_resolver, {}, window);
           break;
         case noleax::config::OutputFormat::kCsv:
           result = noleax::analyzer::analyze_events_to_csv(input, output, filter, filter_resolver,
-                                                           presentation_resolver);
+                                                           presentation_resolver, {}, window);
           break;
       }
       return {result.trace.completeness};
     }
 
     noleax::analyzer::OutstandingWindow window;
-    window.a = configuration.analysis.from.value.value_or(std::chrono::nanoseconds{0});
-    window.b = configuration.analysis.to.value;
-    window.c = configuration.analysis.end.value;
+    window.a = make_window_bound(configuration.analysis.from.value);
+    window.b = make_optional_window_bound(configuration.analysis.to.value);
+    window.c = make_optional_window_bound(configuration.analysis.end.value);
     if (group_by) {
       auto sort = stacks_sort(configuration.analysis.sort.value);
       if (configuration.analysis.sort.source == noleax::config::ValueSource::kDefault) {

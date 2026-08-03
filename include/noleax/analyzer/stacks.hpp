@@ -1,6 +1,5 @@
 #pragma once
 
-#include <chrono>
 #include <cstdint>
 #include <iosfwd>
 #include <limits>
@@ -13,6 +12,7 @@
 #include "noleax/analyzer/event_stream.hpp"
 #include "noleax/analyzer/filter.hpp"
 #include "noleax/analyzer/outstanding.hpp"
+#include "noleax/analyzer/window.hpp"
 #include "noleax/trace/event.hpp"
 #include "noleax/trace/identifiers.hpp"
 
@@ -27,8 +27,8 @@ enum class StacksSort : std::uint8_t {
 };
 
 struct StacksWindow {
-  std::chrono::nanoseconds from{0};
-  std::optional<std::chrono::nanoseconds> to;
+  WindowBound from;
+  std::optional<WindowBound> to;
 };
 
 // Saturating alloc-minus-free difference: the unsigned inputs may exceed INT64_MAX and a

@@ -29,8 +29,9 @@ events 输出可能包含已完成校验的前序记录，但不会包含闭合�
 
 events 文档另有 `events` 数组；leaks 文档另有 `window` 和 `allocations`；stacks 文档另有
 `dataset`、`window` 和 `groups`。V1 schema 对根对象、
-所有已定义对象及九类 payload 禁止未知字段。新增字段需要新的 schema version；仅新增枚举值也必须
-按消费者无法静默误解的兼容策略处理。
+所有已定义对象及九类 payload 禁止未知字段。向后兼容的可空字段增补不提升 schema version（窗口
+sequence 字段即属此类）；其他新增字段需要新的 schema version，仅新增枚举值也必须按消费者无法
+静默误解的兼容策略处理。
 
 ## 3. 基础编码规则
 
@@ -65,9 +66,12 @@ summary 的 mode 专属字段为 `matched_events` 和 `filtered_events`。公共
 ## 5. leaks 模式
 
 `window` 保留请求的 `a_ns`、可空的 `b_ns`、截断后的 `effective_b_ns`、可空的 `requested_c_ns`、
-实际 `effective_c_ns`、c 是否采用 trace end，以及原始 `trace_end_monotonic_ticks`。窗口语义为在
-`[a,effective_b)` 创建并在包含 c 时刻所有结束事件后仍存活；`b` 缺省或超过 trace 终点时
-`effective_b_ns` 等于 trace 终点。
+实际 `effective_c_ns`、c 是否采用 trace end，以及原始 `trace_end_monotonic_ticks`。每个窗口界
+同时有一个可空的 sequence 对应字段（`a_sequence`、`b_sequence`、`effective_b_sequence`、
+`requested_c_sequence`、`effective_c_sequence`）：时间界填写 `_ns` 字段而 sequence 字段为
+`null`，sequence 界反之；截断到 trace 终点的 effective 界同时携带 trace 终点的时间与最终
+sequence。窗口语义为在 `[a,effective_b)` 创建并在包含 c 时刻（时间或 sequence 均在 c 之内）
+所有结束事件后仍存活；`b` 缺省或超过 trace 终点时按 trace 终点截断。
 
 `allocations` 中每项包含 generation kind、allocation/mapping/heap ID、heap handle、地址、size 和
 完整的 `created_by` Event。非 heap generation 的 `heap_handle` 为 `null`。summary 另外包含候选数、
@@ -76,7 +80,8 @@ summary 的 mode 专属字段为 `matched_events` 和 `filtered_events`。公共
 ## 5.1 stacks 文档
 
 `--group-by` 的输出 `mode` 为 `stacks`，`dataset` 为 `events` 或 `leaks`。events 数据集的
-`window` 为 `{from_ns, to_ns|null}`，leaks 数据集沿用 leaks 窗口结构（含 `effective_b_ns`）。
+`window` 为 `{from_ns, to_ns|null, from_sequence|null, to_sequence|null}`，leaks 数据集沿用
+leaks 窗口结构（含 `effective_b_ns`）。
 `groups` 按排序键降序排列：events 组包含 `rank`、`calls`、`alloc_calls`、`alloc_bytes`、
 `free_calls`、`free_bytes`、`net_bytes`，leaks 组包含 `rank`、`calls`、`bytes`；两者都带
 `apis`（组内涉及的分配 API 规范名数组，按首次出现排序）、`stack_id` 与完整 `sample_event`

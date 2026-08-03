@@ -78,7 +78,7 @@ class CsvWriter {
     std::istream& input, std::ostream& output, const AnalysisFilter& filter,
     const EventMetadataResolver& filter_resolver = {},
     const EventPresentationResolver& presentation_resolver = {},
-    EventStreamOptions stream_options = {});
+    EventStreamOptions stream_options = {}, FilteredEventsWindow window = {});
 
 [[nodiscard]] OutstandingResult analyze_outstanding_to_csv(
     std::istream& input, std::ostream& output, OutstandingWindow window,

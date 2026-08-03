@@ -33,10 +33,13 @@ std::vector<std::string> group_api_names(std::span<const noleax::trace::ApiId> a
 namespace {
 
 void validate_window(const StacksWindow& window) {
-  if (window.from.count() < 0 || (window.to.has_value() && window.to->count() < 0)) {
+  const bool negative_time =
+      (window.from.time.has_value() && window.from.time->count() < 0) ||
+      (window.to.has_value() && window.to->time.has_value() && window.to->time->count() < 0);
+  if (negative_time) {
     throw StacksAnalysisError{"stacks window times must not be negative"};
   }
-  if (window.to.has_value() && window.from > *window.to) {
+  if (window.to.has_value() && !window_bounds_in_order(window.from, *window.to)) {
     throw StacksAnalysisError{"stacks window requires from <= to"};
   }
 }
@@ -115,20 +118,14 @@ class EventsStacksCollector {
   }
 
  private:
-  [[nodiscard]] bool in_window(std::uint64_t ticks) const {
-    if (compare_trace_time(ticks, *file_header_, window_.from) == std::strong_ordering::less) {
-      return false;
-    }
-    if (window_.to.has_value() &&
-        compare_trace_time(ticks, *file_header_, *window_.to) != std::strong_ordering::less) {
-      return false;
-    }
-    return true;
+  [[nodiscard]] bool in_window(const noleax::trace::Event& event) const {
+    return window_at_or_after(window_.from, *file_header_, event) &&
+           (!window_.to.has_value() || window_before(*window_.to, *file_header_, event));
   }
 
   [[nodiscard]] bool selected(const noleax::trace::Event& event) const {
-    return noleax::trace::call_succeeded(event.header.status) &&
-           in_window(event.header.monotonic_ticks) && filter_.matches_event(event, resolver_);
+    return noleax::trace::call_succeeded(event.header.status) && in_window(event) &&
+           filter_.matches_event(event, resolver_);
   }
 
   [[nodiscard]] EventsStacksGroup& group_for(const noleax::trace::Event& event) {
