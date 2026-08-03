@@ -55,11 +55,19 @@ attach 模式没有现成主线程可用，选择规则（`classify_rip` + 评�
 - 评分：应用/其它镜像帧（0）优于 kernel32/kernelbase（1）优于 ntdll 等待原语帧（2）；不可用的
   线程直接跳过。找到 0 分线程即止。
 
+可恢复性注意：白名单解决的是"挂起点无锁"，但线程被挂起在阻塞态内核等待里时，等待不完成它
+不会为重定向后的 RIP 返回用户态——在这类线程上 stub 永远不开始执行（`start()` 恢复计数归零
+也无效，注入最终按超时处理）。因此评分顺序刻意让应用/系统镜像帧（用户态，恢复即可执行）
+优先于等待原语帧；回归测试用用户态自旋线程覆盖恢复路径。`start()` 也循环 `ResumeThread`
+直到计数归零，防止第三方（如 AV 扫描线程）叠加挂起导致线程停在 stub 第一条指令。
+
 stub 不触碰其它线程，交叉锁等待会随其它线程继续运行而自然解除。超时（默认注入超时）后控制器
 恢复线程上下文并报错，**不卸载 agent**（stage 只写于 bootstrap 返回之后，无法证明 worker 不
-存在，卸载可能崩溃目标）；超时发生在 stub 持有 loader/堆锁窗口（`LdrLoadDll` 或 CRT 分配内部）
-时，恢复上下文会遗弃这些锁，后续相关 API 可能死锁——对稳定性要求高的目标请改用
-`remote-thread`。
+存在，卸载可能崩溃目标）。恢复前会先判断 stage：stage < 2（stub 可能在 `LdrLoadDll` 或 agent
+bootstrap 内部，持有 loader/堆锁）时再等待一份同样的预算，让 stub 回卷到 stage ≥ 2（bootstrap
+已返回、无锁）再恢复——慢加载（如 AV 扫描）因此能正常完成而不是被中断；只有扩展预算也耗尽
+才在该窗口内强制恢复，此时错误信息带 stage 并注明 loader/堆锁可能仍被持有（后续相关 API 可能
+死锁——对稳定性要求高的目标请改用 `remote-thread`）。最坏等待为两倍注入超时。
 
 ## 4. launch 模式
 
@@ -134,9 +142,11 @@ jmp     spin                   ; 停在此循环，等待控制器恢复上下�
   影响。
 - stub 报告 `LdrLoadDll` NTSTATUS、bootstrap 结果码或 ready 超时（stage 1/2/4）时，
   `finish()` 恢复线程上下文后抛出带原始状态码的 `InjectionError`。
-- done 等待超时：恢复线程上下文；**不卸载 agent**——stage 只写于 bootstrap 返回之后，任何
-  stage 值都不能证明 worker 不存在（`CreateThread` 被杀软/分页拖慢恰是触发超时的典型场景），
-  为避免崩溃目标进程，宁可泄漏一次模块映射。错误信息保持可见。
+- done 等待超时：stage < 2 时先延长一份相同预算等待 stub 回卷（慢加载可因此完成），随后恢复
+  线程上下文；扩展预算仍耗尽才强制恢复并在错误中带出 stage 与锁残留提示；**不卸载
+  agent**——stage 只写于 bootstrap 返回之后，任何 stage 值都不能证明 worker 不存在
+  （`CreateThread` 被杀软/分页拖慢恰是触发超时的典型场景），为避免崩溃目标进程，宁可泄漏
+  一次模块映射。错误信息保持可见。
 - launch 失败沿用既有语义：终止 suspended 目标进程。attach 失败不终止目标。
 
 ## 7. 测试
@@ -151,6 +161,11 @@ jmp     spin                   ; 停在此循环，等待控制器恢复上下�
   - hijack attach 产生合法 trace，且 `preexisting_allocations_unknown=true`。
   - 缺少 bootstrap 导出的 agent 镜像在接触线程前被拒绝。
   - 不可达 pipe 强制 stub ready 超时，`finish()` 恢复线程，目标 digest 仍与基线一致。
+- `controller.thread-hijack-timeout`：慢 bootstrap fixture（`tests/targets/slow_bootstrap_agent.cpp`
+  按环境变量延迟）覆盖 stage 感知恢复——bootstrap 慢于注入超时时扩展预算让其正常完成
+  （断言实际等待越过首个预算）；扩展预算耗尽仍在 bootstrap 内时强制恢复，错误带 stage 与
+  锁残留提示。子进程停在用户态自旋帧（阻塞态内核等待里的线程不会为重定向 RIP 返回用户态，
+  见 §3 的可恢复性注意）。
 - CLI e2e 覆盖 `run --inject-method thread-hijack`。
 - doctor 将 `remote-thread`/`thread-hijack`/`entrypoint-code` 报告为支持。
 

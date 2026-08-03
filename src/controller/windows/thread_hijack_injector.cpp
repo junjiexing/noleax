@@ -368,11 +368,20 @@ class ThreadHijack::Impl final {
     if (state_ != State::kPrepared) {
       throw InjectionError{"thread hijack cannot be started twice", ERROR_INVALID_OPERATION};
     }
-    if (ResumeThread(thread_.get()) == std::numeric_limits<DWORD>::max()) {
-      const DWORD error = GetLastError();
-      throw InjectionError{
-          "ResumeThread(hijacked thread) failed with Windows error " + std::to_string(error),
-          error};
+    // Resume fully: a third party (for example an AV scanner) may have stacked its own
+    // suspension on top of ours, in which case a single ResumeThread leaves the thread
+    // frozen at the stub's first instruction forever.
+    for (;;) {
+      const DWORD previous = ResumeThread(thread_.get());
+      if (previous == std::numeric_limits<DWORD>::max()) {
+        const DWORD error = GetLastError();
+        throw InjectionError{
+            "ResumeThread(hijacked thread) failed with Windows error " + std::to_string(error),
+            error};
+      }
+      if (previous <= 1U) {
+        break;
+      }
     }
     suspended_by_us_ = false;
     state_ = State::kStarted;
@@ -383,7 +392,17 @@ class ThreadHijack::Impl final {
       throw InjectionError{"thread hijack was not started", ERROR_INVALID_OPERATION};
     }
     HijackStubData data{};
-    const bool completed = wait_for_completion(timeout, data);
+    bool completed = wait_for_completion(timeout, data);
+    bool lock_safe_restore = data.stage >= kStageBootstrapReturned;
+    if (!completed && data.magic == kHijackMagic && !lock_safe_restore) {
+      // The thread may be inside LdrLoadDll (loader lock) or the agent bootstrap
+      // (process heap lock); restoring its context here would abandon those locks
+      // in the target forever. Give the stub one more identical budget to unwind:
+      // stage >= 2 proves the bootstrap frame has returned. A thread that died in
+      // the meantime is reported by the completion wait itself.
+      completed = wait_for_completion(timeout, data);
+      lock_safe_restore = data.stage >= kStageBootstrapReturned;
+    }
     restore_and_resume();
     suspended_by_us_ = false;
     state_ = State::kFinished;
@@ -395,7 +414,12 @@ class ThreadHijack::Impl final {
       // module mapping is the safe trade-off.
       throw InjectionError{
           "hijacked thread did not finish the bootstrap stub before the timeout; its context "
-          "was restored",
+          "was restored at stage " +
+              std::to_string(data.stage) +
+              (lock_safe_restore
+                   ? " after the agent bootstrap had returned"
+                   : " while the stub may have been inside the loader or the agent bootstrap, "
+                     "so loader or heap locks may remain held in the target"),
           WAIT_TIMEOUT};
     }
     if (data.magic != kHijackMagic) {
