@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://noleax.dev/schema/analysis-v1.json",
-  "title": "Noleax analysis result v1",
+  "$id": "https://noleax.dev/schema/analysis-v2.json",
+  "title": "Noleax analysis result v2",
   "type": "object",
   "required": ["schema", "schema_version", "mode", "metadata", "filters", "summary"],
   "properties": {
     "schema": { "const": "noleax.analysis" },
-    "schema_version": { "const": 1 },
+    "schema_version": { "const": 2 },
     "mode": { "enum": ["events", "leaks", "stacks"] },
     "metadata": { "$ref": "#/$defs/metadata" },
     "filters": { "$ref": "#/$defs/filters" },
@@ -510,10 +510,12 @@
     },
     "stacks_window": {
       "type": "object",
-      "required": ["from_ns", "to_ns"],
+      "required": ["from_ns", "to_ns", "from_sequence", "to_sequence"],
       "properties": {
-        "from_ns": { "type": "integer" },
-        "to_ns": { "type": ["integer", "null"] }
+        "from_ns": { "type": ["integer", "null"] },
+        "to_ns": { "type": ["integer", "null"] },
+        "from_sequence": { "type": ["integer", "null"] },
+        "to_sequence": { "type": ["integer", "null"] }
       },
       "additionalProperties": false
     },
@@ -543,15 +545,25 @@
         "effective_b_ns",
         "requested_c_ns",
         "effective_c_ns",
+        "a_sequence",
+        "b_sequence",
+        "effective_b_sequence",
+        "requested_c_sequence",
+        "effective_c_sequence",
         "observation_uses_trace_end",
         "trace_end_monotonic_ticks"
       ],
       "properties": {
-        "a_ns": { "type": "integer" },
+        "a_ns": { "type": ["integer", "null"] },
         "b_ns": { "type": ["integer", "null"] },
-        "effective_b_ns": { "type": "integer" },
+        "effective_b_ns": { "type": ["integer", "null"] },
         "requested_c_ns": { "type": ["integer", "null"] },
-        "effective_c_ns": { "type": "integer" },
+        "effective_c_ns": { "type": ["integer", "null"] },
+        "a_sequence": { "type": ["integer", "null"] },
+        "b_sequence": { "type": ["integer", "null"] },
+        "effective_b_sequence": { "type": ["integer", "null"] },
+        "requested_c_sequence": { "type": ["integer", "null"] },
+        "effective_c_sequence": { "type": ["integer", "null"] },
         "observation_uses_trace_end": { "type": "boolean" },
         "trace_end_monotonic_ticks": { "type": "integer" }
       },

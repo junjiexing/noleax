@@ -133,21 +133,29 @@ namespace {
   return result;
 }
 
+[[nodiscard]] noleax::testing::JsonValue load_analysis_schema(std::string_view filename) {
+  const auto path = std::filesystem::path{NOLEAX_TEST_SOURCE_DIR} / "docs" / "schema" / filename;
+  std::ifstream input{path, std::ios::binary};
+  if (!input) {
+    throw std::runtime_error{"cannot open analysis JSON schema"};
+  }
+  std::ostringstream buffer;
+  buffer << input.rdbuf();
+  if (input.bad()) {
+    throw std::runtime_error{"cannot read analysis JSON schema"};
+  }
+  return noleax::testing::parse_json(buffer.str());
+}
+
 [[nodiscard]] const noleax::testing::JsonValue& analysis_schema() {
-  static const noleax::testing::JsonValue schema = [] {
-    const auto path = std::filesystem::path{NOLEAX_TEST_SOURCE_DIR} / "docs" / "schema" /
-                      "noleax-analysis-v1.schema.json";
-    std::ifstream input{path, std::ios::binary};
-    if (!input) {
-      throw std::runtime_error{"cannot open analysis JSON schema"};
-    }
-    std::ostringstream buffer;
-    buffer << input.rdbuf();
-    if (input.bad()) {
-      throw std::runtime_error{"cannot read analysis JSON schema"};
-    }
-    return noleax::testing::parse_json(buffer.str());
-  }();
+  static const noleax::testing::JsonValue schema =
+      load_analysis_schema("noleax-analysis-v2.schema.json");
+  return schema;
+}
+
+[[nodiscard]] const noleax::testing::JsonValue& analysis_v1_schema() {
+  static const noleax::testing::JsonValue schema =
+      load_analysis_schema("noleax-analysis-v1.schema.json");
   return schema;
 }
 
@@ -173,8 +181,14 @@ namespace {
 }  // namespace
 
 TEST_CASE("analysis JSON schema version is stable", "[analyzer][json]") {
-  CHECK(noleax::analyzer::kAnalysisJsonSchemaVersion == 1U);
-  CHECK(analysis_schema().at("properties").at("schema_version").at("const").unsigned_value() == 1U);
+  CHECK(noleax::analyzer::kAnalysisJsonSchemaVersion == 2U);
+  CHECK(analysis_schema().at("properties").at("schema_version").at("const").unsigned_value() == 2U);
+
+  const auto& v1 = analysis_v1_schema();
+  CHECK(v1.at("properties").at("schema_version").at("const").unsigned_value() == 1U);
+  const auto& v1_window = v1.at("$defs").at("window").at("properties");
+  CHECK(v1_window.at("a_ns").at("type").scalar() == "integer");
+  CHECK_FALSE(v1_window.contains("a_sequence"));
 }
 
 TEST_CASE("test JSON schema validator enforces refs and structural keywords",

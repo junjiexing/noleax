@@ -208,11 +208,12 @@ TEST_CASE("sequence bounds clamp to the trace end sequence", "[analyzer][outstan
       make_trace({allocation_event(1U, 110U, 1U, 0x1000U), allocation_event(2U, 115U, 2U, 0x2000U),
                   free_event(3U, 131U, 2U, 0x2000U)});
 
-  SECTION("b beyond the final sequence becomes the trace end") {
+  SECTION("b beyond the final sequence becomes an exclusive trace-end fence") {
     const auto result = analyze(encoded, {at(0ns), seq(999U), std::nullopt});
-    CHECK(result.effective_b.sequence == 3U);
-    CHECK(result.effective_b.time == 31ns);
-    CHECK(result.effective_b == result.effective_c);
+    CHECK(result.effective_b.sequence == 4U);
+    CHECK(result.effective_b.time == 32ns);
+    CHECK(result.effective_c.sequence == 3U);
+    CHECK(result.effective_c.time == 31ns);
   }
 
   SECTION("b within the trace keeps its sequence kind") {
@@ -242,6 +243,61 @@ TEST_CASE("sequence bounds clamp to the trace end sequence", "[analyzer][outstan
     CHECK(at_three.ended_by_c_count == 1U);
     CHECK(allocation_ids(at_three.outstanding) == std::vector<std::uint64_t>{1U});
   }
+}
+
+TEST_CASE("trace-end bounds handle empty traces and remain exclusive for final creations",
+          "[analyzer][outstanding][window]") {
+  using namespace std::chrono_literals;
+
+  SECTION("an empty trace clamps a positive observation sequence") {
+    const auto result = analyze(make_trace({}), {at(0ns), std::nullopt, seq(1U)});
+    CHECK(result.observation_uses_trace_end);
+    CHECK(result.effective_c.time == 0ns);
+    CHECK_FALSE(result.effective_c.sequence.has_value());
+    CHECK(result.effective_b.time == 1ns);
+    CHECK_FALSE(result.effective_b.sequence.has_value());
+  }
+
+  SECTION("an oversized b still includes a creation at the final sequence") {
+    const auto result = analyze(make_trace({allocation_event(1U, 110U, 1U, 0x1000U),
+                                            allocation_event(2U, 120U, 2U, 0x2000U)}),
+                                {at(0ns), seq(999U), std::nullopt});
+    CHECK(allocation_ids(result.outstanding) == std::vector<std::uint64_t>{1U, 2U});
+    CHECK(result.effective_b.sequence == 3U);
+    CHECK(result.effective_b.time == 21ns);
+    CHECK(result.effective_c.sequence == 2U);
+    CHECK(result.effective_c.time == 20ns);
+  }
+
+  SECTION("an inclusive observation rounds a fractional final timestamp up") {
+    auto header = file_header();
+    header.monotonic_frequency = 3U;
+    noleax::testing::SyntheticTraceBuilder builder{header, {true, false}};
+    builder.add_event(allocation_event(1U, 100U, 1U, 0x1000U));
+    builder.add_event(free_event(2U, 101U, 1U, 0x1000U));
+
+    const auto result =
+        analyze(builder.finish_normally().build(), {at(0ns), std::nullopt, std::nullopt});
+    CHECK(result.effective_c.time == 333'333'334ns);
+    CHECK(result.ended_by_c_count == 1U);
+    CHECK(result.outstanding.empty());
+  }
+}
+
+TEST_CASE("mixed observation bounds clamp each component independently",
+          "[analyzer][outstanding][window]") {
+  using namespace std::chrono_literals;
+  const auto encoded =
+      make_trace({allocation_event(1U, 110U, 1U, 0x1000U), free_event(2U, 120U, 1U, 0x1000U)});
+  auto observation = at(1s);
+  observation.sequence = 1U;
+
+  const auto result = analyze(encoded, {at(0ns), std::nullopt, observation});
+  CHECK(result.observation_uses_trace_end);
+  CHECK(result.effective_c.time == 20ns);
+  CHECK(result.effective_c.sequence == 1U);
+  CHECK(result.ended_by_c_count == 0U);
+  CHECK(allocation_ids(result.outstanding) == std::vector<std::uint64_t>{1U});
 }
 
 TEST_CASE("current-process virtual memory generations participate in outstanding windows",
@@ -278,9 +334,12 @@ TEST_CASE("outstanding analysis validates its window against itself and the trac
                     noleax::analyzer::OutstandingAnalysisError);
   }
 
-  SECTION("b after trace end clamps to the trace end") {
+  SECTION("b after trace end clamps to an exclusive fence") {
     const auto result = analyze(encoded, {at(0ns), at(1'000'000ns), std::nullopt});
-    CHECK(result.effective_b == result.effective_c);
+    CHECK(result.effective_b.time == 11ns);
+    CHECK(result.effective_b.sequence == 2U);
+    CHECK(result.effective_c.time == 10ns);
+    CHECK(result.effective_c.sequence == 1U);
     REQUIRE(result.outstanding.size() == 1U);
     CHECK(result.outstanding.front().allocation_id == noleax::trace::AllocationId{1U});
   }

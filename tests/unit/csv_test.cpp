@@ -289,7 +289,7 @@ namespace {
 }  // namespace
 
 TEST_CASE("analysis CSV schema version and column order are stable", "[analyzer][csv]") {
-  CHECK(noleax::analyzer::kAnalysisCsvSchemaVersion == 1U);
+  CHECK(noleax::analyzer::kAnalysisCsvSchemaVersion == 2U);
   const auto events = noleax::testing::parse_csv(write_events(file_header(), {}));
   CHECK(events.header == expected_event_header());
   REQUIRE(events.rows.size() == 1U);
@@ -334,7 +334,7 @@ TEST_CASE("events CSV pipeline preserves quoted UTF-8 Event Loss and summary row
   const auto table = noleax::testing::parse_csv(output.str());
   REQUIRE(table.rows.size() == 3U);
 
-  CHECK(table.at(0U, "csv_schema_version") == "1");
+  CHECK(table.at(0U, "csv_schema_version") == "2");
   CHECK(table.at(0U, "record_type") == "event");
   CHECK(table.at(0U, "api_name") == "Rtl,\"分配\"\r\nHeap");
   CHECK(table.at(0U, "payload_kind") == "allocation");

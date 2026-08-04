@@ -69,9 +69,10 @@ allocation_id 或 mapping_id 作为身份，不以可复用的地址作为身份
 `analyze_outstanding` 将 EventStream 与 GenerationTracker 组合，语义固定为：
 
 - 候选 creation time 满足 `a <= time < b`；窗口界也可以是事件 sequence（`a <= sequence < b`）。
-- 要求 `0 <= a <= b <= c`（b 缺省时要求 `a <= c`），顺序校验只在同种类的界之间进行；b、c 省略
-  或超过 trace end（时间轴或最终 sequence）时按 trace end 截断（effective_b/effective_c 写入
-  结果），不再因超出终点报错。
+- 要求 `0 <= a <= b <= c`（b 缺省时要求 `a <= c`），顺序校验每个共有分量；不同种类的界没有
+  可静态判断的顺序。b、c 省略或超过 trace end（时间轴或最终 sequence）时不再报错：effective b
+  使用严格位于最后事件之后的排他边界，effective c 使用包含最后事件的 trace 终点。混合界按分量
+  独立截断，未越界分量继续生效。
 - 观察点包含 time 或 sequence 等于 c 的全部 end event，因此恰好在 c free/realloc/destroy/unmap
   的候选不再 outstanding。
 - c 之后才结束的候选仍在 c outstanding，即使读取完整 trace 后它已不在 tracker 的最终 live
@@ -131,19 +132,20 @@ ConsoleMetadataResolver 可注入 module+offset、symbol+offset 和绝对地址�
 
 ## 8. JSON 输出
 
-JsonWriter 生成 `noleax.analysis` schema version 1。events 模式把匹配 Event 和全部 Loss 直接从
+JsonWriter 生成 `noleax.analysis` schema version 2。events 模式把匹配 Event 和全部 Loss 直接从
 analyzer callback 流式写入数组；outstanding 模式输出窗口和最终存活 generation。根对象统一包含
 metadata、实际 filters、summary 和 completeness，地址/handle/flags/错误码使用十六进制字符串，
 64 位 size、ID、sequence 和 ticks 使用无损 JSON integer。
 
 EventPresentationResolver 为 console 和 JSON 共享 API/module、stack status 与解析帧。trace 内仍以
-stack_id 去重；JSON 保留 ID 并为自包含消费展开可用帧。所有文本严格验证 UTF-8，v1 根对象和九类
+stack_id 去重；JSON 保留 ID 并为自包含消费展开可用帧。所有文本严格验证 UTF-8，v2 根对象和九类
 payload 由 [JSON_OUTPUT.md](JSON_OUTPUT.md) 与
+[noleax-analysis-v2.schema.json](schema/noleax-analysis-v2.schema.json) 固定；旧版结构继续由
 [noleax-analysis-v1.schema.json](schema/noleax-analysis-v1.schema.json) 固定。
 
 ## 9. CSV 输出
 
-CsvWriter 为 events 和 outstanding 提供两套 schema version 1 固定列。events 逐行写匹配 Event 和
+CsvWriter 为 events 和 outstanding 提供两套 schema version 2 固定列。events 逐行写匹配 Event 和
 全部 Loss，outstanding 每个最终 generation 一行；两种模式都以 summary 行结束。CSV 固定 UTF-8、
 逗号和 CRLF，按 RFC 4180 引用包含逗号、双引号或换行的字段，并无损保留 64 位整数。
 

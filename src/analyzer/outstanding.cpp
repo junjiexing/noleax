@@ -57,8 +57,47 @@ void validate_window(const OutstandingWindow& window) {
       compare_trace_time(trace_end, header, *bound.time) == std::strong_ordering::less) {
     return true;
   }
-  return bound.sequence.has_value() && trace_end_sequence.has_value() &&
-         *bound.sequence > *trace_end_sequence;
+  if (!bound.sequence.has_value()) {
+    return false;
+  }
+  return trace_end_sequence.has_value() ? *bound.sequence > *trace_end_sequence
+                                        : *bound.sequence > 0U;
+}
+
+// The observation point is inclusive. Round a fractional trace-end time up so comparing decoded
+// events against the returned integral-nanosecond bound still includes the final event.
+[[nodiscard]] WindowBound inclusive_trace_end_bound(
+    const noleax::trace::FileHeader& header, std::uint64_t trace_end,
+    const std::optional<std::uint64_t>& trace_end_sequence) {
+  WindowBound result;
+  const auto floor = trace_time_floor(trace_end, header);
+  if (compare_trace_time(trace_end, header, floor) == std::strong_ordering::greater) {
+    if (floor.count() < std::chrono::nanoseconds::max().count()) {
+      result.time = floor + std::chrono::nanoseconds{1};
+    }
+  } else {
+    result.time = floor;
+  }
+  result.sequence = trace_end_sequence;
+  return result;
+}
+
+// The creation window has an exclusive upper endpoint. Represent physical trace end with the
+// first integral-nanosecond/sequence fence strictly after every event, omitting a component when
+// its representation cannot be incremented.
+[[nodiscard]] WindowBound exclusive_trace_end_bound(
+    const noleax::trace::FileHeader& header, std::uint64_t trace_end,
+    const std::optional<std::uint64_t>& trace_end_sequence) {
+  WindowBound result;
+  const auto floor = trace_time_floor(trace_end, header);
+  if (floor.count() < std::chrono::nanoseconds::max().count()) {
+    result.time = floor + std::chrono::nanoseconds{1};
+  }
+  if (trace_end_sequence.has_value() &&
+      *trace_end_sequence < (std::numeric_limits<std::uint64_t>::max)()) {
+    result.sequence = *trace_end_sequence + 1U;
+  }
+  return result;
 }
 
 [[nodiscard]] WindowBound effective_upper_bound(
@@ -79,8 +118,8 @@ void validate_window(const OutstandingWindow& window) {
       compare_trace_time(trace_end, header, *effective.time) == std::strong_ordering::less) {
     effective.time = trace_end_bound.time;
   }
-  if (effective.sequence.has_value() && trace_end_sequence.has_value() &&
-      *effective.sequence > *trace_end_sequence) {
+  if (effective.sequence.has_value() &&
+      (!trace_end_sequence.has_value() || *effective.sequence > *trace_end_sequence)) {
     effective.sequence = trace_end_sequence;
   }
   return effective;
@@ -132,23 +171,25 @@ class OutstandingCollector {
     } else if (result.trace.known_sequence_end.is_valid()) {
       trace_end_sequence = result.trace.known_sequence_end.value();
     }
-    const WindowBound trace_end_bound{trace_time_floor(trace_end, header), trace_end_sequence};
-    result.effective_b =
-        effective_upper_bound(window_.b, trace_end_bound, header, trace_end, trace_end_sequence);
+    const WindowBound trace_end_bound =
+        inclusive_trace_end_bound(header, trace_end, trace_end_sequence);
+    const WindowBound trace_end_exclusive =
+        exclusive_trace_end_bound(header, trace_end, trace_end_sequence);
+    result.effective_b = effective_upper_bound(window_.b, trace_end_exclusive, header, trace_end,
+                                               trace_end_sequence);
 
     const bool omitted_c = !window_.c.has_value() || window_bound_empty(*window_.c);
     const bool c_exceeds_trace =
         !omitted_c &&
         window_bound_exceeds_trace_end(*window_.c, header, trace_end, trace_end_sequence);
     result.observation_uses_trace_end = omitted_c || c_exceeds_trace;
-    result.effective_c = result.observation_uses_trace_end ? trace_end_bound : *window_.c;
+    result.effective_c =
+        effective_upper_bound(window_.c, trace_end_bound, header, trace_end, trace_end_sequence);
     result.candidate_count = static_cast<std::uint64_t>(candidates_.size());
 
     for (const auto& candidate : candidates_) {
-      const bool ended_by_c =
-          candidate.ended_by.has_value() &&
-          (result.observation_uses_trace_end ||
-           window_at_or_before(result.effective_c, header, *candidate.ended_by));
+      const bool ended_by_c = candidate.ended_by.has_value() &&
+                              window_at_or_before(result.effective_c, header, *candidate.ended_by);
       if (ended_by_c) {
         checked_increment(result.ended_by_c_count, "ended candidate count overflow");
         continue;

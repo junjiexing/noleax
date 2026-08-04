@@ -238,9 +238,10 @@ mode：
   仍未释放”。
 
 每个窗口界可以是相对 trace 起点的时间（如 `10s`），也可以是事件 sequence（`#` 前缀加序号，
-如 `#123456`）。`--to`/`--end` 超过 trace 终点（时间轴或最终 sequence）时按终点截断，不再
-报错；顺序校验只在同种类的界之间进行（时间比时间、sequence 比 sequence，`from <= to`、
-`to <= end`），不同种类混用允许但不检查顺序。events 模式不接受 `--end`。
+如 `#123456`）。`--to`/`--end` 超过 trace 终点（时间轴或最终 sequence）时不再报错：排他的
+`--to` 使用严格位于最后事件之后的边界，包含式的 `--end` 使用最后事件位置。顺序校验只在同种类
+的界之间进行（时间比时间、sequence 比 sequence，`from <= to`、`to <= end`），不同种类混用允许
+但不检查顺序。events 模式不接受 `--end`。
 
 --group-by：按指定维度聚合结果，当前唯一取值 `stack`（按调用栈）。events 下聚合成功的
 alloc/realloc/free：每组输出

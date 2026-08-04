@@ -1,16 +1,16 @@
 # Noleax CSV 输出
 
-> schema version：1
-> 日期：2026-07-29
+> schema version：2
+> 日期：2026-08-03
 
 ## 1. 目标与边界
 
-CSV 面向表格工具和逐行数据管线。V1 提供 `CsvWriter`、`analyze_events_to_csv` 和
+CSV 面向表格工具和逐行数据管线。V2 提供 `CsvWriter`、`analyze_events_to_csv` 和
 `analyze_outstanding_to_csv`。events 边读 trace 边写 Event/Loss，不缓存全部事件；outstanding 写入
 最终候选。每个文件最后固定写一条 `summary`，因此消费者可以把“存在完整的末行 summary”作为输出
 成功结束的结构信号。输入或输出在中途失败时，文件可能保留已验证的前序行，但不会有 summary。
 
-CSV 不替代信息最完整的 JSON：V1 CSV 保留事件、payload、Loss、窗口、主要统计和完整性，省略
+CSV 不替代信息最完整的 JSON：V2 CSV 保留事件、payload、Loss、窗口、主要统计和完整性，省略
 per-API statistics、完整 trace metadata 和 filter 对象。需要完整层级数据时使用 JSON。
 
 ## 2. 文件编码与引用
@@ -19,7 +19,8 @@ per-API statistics、完整 trace metadata 和 filter 对象。需要完整层�
 - 逗号分隔，记录结尾固定为 CRLF。
 - 字段包含逗号、双引号、CR 或 LF 时使用双引号包围；字段内 `"` 写成 `""`。
 - 缺失定义、无效 ID 和未提供的可选值写为空字段；数值零仍明确写为 `0` 或 `0x0`。
-- 每一行都有 `csv_schema_version=1`；字段名和顺序属于版本化接口。
+- 每一行都有 `csv_schema_version=2`；字段名和顺序属于版本化接口。V2 为窗口新增 sequence 列，
+  因列名和位置变化而提升版本，V1 消费者不得把 V2 当作原有列布局解析。
 - 地址和 handle 使用按 pointer width 补零的小写十六进制；flags、错误码和 raw result 使用不补零的
   小写十六进制；size、ID、ticks 和计数使用无损十进制整数。
 
@@ -34,7 +35,7 @@ events 文件的 `record_type` 为：
 - `loss`：一条 Loss；只填充 loss 列。
 - `summary`：固定末行；包含 matched/filtered、trace、capture、termination 和 completeness 摘要。
 
-下面各组按出现顺序拼接，构成 schema v1 的固定列顺序：
+下面各组按出现顺序拼接，构成 schema v2 的固定列顺序：
 
 1. 行类型：`csv_schema_version, record_type`
 2. Event 公共字段：`sequence, relative_time_ns, monotonic_ticks, thread_id, api_id, api_name,
@@ -72,8 +73,8 @@ leaks（原 outstanding）文件的 `record_type` 为 `allocation` 或固定末�
 2. summary 窗口：`window_a_ns, window_b_ns, requested_c_ns, effective_c_ns,
    window_a_sequence, window_b_sequence, requested_c_sequence, effective_c_sequence,
    observation_uses_trace_end, trace_end_monotonic_ticks`。`window_b_ns` 填写请求的 `--to`，缺省时
-   填写按 trace 终点截断的 effective 值。时间界填写 `_ns` 列，sequence 界填写 `_sequence` 列，
-   另一列为空；截断到 trace 终点的 effective 界同时携带 trace 终点的时间与最终 sequence。
+   填写按 trace 终点生成的排他 effective 值。时间界填写 `_ns` 列，sequence 界填写 `_sequence`
+   列，另一列为空；排他 effective 界严格位于最后事件之后，保证 `[a,b)` 包含最后事件。
 3. 创建事件：`creation_sequence, creation_relative_time_ns, creation_monotonic_ticks, thread_id,
    api_id, api_name, api_module, operation, status, event_flags, error_domain, error_code, stack_id,
    stack_status, stack_frames`
