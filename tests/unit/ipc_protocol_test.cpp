@@ -102,6 +102,85 @@ TEST_CASE("IPC payload codecs preserve capture contracts", "[ipc][protocol]") {
   CHECK(noleax::ipc::decode_error_response(noleax::ipc::encode_error_response(error)) == error);
 }
 
+TEST_CASE("IPC start capture round trips custom hook declarations",
+          "[ipc][protocol][custom-hook]") {
+  noleax::ipc::StartCaptureRequest start;
+  start.trace_path_utf8 = "trace.nlx";
+
+  noleax::ipc::CustomHookSpec hook;
+  hook.module = "myalloc.dll";
+  hook.alloc.locator = noleax::ipc::CustomHookLocator::kExport;
+  hook.alloc.export_name = "my_malloc";
+  hook.realloc.locator = noleax::ipc::CustomHookLocator::kRva;
+  hook.realloc.rva = 0x12340U;
+  hook.free.locator = noleax::ipc::CustomHookLocator::kExport;
+  hook.free.export_name = "my_free";
+  hook.size_arg = 1U;
+  hook.ptr_arg = 2U;
+  hook.result_arg = std::uint8_t{0U};
+  hook.calloc = true;
+  hook.count_arg = std::uint8_t{3U};
+  hook.free_size_arg = std::uint8_t{4U};
+  hook.forced = true;
+  hook.wait_module_ms = 10'000U;
+  hook.label = "my_malloc";
+  hook.image_identity = noleax::ipc::CustomHookImageIdentity{0x65a1b2c3U, 0x1a2bU, 198656U};
+
+  noleax::ipc::CustomHookSpec minimal;
+  minimal.module = "other.dll";
+  minimal.alloc.locator = noleax::ipc::CustomHookLocator::kRva;
+  minimal.alloc.rva = 0x2000U;
+  minimal.free.locator = noleax::ipc::CustomHookLocator::kRva;
+  minimal.free.rva = 0x2100U;
+  minimal.label = "other.dll+0x2000";
+
+  start.custom_hooks = {hook, minimal};
+  CHECK(noleax::ipc::decode_start_capture(noleax::ipc::encode_start_capture(start)) == start);
+}
+
+TEST_CASE("IPC custom hook codec rejects malformed declarations", "[ipc][protocol][custom-hook]") {
+  noleax::ipc::StartCaptureRequest start;
+  start.trace_path_utf8 = "trace.nlx";
+
+  noleax::ipc::CustomHookSpec valid;
+  valid.module = "myalloc.dll";
+  valid.alloc.locator = noleax::ipc::CustomHookLocator::kExport;
+  valid.alloc.export_name = "my_malloc";
+  valid.free.locator = noleax::ipc::CustomHookLocator::kExport;
+  valid.free.export_name = "my_free";
+  valid.label = "my_malloc";
+
+  // The free role is required.
+  start.custom_hooks = {valid};
+  start.custom_hooks.at(0U).free.locator = noleax::ipc::CustomHookLocator::kNone;
+  CHECK_THROWS_AS(noleax::ipc::encode_start_capture(start), noleax::ipc::ProtocolError);
+
+  // An export role must not carry an RVA.
+  start.custom_hooks = {valid};
+  start.custom_hooks.at(0U).alloc.rva = 0x1000U;
+  CHECK_THROWS_AS(noleax::ipc::encode_start_capture(start), noleax::ipc::ProtocolError);
+
+  // Argument slots are bounded.
+  start.custom_hooks = {valid};
+  start.custom_hooks.at(0U).size_arg = 8U;
+  CHECK_THROWS_AS(noleax::ipc::encode_start_capture(start), noleax::ipc::ProtocolError);
+
+  // calloc requires count_arg and vice versa.
+  start.custom_hooks = {valid};
+  start.custom_hooks.at(0U).calloc = true;
+  CHECK_THROWS_AS(noleax::ipc::encode_start_capture(start), noleax::ipc::ProtocolError);
+
+  // The point count is bounded.
+  start.custom_hooks.assign(noleax::ipc::kMaximumCustomHooks + 1U, valid);
+  CHECK_THROWS_AS(noleax::ipc::encode_start_capture(start), noleax::ipc::ProtocolError);
+
+  // Trailing bytes after a valid payload are rejected.
+  start.custom_hooks = {valid};
+  auto payload = noleax::ipc::encode_start_capture(start);
+  payload.push_back(std::byte{0U});
+  CHECK_THROWS_AS(noleax::ipc::decode_start_capture(payload), noleax::ipc::ProtocolError);
+}
+
 TEST_CASE("IPC payload codecs reject malformed fields and trailing bytes",
           "[ipc][protocol][security]") {
   noleax::ipc::StartCaptureRequest start;

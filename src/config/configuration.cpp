@@ -1,9 +1,12 @@
 #include "noleax/config/configuration.hpp"
 
+#include <array>
+#include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <string>
 
 namespace noleax::config {
 namespace {
@@ -17,7 +20,38 @@ void apply_override(Setting<T>& setting, const SettingOverride<T>& override_valu
   }
 }
 
+[[nodiscard]] std::string custom_hook_role_label(const CustomHook& hook,
+                                                 const CustomHookRole& role) {
+  if (role.export_name.has_value()) {
+    return *role.export_name;
+  }
+  if (role.pdb_symbol.has_value()) {
+    const std::size_t separator = role.pdb_symbol->find('!');
+    return separator == std::string::npos ? *role.pdb_symbol
+                                          : role.pdb_symbol->substr(separator + 1U);
+  }
+  std::string label = hook.module;
+  label.append("+0x");
+  std::array<char, 16> digits{};
+  const auto converted = std::to_chars(digits.data(), digits.data() + digits.size(), *role.rva, 16);
+  label.append(digits.data(), converted.ptr);
+  return label;
+}
+
 }  // namespace
+
+std::string custom_hook_label(const CustomHook& hook) {
+  if (hook.alloc.declared()) {
+    return custom_hook_role_label(hook, hook.alloc);
+  }
+  if (hook.free.declared()) {
+    return custom_hook_role_label(hook, hook.free);
+  }
+  if (hook.realloc.declared()) {
+    return custom_hook_role_label(hook, hook.realloc);
+  }
+  return hook.module;
+}
 
 std::string_view value_source_name(ValueSource source) noexcept {
   switch (source) {
@@ -156,6 +190,8 @@ void apply_overrides(Configuration& configuration, const ConfigurationOverrides&
 
   apply_override(configuration.diagnostics.log_level, overrides.diagnostics.log_level, source);
   apply_override(configuration.diagnostics.color, overrides.diagnostics.color, source);
+
+  apply_override(configuration.custom_hooks, overrides.custom_hooks, source);
 }
 
 }  // namespace noleax::config

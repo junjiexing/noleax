@@ -17,6 +17,7 @@
 #include "noleax/analyzer/filter.hpp"
 #include "noleax/analyzer/presentation.hpp"
 #include "noleax/analyzer/symbolizer.hpp"
+#include "noleax/trace/custom_hook.hpp"
 #include "noleax/trace/event.hpp"
 #include "noleax/trace/module.hpp"
 #include "noleax/trace/stack.hpp"
@@ -79,10 +80,14 @@ class TraceMetadata::Impl final {
     // previous trace (module/stack id spaces overlap heavily across traces).
     modules_.clear();
     stacks_.clear();
+    custom_hooks_.clear();
     file_header_ = noleax::trace::FileHeader{};
     EventStreamCallbacks callbacks;
     callbacks.on_file_header = [this](const noleax::trace::FileHeader& header) {
       file_header_ = header;
+    };
+    callbacks.on_custom_hook_definition = [this](const noleax::trace::CustomHookDefinition& hook) {
+      custom_hooks_.emplace(hook.api_id, hook);
     };
     callbacks.on_module_load = [this](const noleax::trace::ModuleLoad& load) {
       ModuleEntry entry;
@@ -125,6 +130,10 @@ class TraceMetadata::Impl final {
           api != nullptr) {
         result.api_name = std::string{api->canonical_name};
         result.api_module = std::string{api->module_name};
+      } else if (const auto custom = custom_hooks_.find(event.header.api_id);
+                 custom != custom_hooks_.end()) {
+        result.api_name = custom->second.label;
+        result.api_module = custom->second.module_name;
       }
     }
     const auto* stack = find_stack(event.header.stack_id);
@@ -211,6 +220,7 @@ class TraceMetadata::Impl final {
   noleax::trace::FileHeader file_header_;
   std::unordered_map<std::uint64_t, ModuleEntry> modules_;
   std::unordered_map<std::uint64_t, noleax::trace::StackDefinition> stacks_;
+  std::unordered_map<noleax::trace::ApiId, noleax::trace::CustomHookDefinition> custom_hooks_;
   bool scanned_{false};
   bool trim_agent_frames_{false};
   bool require_symbols_{false};

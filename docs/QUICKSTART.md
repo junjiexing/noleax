@@ -45,6 +45,18 @@ Ctrl+C 不再驱动收尾：控制器改为 detached 等待（退出码 2），a
 默认 profile `windows-native` 同时捕获 NT Heap 与 NT virtual-memory API。只关注 heap 时显式使用
 `windows-nt-heap` 可减少事件量和干扰。
 
+目标进程使用第三方 allocator（jemalloc、mimalloc、自研等）时，默认 profile 只能看到它的大块
+VM 申请；把它的分配函数声明为 custom hook 后，逻辑 allocations 与泄露归属会进入同一分析
+体系：
+
+~~~powershell
+.\noleax.exe run --custom-hook "myalloc.dll:alloc=my_malloc,free=my_free,realloc=my_realloc" `
+  --trace .\custom.nlx -- C:\apps\demo.exe
+~~~
+
+定位也支持 PDB 符号（`alloc_pdb=myalloc!internal_alloc`）与 RVA（`alloc_rva=0x12340`）；参数
+映射、forced 与 wait_module 语义见 [CUSTOM_HOOKS.md](CUSTOM_HOOKS.md)。
+
 ## 3. Attach 到运行中的目标
 
 先取得 PID，再以与目标相同权限级别运行 Noleax：

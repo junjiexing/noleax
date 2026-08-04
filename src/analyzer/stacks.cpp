@@ -19,13 +19,22 @@
 
 namespace noleax::analyzer {
 
-std::vector<std::string> group_api_names(std::span<const noleax::trace::ApiId> api_ids) {
+std::vector<std::string> group_api_names(
+    std::span<const noleax::trace::ApiId> api_ids,
+    std::span<const noleax::trace::CustomHookDefinition> custom_hooks) {
   std::vector<std::string> names;
   names.reserve(api_ids.size());
   for (const noleax::trace::ApiId api_id : api_ids) {
     const auto* api = noleax::agent::windows::find_windows_hook(api_id);
-    names.push_back(api != nullptr ? std::string{api->canonical_name}
-                                   : "api-" + std::to_string(api_id));
+    if (api != nullptr) {
+      names.emplace_back(api->canonical_name);
+      continue;
+    }
+    const auto custom = std::find_if(custom_hooks.begin(), custom_hooks.end(),
+                                     [api_id](const noleax::trace::CustomHookDefinition& hook) {
+                                       return hook.api_id == api_id;
+                                     });
+    names.push_back(custom != custom_hooks.end() ? custom->label : "api-" + std::to_string(api_id));
   }
   return names;
 }

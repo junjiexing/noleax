@@ -1,0 +1,45 @@
+schema_version = 1
+operation = "run"
+
+[target]
+path = "application.exe"
+args = []
+
+[injection]
+method = "remote-thread"
+timeout = "10s"
+
+[capture]
+hook_profile = "windows-native"
+max_stack_depth = 64
+min_size = "0B"
+duration = "30s"
+
+[trace]
+path = "capture.nlx"
+buffer_size = "16MiB"
+max_file_size = "256MiB"
+max_files = 1
+on_full = "stop"
+flush_interval = "250ms"
+compression = "lz4"
+compression_level = 0
+
+# 把第三方 allocator 的分配函数声明为 hook 点，与内置 API 进入同一事件/泄露分析体系。
+# 三种定位三选一:导出符号名(agent 内解析)、<role>_pdb(controller 侧 DbgHelp 解析为 RVA)、
+# <role>_rva(直接 RVA)。alloc 与 free 必填,realloc 可选。
+[[custom_hooks]]
+module = "myalloc.dll"
+alloc = "my_malloc"
+realloc = "my_realloc"
+free = "my_free"
+# alloc_pdb = "myalloc!internal_alloc"
+# free_rva = "0x1a210"
+size_arg = 0
+ptr_arg = 0
+# result_arg = 1
+# kind = "calloc"
+# count_arg = 0
+# free_size_arg = 1
+forced = false
+wait_module = "0s"

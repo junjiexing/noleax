@@ -11,7 +11,7 @@
 另有 replacement gate、并发 revert 和 fail-safe 模块生命周期、SEH-safe 清理、
 异常失败事件，以及 CFG/CET hardened 验证。
 
-保留原 allocate-only 构造方式并统一 raw event；加入 NT VM 与 section 字段后当前为 664-byte
+保留原 allocate-only 构造方式并统一 raw event；加入 NT VM 与 section 字段后当前为 672-byte
 `RtlHeapEvent`。heap 组合路径由
 `RtlHeapHooks` 让 create/allocate/reallocate/free/destroy 引用同一个 queue，跨 API 共用唯一
 sequence。生命周期语义见 [RTL_FREE_HEAP_HOOK.md](RTL_FREE_HEAP_HOOK.md)、

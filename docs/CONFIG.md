@@ -94,9 +94,38 @@ standalone = false
 [diagnostics]
 log_level = "info"
 color = "auto"
+
+[[custom_hooks]]
+module = "myalloc.dll"
+alloc = "my_malloc"
+realloc = "my_realloc"
+free = "my_free"
+# alloc_pdb = "myalloc!internal_alloc"   # 每个角色三选一:导出名 / _pdb / _rva
+# free_rva = "0x1a210"
+size_arg = 0
+ptr_arg = 0
+# result_arg = 1
+# kind = "calloc"
+# count_arg = 0
+# free_size_arg = 1
+forced = false
+wait_module = "0s"
 ~~~
 
 示例展示 schema，不表示所有键在所有 operation 中都有效。与当前 operation 无关但非默认的配置键应报错，避免用户误以为设置已生效。
+
+`[[custom_hooks]]` 把第三方 allocator 的分配函数声明为 hook 点（仅 run/attach/patch 有效），
+每个元素声明一个模块和 alloc/realloc/free 三个角色，alloc 与 free 必填。三种定位三选一：
+导出符号名（agent 在目标进程内读取模块导出表解析）、`<role>_pdb`（`module!symbol`，由
+controller 侧 DbgHelp 沿 `[symbols]` 规则解析为 RVA）、`<role>_rva`（直接 RVA，十六进制或
+十进制整数）。参数语义按位映射：`size_arg`（alloc/realloc 的 size）、`ptr_arg`（realloc/free
+的指针）、`result_arg`（结果经 `*(void**)argN` 返回时设置，默认取 rax）、`kind = "calloc"`
+配 `count_arg`（语义 size = count × size，带溢出检查）、`free_size_arg`（free 自带 size）。
+参数位 0–3 为 rcx/rdx/r8/r9，4–7 为栈槽。`forced = true` 在 checked relocation 拒绝时允许
+forced relocation；`wait_module` 是安装时模块未加载的等待上限（默认 `"0s"` 立即失败）。
+`patch` 下声明的 PDB 符号在 patch 时解析并随映像 identity 烘焙进输出副本旁的
+`noleax-agent.toml`。同一模块只能声明一次，一次捕获最多 32 个 hook 点。完整语义见
+[CUSTOM_HOOKS.md](CUSTOM_HOOKS.md)。
 
 当前 Windows x64 对尚未实现但已为后续阶段预留的组合返回 5：`trace.on_full` 仅支持 `stop`、
 `trace.max_files` 仅支持 1，`injection.unload_on_stop` 仅 attach 支持，analysis
@@ -190,6 +219,10 @@ CLI subcommand存在时覆盖 operation。若 CLI 和配置均缺失，显示顶
 - compression=none 或 lz4 时 compression_level 必须为 0。
 - compression=zstd 时 V1 接受 0（codec 默认，即 level 1）或 1。
 - trace.path 的父目录必须存在或可创建。
+- custom_hooks：alloc 与 free 必填，每角色的三种定位互斥，参数位 0–7，`kind = "calloc"` 与
+  `count_arg` 必须同时出现，同一模块不得重复声明（大小写不敏感），一次捕获最多 32 个
+  hook 点；声明 PDB 定位时 `symbols.mode` 不得为 `off`。仅 run/attach/patch 有效，其余
+  operation 下必须缺省；声明后 run/attach/patch 允许配置 `[symbols]`。
 
 run：
 

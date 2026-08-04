@@ -294,7 +294,7 @@ legacy 入口同时安装；二者共享逻辑 API ID、统计和 generation，�
 - VirtualAlloc/VirtualFree。
 - MapViewOfFile/UnmapViewOfFile。
 
-这些调用落到规范化底层 API 时仍被捕获。第三方 allocator 只进行大块 VM 申请并在内部切分时，V1 只能看到 backing mapping；后续 custom symbol hook 才能看到其逻辑 allocations。
+这些调用落到规范化底层 API 时仍被捕获。第三方 allocator 只进行大块 VM 申请并在内部切分时，默认 profile 只能看到 backing mapping；`[[custom_hooks]]` / `--custom-hook` 声明其分配函数为 hook 点后，其逻辑 allocations 进入与内置 API 相同的事件与泄露聚合体系（见 [CUSTOM_HOOKS.md](CUSTOM_HOOKS.md)）。
 
 ## 6. 测试注册状态
 

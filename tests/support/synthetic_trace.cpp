@@ -153,6 +153,16 @@ SyntheticTraceBuilder& SyntheticTraceBuilder::add_stack(
   return *this;
 }
 
+SyntheticTraceBuilder& SyntheticTraceBuilder::add_custom_hook_definition(
+    const noleax::trace::CustomHookDefinition& definition) {
+  if (end_.has_value()) {
+    throw SyntheticTraceError{"cannot add a custom hook definition after EndOfTrace"};
+  }
+  noleax::trace::validate_custom_hook_definition(definition);
+  custom_hook_definitions_.push_back(definition);
+  return *this;
+}
+
 SyntheticTraceBuilder& SyntheticTraceBuilder::add_loss(const noleax::trace::LossRecord& loss) {
   if (end_.has_value()) {
     throw SyntheticTraceError{"cannot add Loss after EndOfTrace"};
@@ -231,6 +241,10 @@ std::string SyntheticTraceBuilder::build() const {
   std::vector<std::byte> metadata_payload;
   noleax::trace::append_capture_scope_record(metadata_payload, capture_scope_,
                                              options_.maximum_record_size);
+  for (const auto& definition : custom_hook_definitions_) {
+    noleax::trace::append_custom_hook_definition_record(metadata_payload, definition,
+                                                        options_.maximum_record_size);
+  }
   noleax::trace::ChunkDescriptor metadata_descriptor;
   metadata_descriptor.type = noleax::trace::ChunkType::kMetadata;
   metadata_descriptor.codec = options_.codec;

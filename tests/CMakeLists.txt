@@ -11,6 +11,8 @@ add_executable(noleax-unit-tests
   unit/bounded_mpsc_queue_test.cpp
   unit/console_test.cpp
   unit/csv_test.cpp
+  unit/custom_hook_config_test.cpp
+  unit/custom_hook_test.cpp
   unit/filter_test.cpp
   unit/generation_tracker_test.cpp
   unit/json_test.cpp
@@ -1170,6 +1172,68 @@ if(WIN32)
   add_dependencies(noleax-unit-tests noleax-symbolizer-fixture)
   target_compile_definitions(noleax-unit-tests PRIVATE
     NOLEAX_SYMBOL_FIXTURE_PATH="$<TARGET_FILE:noleax-symbolizer-fixture>"
+  )
+
+  # Custom symbol hook fixtures: one allocator source, three module names so every hook point
+  # can use its own argument mapping without tripping the duplicate-module validation.
+  foreach(fixture_suffix IN ITEMS a b c)
+    add_library(noleax-custom-alloc-${fixture_suffix} SHARED
+      targets/custom_alloc_fixture.cpp
+    )
+    noleax_set_project_warnings(noleax-custom-alloc-${fixture_suffix})
+    if(MSVC)
+      target_compile_options(noleax-custom-alloc-${fixture_suffix} PRIVATE /Od /Zi)
+      target_link_options(noleax-custom-alloc-${fixture_suffix} PRIVATE
+        /DEBUG:FULL /OPT:NOREF /OPT:NOICF)
+    endif()
+  endforeach()
+
+  add_executable(noleax-custom-alloc-target
+    targets/custom_alloc_target.cpp
+  )
+  noleax_set_project_warnings(noleax-custom-alloc-target)
+  add_dependencies(noleax-custom-alloc-target
+    noleax-custom-alloc-a noleax-custom-alloc-b noleax-custom-alloc-c)
+
+  # Static-import variant: the OS preloads fixture A before the entry stub runs, so a patched
+  # standalone copy can install its custom hooks while the bootstrap stub gates main.
+  add_executable(noleax-custom-alloc-static-target
+    targets/custom_alloc_target.cpp
+  )
+  noleax_set_project_warnings(noleax-custom-alloc-static-target)
+  target_link_libraries(noleax-custom-alloc-static-target PRIVATE noleax-custom-alloc-a)
+  if(MSVC)
+    target_link_options(noleax-custom-alloc-static-target PRIVATE /INCLUDE:my_malloc)
+  endif()
+
+  add_executable(noleax-custom-symbol-hook-test
+    integration/custom_symbol_hook_test.cpp
+  )
+  target_include_directories(noleax-custom-symbol-hook-test PRIVATE "${PROJECT_SOURCE_DIR}/tests")
+  target_link_libraries(noleax-custom-symbol-hook-test PRIVATE
+    noleax::analyzer
+    noleax::controller
+  )
+  noleax_set_project_warnings(noleax-custom-symbol-hook-test)
+  add_dependencies(noleax-custom-symbol-hook-test noleax-symbolizer-fixture)
+  target_compile_definitions(noleax-custom-symbol-hook-test PRIVATE
+    NOLEAX_SYMBOL_FIXTURE_PATH="$<TARGET_FILE:noleax-symbolizer-fixture>"
+  )
+
+  add_test(NAME controller.custom-symbol-hook
+    COMMAND noleax-custom-symbol-hook-test
+      "$<TARGET_FILE:noleax-agent>"
+      "$<TARGET_FILE:noleax-custom-alloc-target>"
+      "$<TARGET_FILE:noleax>"
+      "$<TARGET_FILE_DIR:noleax-custom-alloc-a>"
+      "$<TARGET_FILE_DIR:noleax-custom-symbol-hook-test>/custom-hooks"
+      "$<TARGET_FILE:noleax-custom-alloc-static-target>"
+  )
+  set_tests_properties(controller.custom-symbol-hook PROPERTIES
+    LABELS "controller;agent;injection;attach;custom-hook;windows"
+    PASS_REGULAR_EXPRESSION "status=ok export=1 forced=1 rva=1 pdb=1 mappings=1 min-size=1 wait-module=1 missing-module=1 missing-export=1 unload=1 patch-standalone=1"
+    RUN_SERIAL TRUE
+    TIMEOUT 240
   )
 
   add_executable(noleax-agent-smoke

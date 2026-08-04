@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "noleax/trace/completeness.hpp"
+#include "noleax/trace/custom_hook.hpp"
 #include "noleax/trace/event.hpp"
 #include "noleax/trace/module.hpp"
 #include "noleax/trace/stack.hpp"
@@ -17,6 +18,7 @@ namespace noleax::trace {
 // These underlying types intentionally match record_type's uint16 wire field.
 enum class MetadataRecordType : std::uint16_t {  // NOLINT(performance-enum-size)
   kCaptureScope = 1,
+  kCustomHookDefinition = 2,
 };
 
 enum class EventRecordType : std::uint16_t {  // NOLINT(performance-enum-size)
@@ -59,6 +61,12 @@ class RecordCodecError final : public std::runtime_error {
 void append_capture_scope_record(std::vector<std::byte>& chunk_payload, const CaptureScope& scope,
                                  std::uint32_t maximum_record_size = kDefaultMaximumRecordSize);
 [[nodiscard]] std::optional<CaptureScope> decode_capture_scope_record(const RecordView& record);
+
+void append_custom_hook_definition_record(
+    std::vector<std::byte>& chunk_payload, const CustomHookDefinition& definition,
+    std::uint32_t maximum_record_size = kDefaultMaximumRecordSize);
+[[nodiscard]] std::optional<CustomHookDefinition> decode_custom_hook_definition_record(
+    const RecordView& record);
 
 void append_module_load_record(std::vector<std::byte>& chunk_payload, const ModuleLoad& load,
                                std::uint32_t maximum_record_size = kDefaultMaximumRecordSize);

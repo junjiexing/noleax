@@ -17,7 +17,7 @@ decoder 必须消费完整输入，拒绝截断和尾随数据。
 | 消息 | 方向 | 用途 |
 |---|---|---|
 | `AgentHello` | agent → controller | ABI、PID、worker TID、架构和 session token |
-| `StartCapture` | controller → agent | profile、栈深、过滤、buffer、trace 和压缩配置 |
+| `StartCapture` | controller → agent | profile、栈深、过滤、buffer、trace、压缩配置和 custom_hooks |
 | `CaptureReady` | agent → controller | hook 与 writer 已 ready |
 | `QueryStatus` / `CaptureStatus` | controller ↔ agent | 生命周期和守恒计数 |
 | `StopCapture` / `CaptureDrained` | controller ↔ agent | 逻辑停录与 writer final drain |
@@ -26,6 +26,12 @@ decoder 必须消费完整输入，拒绝截断和尾随数据。
 
 停止使用两阶段消息，保持安全顺序：agent 先停止新事件并完成 trace，controller 随后暂停除
 agent worker 外的目标线程，最后才允许物理卸载 hook。
+
+`StartCapture` 的 `custom_hooks` 以 `uint32 count` 加定长元素块编码在既有字段之后（最多 32
+点）：每元素含参数位映射（size/ptr/result/count/free_size，未设项为 0xFF）、calloc/forced
+标志、wait_module_ms、三个角色的定位（none/export/RVA + export 名或 RVA）、module 与 label
+字符串，以及可选的烘焙映像 identity（timestamp/checksum/image size）。该数组自 ABI 3 起存在；
+声明非法（缺 alloc/free、定位冲突、参数位越界、count 超限）在编解码两侧均被拒绝。
 
 ## 3. 传输和安全边界
 

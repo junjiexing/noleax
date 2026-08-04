@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "noleax/trace/completeness.hpp"
+#include "noleax/trace/custom_hook.hpp"
 #include "noleax/trace/event.hpp"
 #include "noleax/trace/module.hpp"
 #include "noleax/trace/stack.hpp"
@@ -37,6 +38,8 @@ class SyntheticTraceBuilder {
   SyntheticTraceBuilder& add_event(const noleax::trace::Event& event);
   SyntheticTraceBuilder& add_module(const noleax::trace::ModuleRecord& module);
   SyntheticTraceBuilder& add_stack(const noleax::trace::StackDefinition& stack);
+  SyntheticTraceBuilder& add_custom_hook_definition(
+      const noleax::trace::CustomHookDefinition& definition);
   SyntheticTraceBuilder& add_loss(const noleax::trace::LossRecord& loss);
   SyntheticTraceBuilder& set_statistics(const noleax::trace::CaptureStatistics& statistics);
   SyntheticTraceBuilder& set_end_of_trace(const noleax::trace::EndOfTrace& end);
@@ -53,6 +56,7 @@ class SyntheticTraceBuilder {
   std::vector<EventRecord> event_records_;
   std::vector<noleax::trace::ModuleRecord> module_records_;
   std::vector<noleax::trace::StackDefinition> stack_definitions_;
+  std::vector<noleax::trace::CustomHookDefinition> custom_hook_definitions_;
   std::optional<noleax::trace::CaptureStatistics> statistics_;
   std::optional<noleax::trace::EndOfTrace> end_;
 };

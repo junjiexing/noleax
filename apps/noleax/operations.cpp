@@ -172,6 +172,260 @@ void ensure_output_directory(const std::filesystem::path& path) {
   return options;
 }
 
+// ---- custom hook symbol resolution (controller side: PDB locators become baked RVAs) ----
+
+#if defined(_WIN32)
+
+[[noreturn]] void custom_hook_resolution_error(std::string_view message) {
+  throw ApplicationError{3, std::string{message}};
+}
+
+[[nodiscard]] std::wstring widen_utf8(std::string_view value, std::string_view what) {
+  if (value.empty() || value.size() > static_cast<std::size_t>((std::numeric_limits<int>::max)())) {
+    custom_hook_resolution_error("custom hook " + std::string{what} + " is empty or too long");
+  }
+  const int input_size = static_cast<int>(value.size());
+  const int output_size =
+      MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), input_size, nullptr, 0);
+  if (output_size <= 0) {
+    custom_hook_resolution_error("custom hook " + std::string{what} + " is not valid UTF-8");
+  }
+  std::wstring wide(static_cast<std::size_t>(output_size), L'\0');
+  if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), input_size, wide.data(),
+                          output_size) != output_size) {
+    custom_hook_resolution_error("custom hook " + std::string{what} + " conversion failed");
+  }
+  return wide;
+}
+
+[[nodiscard]] bool has_pdb_locator(const noleax::config::CustomHookRole& role) noexcept {
+  return role.pdb_symbol.has_value();
+}
+
+[[nodiscard]] bool needs_pdb_resolution(const noleax::config::CustomHook& hook) noexcept {
+  return has_pdb_locator(hook.alloc) || has_pdb_locator(hook.realloc) || has_pdb_locator(hook.free);
+}
+
+struct PeImageInfo {
+  std::uint32_t timestamp{0U};
+  std::uint32_t checksum{0U};
+  std::uint32_t image_size{0U};
+};
+
+[[nodiscard]] PeImageInfo read_pe_image_info(const std::filesystem::path& path) {
+  std::ifstream input{path, std::ios::binary};
+  if (!input) {
+    custom_hook_resolution_error("cannot open module image '" + noleax::config::path_to_utf8(path) +
+                                 "'");
+  }
+  IMAGE_DOS_HEADER dos{};
+  input.read(reinterpret_cast<char*>(&dos), sizeof(dos));
+  if (!input || dos.e_magic != IMAGE_DOS_SIGNATURE) {
+    custom_hook_resolution_error("module image '" + noleax::config::path_to_utf8(path) +
+                                 "' is not a PE file");
+  }
+  input.seekg(static_cast<std::streamoff>(dos.e_lfanew), std::ios::beg);
+  IMAGE_NT_HEADERS64 nt{};
+  input.read(reinterpret_cast<char*>(&nt), sizeof(nt));
+  if (!input || nt.Signature != IMAGE_NT_SIGNATURE ||
+      nt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) {
+    custom_hook_resolution_error("module image '" + noleax::config::path_to_utf8(path) +
+                                 "' is not an x64 PE file");
+  }
+  return PeImageInfo{nt.FileHeader.TimeDateStamp, nt.OptionalHeader.CheckSum,
+                     nt.OptionalHeader.SizeOfImage};
+}
+
+[[nodiscard]] std::filesystem::path locate_custom_hook_module(
+    const noleax::config::Configuration& configuration, const noleax::config::CustomHook& hook) {
+  const std::string& module = hook.module;
+  if (module.find_first_of("/\\") != std::string::npos || module.find(':') != std::string::npos) {
+    return noleax::config::normalize_path(module, std::filesystem::current_path());
+  }
+  const std::wstring wide_name = widen_utf8(module, "module name");
+  if (*configuration.operation.value == noleax::config::Operation::kAttach) {
+    const auto remote = noleax::controller::windows::find_remote_module_path(
+        *configuration.target.pid.value, wide_name);
+    if (!remote.has_value()) {
+      custom_hook_resolution_error("custom hook module '" + module + "' is not loaded in process " +
+                                   std::to_string(*configuration.target.pid.value));
+    }
+    return *remote;
+  }
+  const std::filesystem::path base_directory =
+      *configuration.operation.value == noleax::config::Operation::kPatch
+          ? configuration.patch.input.value->parent_path()
+          : configuration.target.path.value->parent_path();
+  std::filesystem::path sibling = base_directory / wide_name;
+  std::error_code error;
+  if (std::filesystem::is_regular_file(sibling, error) && !error) {
+    return sibling;
+  }
+  std::wstring buffer(MAX_PATH, L'\0');
+  const DWORD length = SearchPathW(nullptr, wide_name.c_str(), nullptr,
+                                   static_cast<DWORD>(buffer.size()), buffer.data(), nullptr);
+  if (length != 0U && length < buffer.size()) {
+    buffer.resize(length);
+    return std::filesystem::path{buffer};
+  }
+  custom_hook_resolution_error("cannot locate custom hook module '" + module +
+                               "' beside the target executable or on the search path");
+}
+
+void resolve_custom_hook_pdb_role(noleax::analyzer::OfflineSymbolizer& symbolizer,
+                                  noleax::trace::ModuleId module_id, const std::string& module_name,
+                                  const char* role_name, const std::string& pdb_symbol,
+                                  std::uint64_t& rva_out) {
+  const auto rva = symbolizer.resolve_symbol(module_id, pdb_symbol);
+  if (!rva.has_value()) {
+    custom_hook_resolution_error("custom hook " + std::string{role_name} + " PDB symbol '" +
+                                 pdb_symbol + "' was not found in module '" + module_name +
+                                 "' (missing PDB, no such public symbol, or the function has no "
+                                 "standalone code)");
+  }
+  rva_out = *rva;
+}
+
+[[nodiscard]] noleax::ipc::CustomHookSpec resolve_custom_hook(
+    const noleax::config::Configuration& configuration, const noleax::config::CustomHook& hook) {
+  noleax::ipc::CustomHookSpec spec;
+  spec.module = hook.module;
+  spec.size_arg = hook.size_arg;
+  spec.ptr_arg = hook.ptr_arg;
+  spec.result_arg = hook.result_arg;
+  spec.count_arg = hook.count_arg;
+  spec.free_size_arg = hook.free_size_arg;
+  spec.calloc = hook.kind == noleax::config::CustomHookKind::kCalloc;
+  spec.forced = hook.forced;
+  // Round up so a sub-millisecond wait still polls once (the wait itself is 100 ms-granular).
+  spec.wait_module_ms =
+      static_cast<std::uint64_t>((hook.wait_module.count() + 999'999) / 1'000'000);
+  spec.label = noleax::config::custom_hook_label(hook);
+
+  const auto map_role = [](const noleax::config::CustomHookRole& role) {
+    noleax::ipc::CustomHookRoleSpec mapped;
+    if (role.export_name.has_value()) {
+      mapped.locator = noleax::ipc::CustomHookLocator::kExport;
+      mapped.export_name = *role.export_name;
+    } else if (role.rva.has_value()) {
+      mapped.locator = noleax::ipc::CustomHookLocator::kRva;
+      mapped.rva = *role.rva;
+    }
+    return mapped;
+  };
+  spec.alloc = map_role(hook.alloc);
+  spec.realloc = map_role(hook.realloc);
+  spec.free = map_role(hook.free);
+
+  if (!needs_pdb_resolution(hook)) {
+    return spec;
+  }
+  const std::filesystem::path module_path = locate_custom_hook_module(configuration, hook);
+  const PeImageInfo image = read_pe_image_info(module_path);
+  noleax::analyzer::OfflineSymbolizer symbolizer{make_symbolizer_options(configuration)};
+  noleax::analyzer::SymbolModule symbol_module;
+  symbol_module.module_id = noleax::trace::ModuleId{1U};
+  symbol_module.image_size = image.image_size;
+  symbol_module.image_path = module_path;
+  const noleax::analyzer::SymbolModuleResult registered = symbolizer.register_module(symbol_module);
+  if (registered.status != noleax::analyzer::SymbolModuleStatus::kSymbolsLoaded) {
+    custom_hook_resolution_error(
+        "cannot resolve PDB symbols for custom hook module '" + hook.module +
+        "': " + std::string{noleax::analyzer::symbol_module_status_name(registered.status)});
+  }
+  if (hook.alloc.pdb_symbol.has_value()) {
+    spec.alloc.locator = noleax::ipc::CustomHookLocator::kRva;
+    resolve_custom_hook_pdb_role(symbolizer, symbol_module.module_id, hook.module, "alloc",
+                                 *hook.alloc.pdb_symbol, spec.alloc.rva);
+  }
+  if (hook.realloc.pdb_symbol.has_value()) {
+    spec.realloc.locator = noleax::ipc::CustomHookLocator::kRva;
+    resolve_custom_hook_pdb_role(symbolizer, symbol_module.module_id, hook.module, "realloc",
+                                 *hook.realloc.pdb_symbol, spec.realloc.rva);
+  }
+  if (hook.free.pdb_symbol.has_value()) {
+    spec.free.locator = noleax::ipc::CustomHookLocator::kRva;
+    resolve_custom_hook_pdb_role(symbolizer, symbol_module.module_id, hook.module, "free",
+                                 *hook.free.pdb_symbol, spec.free.rva);
+  }
+  symbolizer.unregister_module(symbol_module.module_id);
+  if (registered.image_identity.has_value()) {
+    spec.image_identity = noleax::ipc::CustomHookImageIdentity{
+        registered.image_identity->timestamp, registered.image_identity->checksum,
+        registered.image_identity->image_size};
+  }
+  return spec;
+}
+
+[[nodiscard]] std::vector<noleax::ipc::CustomHookSpec> resolve_custom_hooks(
+    const noleax::config::Configuration& configuration) {
+  std::vector<noleax::ipc::CustomHookSpec> specs;
+  specs.reserve(configuration.custom_hooks.value.size());
+  for (const auto& hook : configuration.custom_hooks.value) {
+    specs.push_back(resolve_custom_hook(configuration, hook));
+  }
+  return specs;
+}
+
+[[nodiscard]] std::string toml_escaped(std::string_view value) {
+  std::string result;
+  result.reserve(value.size() + 2U);
+  result.push_back('"');
+  for (const char character : value) {
+    if (character == '"' || character == '\\') {
+      result.push_back('\\');
+    }
+    result.push_back(character);
+  }
+  result.push_back('"');
+  return result;
+}
+
+void write_custom_hook_toml(std::ostream& output, const noleax::ipc::CustomHookSpec& hook) {
+  output << "\n[[custom_hooks]]\nmodule = " << toml_escaped(hook.module) << "\n";
+  const auto write_role = [&output](const char* name, const noleax::ipc::CustomHookRoleSpec& role) {
+    if (role.locator == noleax::ipc::CustomHookLocator::kExport) {
+      output << name << " = " << toml_escaped(role.export_name) << "\n";
+    } else if (role.locator == noleax::ipc::CustomHookLocator::kRva) {
+      output << name << "_rva = \"0x" << std::hex << role.rva << std::dec << "\"\n";
+    }
+  };
+  write_role("alloc", hook.alloc);
+  write_role("realloc", hook.realloc);
+  write_role("free", hook.free);
+  if (hook.size_arg != 0U) {
+    output << "size_arg = " << static_cast<std::uint32_t>(hook.size_arg) << "\n";
+  }
+  if (hook.ptr_arg != 0U) {
+    output << "ptr_arg = " << static_cast<std::uint32_t>(hook.ptr_arg) << "\n";
+  }
+  if (hook.result_arg.has_value()) {
+    output << "result_arg = " << static_cast<std::uint32_t>(*hook.result_arg) << "\n";
+  }
+  if (hook.calloc) {
+    output << "kind = \"calloc\"\n";
+  }
+  if (hook.count_arg.has_value()) {
+    output << "count_arg = " << static_cast<std::uint32_t>(*hook.count_arg) << "\n";
+  }
+  if (hook.free_size_arg.has_value()) {
+    output << "free_size_arg = " << static_cast<std::uint32_t>(*hook.free_size_arg) << "\n";
+  }
+  if (hook.forced) {
+    output << "forced = true\n";
+  }
+  if (hook.wait_module_ms != 0U) {
+    output << "wait_module = \"" << hook.wait_module_ms << "ms\"\n";
+  }
+  if (hook.image_identity.has_value()) {
+    output << "image_timestamp = 0x" << std::hex << hook.image_identity->timestamp << "\n"
+           << "image_checksum = 0x" << hook.image_identity->checksum << std::dec << "\n"
+           << "image_size = " << hook.image_identity->image_size << "\n";
+  }
+}
+
+#endif
+
 [[nodiscard]] bool console_color_enabled(const noleax::config::Configuration& configuration,
                                          bool writing_stdout) noexcept {
   if (configuration.diagnostics.color.value == noleax::config::ColorMode::kAlways) {
@@ -515,6 +769,7 @@ class ConsoleControlGuard final {
   capture.start.compression_level = configuration.trace.compression_level.value;
   capture.start.trace_path_utf8 = noleax::config::path_to_utf8(trace_path);
   capture.start.unload_on_stop = configuration.injection.unload_on_stop.value;
+  capture.start.custom_hooks = resolve_custom_hooks(configuration);
   return capture;
 }
 
@@ -582,7 +837,8 @@ void validate_capture_support(const noleax::config::Configuration& configuration
 // bootstrap parameters and the agent records autonomously; --live selects the pipe session.
 
 [[nodiscard]] std::filesystem::path write_agent_session_config(
-    const noleax::config::Configuration& configuration, const std::filesystem::path& trace_path) {
+    const noleax::config::Configuration& configuration, const std::filesystem::path& trace_path,
+    const std::vector<noleax::ipc::CustomHookSpec>& custom_hooks) {
   static std::atomic<std::uint32_t> session_counter{0U};
   const std::uint32_t ordinal = session_counter.fetch_add(1U, std::memory_order_relaxed);
   std::ostringstream name;
@@ -615,6 +871,9 @@ void validate_capture_support(const noleax::config::Configuration& configuration
          << "compression = \""
          << noleax::config::enum_value_name(configuration.trace.compression.value) << "\"\n"
          << "compression_level = " << configuration.trace.compression_level.value << "\n";
+  for (const auto& hook : custom_hooks) {
+    write_custom_hook_toml(output, hook);
+  }
   if (!output) {
     throw ApplicationError{1, "cannot write the agent session configuration '" +
                                   noleax::config::path_to_utf8(config_path) + "'"};
@@ -668,7 +927,8 @@ void remove_quietly(const std::filesystem::path& path) noexcept {
 [[nodiscard]] int execute_agent_capture(
     const noleax::config::Configuration& configuration, const std::filesystem::path& trace_path,
     const noleax::controller::windows::CaptureOptions& capture) {
-  const auto agent_config = write_agent_session_config(configuration, trace_path);
+  const auto agent_config =
+      write_agent_session_config(configuration, trace_path, capture.start.custom_hooks);
   std::uint32_t pid = 0U;
   HANDLE target = nullptr;
   std::optional<noleax::controller::windows::SuspendedProcess> launched;
@@ -805,6 +1065,10 @@ void remove_quietly(const std::filesystem::path& path) noexcept {
   options.verify = configuration.patch.verify.value;
   options.standalone = configuration.patch.standalone.value;
   try {
+    // Standalone baking contract: PDB symbols are resolved against the module image now, and
+    // the resolved configuration (RVAs plus the image identity) is written beside the output.
+    const std::vector<noleax::ipc::CustomHookSpec> custom_hooks =
+        resolve_custom_hooks(configuration);
     const auto result = noleax::controller::windows::patch_pe_image(options);
     std::cout << "patched: input=" << noleax::config::path_to_utf8(options.input)
               << " output=" << noleax::config::path_to_utf8(options.output);
@@ -816,6 +1080,23 @@ void remove_quietly(const std::filesystem::path& path) noexcept {
     }
     if (options.standalone) {
       std::cout << " standalone=1";
+    }
+    if (!custom_hooks.empty()) {
+      const auto agent_config_path = options.output.parent_path() / "noleax-agent.toml";
+      std::ofstream output{agent_config_path, std::ios::binary | std::ios::trunc};
+      if (!output) {
+        throw ApplicationError{1, "cannot create the baked agent configuration '" +
+                                      noleax::config::path_to_utf8(agent_config_path) + "'"};
+      }
+      output << "schema_version = 1\n";
+      for (const auto& hook : custom_hooks) {
+        write_custom_hook_toml(output, hook);
+      }
+      if (!output) {
+        throw ApplicationError{1, "cannot write the baked agent configuration '" +
+                                      noleax::config::path_to_utf8(agent_config_path) + "'"};
+      }
+      std::cout << " agent_config=noleax-agent.toml";
     }
     std::cout << '\n';
     return 0;

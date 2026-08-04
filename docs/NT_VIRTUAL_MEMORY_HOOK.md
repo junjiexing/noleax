@@ -39,7 +39,7 @@ writer 使用 `api_id=6/7`，只为当前进程成功操作分配 `MappingId`：
 
 ## 3. Trace 与分析
 
-为容纳 NT VM 字段，统一 raw event 扩展为 640 bytes；加入 section 字段后当前为 664 bytes。
+为容纳 NT VM 字段，统一 raw event 扩展为 640 bytes；加入 section 字段后当前为 672 bytes。
 `VmAllocateEvent` 的 wire payload 同步增加规范化 generation base/size，完整 record 为 152 bytes。
 `GenerationTracker` 对 commit 视为已有 generation 更新，对 decommit 保持 live，只让 release 结束它。
 

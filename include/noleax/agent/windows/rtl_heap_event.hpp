@@ -47,6 +47,9 @@ struct RtlHeapEvent {
   std::uint32_t tertiary_flags{0U};
   std::uint32_t operation_result{0U};
   std::uint32_t exception_status{0U};
+  // Zero for the built-in hooks (the writer derives the API from the operation); custom symbol
+  // hooks stamp their api_id (>= kCustomHookApiIdBase) here.
+  std::uint32_t api_id{0U};
   RtlHeapEventOperation operation{RtlHeapEventOperation::kAllocate};
   RtlHeapEventStatus status{RtlHeapEventStatus::kFailure};
   std::uint8_t reserved[2]{};
@@ -59,6 +62,6 @@ using RtlHeapEventQueue = BoundedMpscQueue<RtlHeapEvent>;
 
 static_assert(std::is_trivially_copyable_v<RtlHeapEvent>);
 static_assert(std::is_trivially_destructible_v<RtlHeapEvent>);
-static_assert(sizeof(RtlHeapEvent) == 664U);
+static_assert(sizeof(RtlHeapEvent) == 672U);
 
 }  // namespace noleax::agent::windows

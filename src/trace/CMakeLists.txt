@@ -1,5 +1,6 @@
 add_library(noleax-trace STATIC
   completeness.cpp
+  custom_hook.cpp
   event.cpp
   module.cpp
   record_codec.cpp

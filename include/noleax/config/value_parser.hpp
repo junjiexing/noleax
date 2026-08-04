@@ -17,6 +17,8 @@ class ValueParseError final : public std::invalid_argument {
 
 [[nodiscard]] std::uint64_t parse_byte_size(std::string_view input);
 [[nodiscard]] std::chrono::nanoseconds parse_duration(std::string_view input);
+// Parses a nonzero 32-bit RVA: hexadecimal with a 0x prefix or decimal.
+[[nodiscard]] std::uint32_t parse_rva(std::string_view input);
 [[nodiscard]] std::uint64_t parse_unsigned_integer(std::string_view input, std::uint64_t maximum,
                                                    std::string_view value_kind);
 [[nodiscard]] std::int64_t parse_signed_integer(std::string_view input, std::int64_t minimum,

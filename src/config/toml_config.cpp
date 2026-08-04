@@ -246,6 +246,24 @@ template <typename Enum>
   }
 }
 
+[[nodiscard]] std::uint32_t read_rva(const toml::node& node, std::string_view key,
+                                     std::string_view cli_option) {
+  if (const auto integer = node.value<std::int64_t>(); integer.has_value()) {
+    if (*integer <= 0 ||
+        static_cast<std::uint64_t>(*integer) >
+            static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max())) {
+      throw ConfigError{key_error(key, cli_option, "RVA must be a nonzero 32-bit value")};
+    }
+    return static_cast<std::uint32_t>(*integer);
+  }
+  const auto value = read_string(node, key, cli_option);
+  try {
+    return parse_rva(value);
+  } catch (const ValueParseError& error) {
+    throw ConfigError{key_error(key, cli_option, error.what())};
+  }
+}
+
 [[nodiscard]] std::optional<std::filesystem::path> read_optional_path(
     const toml::node& node, std::string_view key, std::string_view cli_option,
     const std::filesystem::path& base_directory) {
@@ -547,6 +565,109 @@ void load_diagnostics(const toml::table& table, ConfigurationOverrides& result) 
   }
 }
 
+void load_custom_hook_role(const toml::table& table, std::string_view role_name,
+                           CustomHookRole& role) {
+  const std::string export_key{role_name};
+  const std::string pdb_key = export_key + "_pdb";
+  const std::string rva_key = export_key + "_rva";
+  const std::string export_full_key = std::string{"custom_hooks."} + export_key;
+  const std::string pdb_full_key = std::string{"custom_hooks."} + pdb_key;
+  const std::string rva_full_key = std::string{"custom_hooks."} + rva_key;
+  if (const auto* node = optional_node(table, export_key)) {
+    role.export_name = read_string(*node, export_full_key, "--custom-hook");
+  }
+  if (const auto* node = optional_node(table, pdb_key)) {
+    role.pdb_symbol = read_string(*node, pdb_full_key, "--custom-hook");
+  }
+  if (const auto* node = optional_node(table, rva_key)) {
+    role.rva = read_rva(*node, rva_full_key, "--custom-hook");
+  }
+}
+
+[[nodiscard]] std::uint8_t read_argument_slot(const toml::node& node, std::string_view key) {
+  return read_integer<std::uint8_t>(node, key, "--custom-hook", 0U, 7U);
+}
+
+[[nodiscard]] CustomHook load_custom_hook(const toml::table& table) {
+  constexpr std::array allowed{
+      "module",          "alloc",          "alloc_pdb", "alloc_rva",     "realloc",  "realloc_pdb",
+      "realloc_rva",     "free",           "free_pdb",  "free_rva",      "size_arg", "ptr_arg",
+      "result_arg",      "kind",           "count_arg", "free_size_arg", "forced",   "wait_module",
+      "image_timestamp", "image_checksum", "image_size"};
+  reject_unknown_keys(table, allowed, "custom_hooks");
+
+  CustomHook hook;
+  if (const auto* node = optional_node(table, "module")) {
+    hook.module = read_string(*node, "custom_hooks.module", "--custom-hook");
+  }
+  load_custom_hook_role(table, "alloc", hook.alloc);
+  load_custom_hook_role(table, "realloc", hook.realloc);
+  load_custom_hook_role(table, "free", hook.free);
+  if (const auto* node = optional_node(table, "size_arg")) {
+    hook.size_arg = read_argument_slot(*node, "custom_hooks.size_arg");
+  }
+  if (const auto* node = optional_node(table, "ptr_arg")) {
+    hook.ptr_arg = read_argument_slot(*node, "custom_hooks.ptr_arg");
+  }
+  if (const auto* node = optional_node(table, "result_arg")) {
+    hook.result_arg = read_argument_slot(*node, "custom_hooks.result_arg");
+  }
+  if (const auto* node = optional_node(table, "kind")) {
+    hook.kind = read_enum<CustomHookKind>(*node, "custom_hooks.kind", "--custom-hook");
+  }
+  if (const auto* node = optional_node(table, "count_arg")) {
+    hook.count_arg = read_argument_slot(*node, "custom_hooks.count_arg");
+  }
+  if (const auto* node = optional_node(table, "free_size_arg")) {
+    hook.free_size_arg = read_argument_slot(*node, "custom_hooks.free_size_arg");
+  }
+  if (const auto* node = optional_node(table, "forced")) {
+    hook.forced = read_boolean(*node, "custom_hooks.forced", "--custom-hook");
+  }
+  if (const auto* node = optional_node(table, "wait_module")) {
+    hook.wait_module = read_duration(*node, "custom_hooks.wait_module", "--custom-hook");
+  }
+  const auto* const timestamp_node = optional_node(table, "image_timestamp");
+  const auto* const checksum_node = optional_node(table, "image_checksum");
+  const auto* const image_size_node = optional_node(table, "image_size");
+  if (timestamp_node != nullptr || checksum_node != nullptr || image_size_node != nullptr) {
+    if (timestamp_node == nullptr || checksum_node == nullptr || image_size_node == nullptr) {
+      throw ConfigError{key_error("custom_hooks.image_timestamp", "--custom-hook",
+                                  "image identity requires image_timestamp, image_checksum, and "
+                                  "image_size together")};
+    }
+    CustomHookImageIdentity identity;
+    identity.timestamp =
+        read_integer<std::uint32_t>(*timestamp_node, "custom_hooks.image_timestamp",
+                                    "--custom-hook", 0U, std::numeric_limits<std::uint32_t>::max());
+    identity.checksum =
+        read_integer<std::uint32_t>(*checksum_node, "custom_hooks.image_checksum", "--custom-hook",
+                                    0U, std::numeric_limits<std::uint32_t>::max());
+    identity.image_size =
+        read_integer<std::uint32_t>(*image_size_node, "custom_hooks.image_size", "--custom-hook",
+                                    0U, std::numeric_limits<std::uint32_t>::max());
+    hook.image_identity = identity;
+  }
+  return hook;
+}
+
+void load_custom_hooks(const toml::node& node, ConfigurationOverrides& result) {
+  const toml::array* const array = node.as_array();
+  if (array == nullptr) {
+    throw ConfigError{key_error("custom_hooks", "--custom-hook", "expected an array of tables")};
+  }
+  std::vector<CustomHook> hooks;
+  hooks.reserve(array->size());
+  for (const auto& element : *array) {
+    const toml::table* const table = element.as_table();
+    if (table == nullptr) {
+      throw ConfigError{key_error("custom_hooks", "--custom-hook", "expected an array of tables")};
+    }
+    hooks.push_back(load_custom_hook(*table));
+  }
+  result.custom_hooks.set(std::move(hooks));
+}
+
 }  // namespace
 
 std::filesystem::path normalize_path(std::string_view input,
@@ -581,9 +702,9 @@ ConfigurationOverrides load_toml_config(const std::filesystem::path& config_path
                       "': " + std::string{error.description()}};
   }
 
-  constexpr std::array root_keys{"schema_version", "operation", "target",     "injection",
-                                 "capture",        "trace",     "analysis",   "filters",
-                                 "symbols",        "patch",     "diagnostics"};
+  constexpr std::array root_keys{"schema_version", "operation", "target",      "injection",
+                                 "capture",        "trace",     "analysis",    "filters",
+                                 "symbols",        "patch",     "diagnostics", "custom_hooks"};
   reject_unknown_keys(root, root_keys, {});
 
   const toml::node* const schema_node = root.get("schema_version");
@@ -628,6 +749,9 @@ ConfigurationOverrides load_toml_config(const std::filesystem::path& config_path
   }
   if (const auto* table = optional_table(root, "diagnostics")) {
     load_diagnostics(*table, result);
+  }
+  if (const auto* node = root.get("custom_hooks")) {
+    load_custom_hooks(*node, result);
   }
   return result;
 }

@@ -151,4 +151,27 @@ bool parse_boolean(std::string_view input) {
   throw ValueParseError{"boolean", input, "expected true or false"};
 }
 
+std::uint32_t parse_rva(std::string_view input) {
+  std::string_view digits = input;
+  int base = 10;
+  if (digits.size() > 2U && digits.front() == '0' && (digits[1U] == 'x' || digits[1U] == 'X')) {
+    base = 16;
+    digits.remove_prefix(2U);
+  }
+  if (digits.empty()) {
+    throw ValueParseError{"RVA", input, "expected a hexadecimal (0x-prefixed) or decimal RVA"};
+  }
+  std::uint64_t value = 0U;
+  const char* const begin = digits.data();
+  const char* const end = begin + digits.size();
+  const auto result = std::from_chars(begin, end, value, base);
+  if (result.ec != std::errc{} || result.ptr != end) {
+    throw ValueParseError{"RVA", input, "expected a hexadecimal (0x-prefixed) or decimal RVA"};
+  }
+  if (value == 0U || value > std::numeric_limits<std::uint32_t>::max()) {
+    throw ValueParseError{"RVA", input, "RVA must be a nonzero 32-bit value"};
+  }
+  return static_cast<std::uint32_t>(value);
+}
+
 }  // namespace noleax::config

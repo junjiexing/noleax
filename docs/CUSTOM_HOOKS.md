@@ -1,6 +1,6 @@
 # Custom Symbol Hook 设计
 
-> 状态:设计定稿,待实现。本文档同时是实施完成后该功能的权威说明。
+> 状态：已实现。本文档是该功能的权威说明；§10 记录实现相对原设计的偏差与细化。
 
 ## 1. 目标
 
@@ -73,7 +73,10 @@ TOML 中的同一声明,此时 PDB 解析仍由写出该配置的 controller 提
 (`alloc_pdb` 等替换为 `alloc_rva`,并记录模块映像 identity)。patched 副本运行时 agent 只读
 RVA。运行期 TOML 中出现未解析的 PDB 符号(env 或手工编写的配置)时 agent 启动直接报错,
 提示经 `noleax patch` 烘焙或改用导出符号/RVA,不静默忽略。安装期先校验记录的映像 identity
-(timestamp/checksum/image size),与运行机器上的模块不一致时报错,不错位 hook。
+(timestamp/checksum/image size),与运行机器上的模块不一致时报错,不错位 hook。注意
+standalone 下 agent 在目标 main 运行前安装,bootstrap stub 会等 agent ready;`wait_module`
+无法等待一个由 main 才加载的模块——此类模块必须由目标静态导入(loader 在入口前加载)或
+由其他先行模块加载。
 
 ## 4. 通用 replacement 与参数映射
 
@@ -163,5 +166,50 @@ CLI.md、CONFIG.md、QUICKSTART.md(示例)、HOOK_API_MATRIX.md §5 更新、TRA
 - **forced 被当常规开关用**:文档明确 forced 仅在 checked 拒绝时评估,且目标序言兼容性由
   用户承担。
 - **DbgHelp 解析在 controller 侧的耗时**:一次性解析,结果烘焙为 RVA;CI 有符号缓存测试覆盖。
+- **wait_module 的轮询盲区**:模块加载到下一次轮询 tick(100ms)之间发生的调用必然错过——
+  这是轮询式等待的固有限制。需要捕获"加载后第一批调用"时,应让目标在加载后给 agent 留出
+  安装窗口(如先 attach 到已加载模块的进程,或目标侧配合停顿)。
+- **wait_module 超时是 capture 级失败**:超时后整个 capture 启动失败并报错(不是静默跳过
+  该 hook 点)。因此预算必须覆盖最坏情况下的模块加载延迟——包括安全软件扫描未签名 DLL 的
+  时间(实测在企业 AV 环境下首次加载可达 25 秒以上),不宜照抄示例值。
 - **PDB 与加载映像不一致**:DbgHelp 按 PDB identity 校验(沿用既有 symbolizer 的 identity
   检查),不匹配即报错而不是错位 hook。
+
+## 10. 实现与设计的差异(最终说明)
+
+按原设计实现时发现的具体化与偏差,均为收敛性决策:
+
+1. **描述符绑定机制**:原设计"replacement 从描述符取上下文,代码一份"。MSVC x64 没有
+   naked function 和 inline asm,无法通过寄存器把描述符交给一份共享代码并在编译器序言之前
+   读取。实现为:三个角色各一个**通用实现函数**(`custom_alloc_impl`/`custom_realloc_impl`/
+   `custom_free_impl`,逻辑一份,`__declspec(noinline)`),外加**固定的每点锚定 thunk 池**
+   (32 点 × 3 角色,宏展开):thunk 以 `slot*` 为显式参数尾调实现函数。thunk 与实现函数
+   都编入 `.nlxhk`,rendezvous 语义不变——生命周期计数在实现函数首语句生效,thunk 与被调
+   实现的序言都处于 rendezvous 覆盖的"未计数窗口"。这保留设计意图(逻辑一份、状态按点),
+   代价是每点两条指令的固定锚点。相应地声明上限为 **每次捕获 32 个 hook 点**(原设计未
+   设上限),配置/IPC 两侧均校验。slot 单调分配、不回收,放弃 teardown 时按内建 adapter 同
+   款策略滞留以保安全。
+2. **replacement 读取参数的方式**:x64 ABI 下通用 replacement 声明 8 个指针参数
+   (`PVOID a0..a7`),参数位 0–3 自然落在 rcx/rdx/r8/r9,4–7 落在入口栈槽,与设计的映射
+   表一致;free/realloc 的 rax 原样透传回调用方。`result_arg` 在 original 返回后读取
+   `*(void**)argN`。
+3. **IPC 元素的字段构成**:按 §5 的要素实现(module、三角色定位与启用位、参数位、
+   forced、wait_module_ms、label),其中定位携带导出名或 RVA 之一(agent 侧才能解析导出
+   表);另增加 image_identity 可选字段(原 §5 未列):standalone 烘焙合同要求的
+   timestamp/checksum/image size 校验因此能统一作用于 live(IPC)与 standalone(TOML)
+   两条路;live 路径下 controller 解析 PDB 时也一并下发 identity。ABI 已按要求 2→3。
+4. **free_size_arg 的记账**:参数映射、校验、replacement 取值均已接线,size 随原始事件携带;
+   但当前 trace 的 FreeEvent 没有 size 字段,值不落盘,分析侧记账仍按 generation。若后续
+   需要按 free-size 记账,需在 trace 层再加一个 minor 扩展。
+5. **label 取值**:按 alloc 角色的符号名(或 `module+0x<rva>`)生成;同一 hook 点的
+   alloc/realloc/free 事件共享该 api_id 与 label,与原设计"每 hook 点一个 api_id"一致。
+   烘焙后的 standalone 配置中 PDB 定位已替换为 RVA,agent 侧 label 相应为
+   `module+0x<rva>` 形式;live 路径(label 在 controller 侧按原始声明生成并随 IPC 下发)
+   保留符号名。
+6. **agent 侧模块定位**:导出名在 agent 内经只读 PE 导出表解析(forwarded export 明确
+   报错);RVA 定位在安装期校验落在可执行节内;identity 不一致、模块缺失、导出缺失、
+   PDB 未解析(standalone TOML 中出现 `_pdb`)都以明确错误使捕获启动失败(controller
+   侧退出码 3),agent 并把启动失败作为 ErrorResponse 回报,controller 不再只看到管道
+   断开。
+7. **api_id 命名解析顺序**:内建注册表 → trace 内 CustomHookDefinition → `api-<id>` 兜底,
+   与老 minor reader 跳过该记录并显示兜底名的兼容语义一致。

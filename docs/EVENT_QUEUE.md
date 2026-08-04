@@ -60,12 +60,13 @@ tick_range = absent
 
 ## 4. Windows 原始事件
 
-统一 in-process event 固定为 664 bytes，并加入 section handle、offset、commit size 和第三组 flags，包含：
+统一 in-process event 固定为 672 bytes，并加入 section handle、offset、commit size 和第三组 flags，包含：
 
 - queue sequence；
 - QueryPerformanceCounter ticks；
 - thread id；
 - create/allocate/reallocate/free/destroy/VM allocate/VM free operation；
+- api id（内建 hook 为 0，由 writer 按 operation 推导；custom symbol hook 直接携带自己的 api_id）；
 - heap handle、flags、requested size/address、create lock/parameters；
 - NT VM target PID、调用前后 base/size、zero bits、protection/free type 和规范化 mapping base/size；
 - result address、raw BOOLEAN result 和 success/failure/exception；

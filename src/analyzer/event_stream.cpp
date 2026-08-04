@@ -190,17 +190,27 @@ class EventStreamDecoder {
   void process_metadata(std::span<const std::byte> payload) {
     noleax::trace::RecordCursor cursor{payload, maximum_record_size_};
     std::optional<noleax::trace::CaptureScope> decoded_scope;
+    std::vector<noleax::trace::CustomHookDefinition> decoded_custom_hooks;
     bool skipped_unknown = false;
     while (const auto record = cursor.next()) {
       auto scope = noleax::trace::decode_capture_scope_record(*record);
-      if (!scope.has_value()) {
-        skipped_unknown = true;
+      if (scope.has_value()) {
+        if (decoded_scope.has_value() || capture_scope_.has_value()) {
+          throw TraceAnalysisError{"trace contains more than one CaptureScope record"};
+        }
+        decoded_scope = *scope;
         continue;
       }
-      if (decoded_scope.has_value() || capture_scope_.has_value()) {
-        throw TraceAnalysisError{"trace contains more than one CaptureScope record"};
+      auto custom_hook = noleax::trace::decode_custom_hook_definition_record(*record);
+      if (custom_hook.has_value()) {
+        if (custom_hook_api_ids_.contains(custom_hook->api_id)) {
+          throw TraceAnalysisError{"trace contains a duplicate CustomHookDefinition api_id"};
+        }
+        custom_hook_api_ids_.insert(custom_hook->api_id);
+        decoded_custom_hooks.push_back(std::move(*custom_hook));
+        continue;
       }
-      decoded_scope = *scope;
+      skipped_unknown = true;
     }
 
     if (decoded_scope.has_value()) {
@@ -213,6 +223,12 @@ class EventStreamDecoder {
     }
     if (skipped_unknown) {
       mark_unknown_record_skipped();
+    }
+    for (const auto& definition : decoded_custom_hooks) {
+      result_.custom_hooks.push_back(definition);
+      if (callbacks_.on_custom_hook_definition) {
+        callbacks_.on_custom_hook_definition(definition);
+      }
     }
   }
 
@@ -599,6 +615,7 @@ class EventStreamDecoder {
   EventStreamResult result_;
   std::optional<noleax::trace::CaptureScope> capture_scope_;
   std::optional<noleax::trace::CompletenessTracker> completeness_;
+  std::unordered_set<noleax::trace::ApiId> custom_hook_api_ids_;
   std::unordered_map<noleax::trace::ApiId, std::uint64_t> events_per_api_;
   std::unordered_map<std::uint64_t, ModuleState> module_states_;
   std::map<std::uint64_t, std::uint64_t> live_modules_;

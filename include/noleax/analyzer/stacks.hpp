@@ -13,6 +13,7 @@
 #include "noleax/analyzer/filter.hpp"
 #include "noleax/analyzer/outstanding.hpp"
 #include "noleax/analyzer/window.hpp"
+#include "noleax/trace/custom_hook.hpp"
 #include "noleax/trace/event.hpp"
 #include "noleax/trace/identifiers.hpp"
 
@@ -49,7 +50,8 @@ struct StacksWindow {
 
 // Canonical API names for the ids aggregated in a group, in first-seen order.
 [[nodiscard]] std::vector<std::string> group_api_names(
-    std::span<const noleax::trace::ApiId> api_ids);
+    std::span<const noleax::trace::ApiId> api_ids,
+    std::span<const noleax::trace::CustomHookDefinition> custom_hooks = {});
 
 struct EventsStacksGroup {
   noleax::trace::StackId stack_id;

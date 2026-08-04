@@ -34,7 +34,7 @@ V1 固定头为 68 bytes，位于文件起始位置：
 | 0 | magic | byte[8] | ASCII `NLXTRACE` |
 | 8 | header_size | uint16 | 68 |
 | 10 | format_major | uint16 | 1 |
-| 12 | format_minor | uint16 | 0 |
+| 12 | format_minor | uint16 | 1 |
 | 14 | byte_order | uint8 | little=1、big=2；V1 writer 写 1 |
 | 15 | pointer_width | uint8 | 4 或 8 |
 | 16 | platform | uint16 | unknown=0、windows=1、linux=2、macos=3 |
@@ -106,7 +106,7 @@ record_version=1：
 
 | chunk | record_type |
 |---|---|
-| metadata | CaptureScope=1 |
+| metadata | CaptureScope=1、CustomHookDefinition=2（minor 1 起） |
 | stack | StackDefinition=1 |
 | event | HeapCreate=1、HeapDestroy=2、Allocate=3、Reallocate=4、Free=5 |
 | event | VmAllocate=6、VmFree=7、Map=8、Unmap=9、Loss=10 |
@@ -138,6 +138,14 @@ ID 只在一个 session 中有意义。
 首个可编码 metadata record 为 CaptureScope。payload 固定 8 bytes：
 started_at_process_start uint8、preexisting_allocations_unknown uint8、reserved byte[6]。
 两个布尔值只接受 0/1；process-start capture 不得同时声明 preexisting allocations unknown。
+
+format minor 1 增加 CustomHookDefinition(record_type=2)，为每个 custom symbol hook 点记录
+展示名。payload:api_id uint32、module_name_size uint32、label_size uint32、reserved uint32(0),
+随后是 module_name 和 label 的 UTF-8 bytes(不带 NUL)。api_id 从 0x1000 起按声明顺序分配;
+label 是符号名或 `module+0x<rva>`。该记录在对应 hook 点的首个事件之前写出,通常与
+CaptureScope 位于同一 metadata chunk。老 minor reader 将其按未知 record 跳过;新 reader 用
+它把 custom api_id 解析为真实名称。custom hook 点的 allocation_id 按
+`(api_id << 40) | counter` 合成,counter 每点从 1 递增,不与内建 allocation id 冲突。
 
 ### 7.1 ProcessInfo
 
