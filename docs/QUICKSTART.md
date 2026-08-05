@@ -133,7 +133,8 @@ leaks 模式选择在半开区间 `[from,to)` 内发生的 allocation/reallocati
 
 ## 6. 使用 TOML
 
-[../examples](../examples) 提供 run、events 和 outstanding 三份配置。功能设置的优先级始终是：
+[../examples](../examples) 提供 run（NT Heap 与 custom hooks 两份）、events 和 outstanding
+四份配置。功能设置的优先级始终是：
 
 ~~~text
 built-in defaults < TOML < command line

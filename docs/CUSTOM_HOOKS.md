@@ -134,7 +134,8 @@ adapter 基础设施;uninstall/reinstall/unload-on-stop 与内置 hook 行为一
 - `EventMetadata.api_name/api_module`、`--api` 过滤、stacks 聚合 apis 展示全部自然扩展到自定义
   名称。
 - **StartCaptureRequest** 增加 `custom_hooks` 数组(每元素:module、三个角色的 RVA 与启用位、
-  size_arg、ptr_arg、forced、wait_module_ms、label),IPC 字段级编码,`kAgentAbiVersion` 2 → 3。
+  size_arg、ptr_arg、forced、wait_module_ms、label),IPC 字段级编码,`kAgentAbiVersion` 2 → 3
+  (该 bump 由本特性引入;当前 ABI 版本以 [IPC_PROTOCOL.md](IPC_PROTOCOL.md) 为准)。
 
 ## 6. 配置校验
 

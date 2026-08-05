@@ -218,9 +218,6 @@ noleax patch --input INPUT --output OUTPUT [options]
 - patch 会改变文件哈希并通常破坏签名；agent DLL（--agent-name）需与产物同目录部署。
 
 已实现，完整边界见 [STATIC_PE_PATCH.md](STATIC_PE_PATCH.md)。
-- patch 会改变文件哈希并通常破坏签名；agent DLL（--agent-name）需与产物同目录部署。
-
-已实现，完整边界见 [STATIC_PE_PATCH.md](STATIC_PE_PATCH.md)。
 
 ## 8. analyze
 
