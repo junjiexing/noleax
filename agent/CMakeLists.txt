@@ -7,6 +7,7 @@ add_library(noleax-hook-backend STATIC
 if(WIN32)
   target_sources(noleax-hook-backend PRIVATE
     windows/custom_symbol_hooks.cpp
+    windows/memory_snapshot.cpp
     windows/module_tracker.cpp
     windows/nt_memory_hooks.cpp
     windows/rtl_allocate_heap_hook.cpp

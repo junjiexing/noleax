@@ -19,6 +19,8 @@ max_stack_depth = 64 # source: default
 min_size = "0B" # source: default
 duration = "" # source: default
 live = false # source: default
+memory_counters_interval = "1s" # source: default
+memory_map_interval = "1s" # source: default
 
 [trace]
 path = "" # source: default

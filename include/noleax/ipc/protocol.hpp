@@ -154,6 +154,9 @@ struct StartCaptureRequest {
   std::uint64_t buffer_size{16U * 1024U * 1024U};
   std::uint64_t maximum_trace_size{256U * 1024U * 1024U};
   std::uint64_t flush_interval_ns{250U * 1000U * 1000U};
+  // Periodic memory snapshot intervals; 0 disables that sampler.
+  std::uint64_t memory_counters_interval_ns{1'000U * 1000U * 1000U};
+  std::uint64_t memory_map_interval_ns{1'000U * 1000U * 1000U};
   std::int32_t compression_level{0};
   std::string trace_path_utf8;
   // Unload the agent module from the target after the capture finalizes (attach).

@@ -91,6 +91,8 @@ Configuration make_default_configuration() {
   configuration.capture.max_stack_depth.value = 64U;
   configuration.capture.min_size.value = 0U;
   configuration.capture.live.value = false;
+  configuration.capture.memory_counters_interval.value = 1s;
+  configuration.capture.memory_map_interval.value = 1s;
 
   configuration.trace.buffer_size.value = 16U * 1024U * 1024U;
   configuration.trace.max_file_size.value = 256U * 1024U * 1024U;
@@ -146,6 +148,10 @@ void apply_overrides(Configuration& configuration, const ConfigurationOverrides&
   apply_override(configuration.capture.min_size, overrides.capture.min_size, source);
   apply_override(configuration.capture.duration, overrides.capture.duration, source);
   apply_override(configuration.capture.live, overrides.capture.live, source);
+  apply_override(configuration.capture.memory_counters_interval,
+                 overrides.capture.memory_counters_interval, source);
+  apply_override(configuration.capture.memory_map_interval, overrides.capture.memory_map_interval,
+                 source);
 
   apply_override(configuration.trace.path, overrides.trace.path, source);
   apply_override(configuration.trace.buffer_size, overrides.trace.buffer_size, source);

@@ -15,6 +15,7 @@
 
 #include "noleax/trace/completeness.hpp"
 #include "noleax/trace/event.hpp"
+#include "noleax/trace/memory_snapshot.hpp"
 #include "noleax/trace/module.hpp"
 #include "noleax/trace/record_codec.hpp"
 #include "noleax/trace/stack.hpp"
@@ -174,6 +175,10 @@ class EventStreamDecoder {
         break;
       case noleax::trace::ChunkType::kEvent:
         process_events(descriptor, chunk.payload);
+        break;
+      case noleax::trace::ChunkType::kMemory:
+        require_empty_sequence_range(descriptor);
+        process_memory(chunk.payload);
         break;
       case noleax::trace::ChunkType::kStatistics:
         require_empty_sequence_range(descriptor);
@@ -455,6 +460,56 @@ class EventStreamDecoder {
     }
   }
 
+  void process_memory(std::span<const std::byte> payload) {
+    require_capture_scope("memory record appears before CaptureScope");
+    noleax::trace::RecordCursor cursor{payload, maximum_record_size_};
+    std::vector<noleax::trace::MemoryCounters> counters_records;
+    std::vector<noleax::trace::MemoryMap> map_records;
+    bool skipped_unknown = false;
+    std::uint64_t previous_ticks = previous_memory_ticks_;
+    while (const auto record = cursor.next()) {
+      if (auto counters = noleax::trace::decode_memory_counters_record(*record)) {
+        if (counters->monotonic_ticks < result_.file_header.monotonic_origin) {
+          throw TraceAnalysisError{"memory counters monotonic time precedes the trace origin"};
+        }
+        if (counters->monotonic_ticks < previous_ticks) {
+          throw TraceAnalysisError{"memory record monotonic ticks move backwards"};
+        }
+        previous_ticks = counters->monotonic_ticks;
+        counters_records.push_back(*counters);
+        continue;
+      }
+      if (auto map = noleax::trace::decode_memory_map_record(*record)) {
+        if (map->monotonic_ticks < result_.file_header.monotonic_origin) {
+          throw TraceAnalysisError{"memory map monotonic time precedes the trace origin"};
+        }
+        if (map->monotonic_ticks < previous_ticks) {
+          throw TraceAnalysisError{"memory record monotonic ticks move backwards"};
+        }
+        previous_ticks = map->monotonic_ticks;
+        map_records.push_back(std::move(*map));
+        continue;
+      }
+      skipped_unknown = true;
+    }
+    if (skipped_unknown) {
+      mark_unknown_record_skipped();
+    }
+    previous_memory_ticks_ = previous_ticks;
+    for (const auto& counters : counters_records) {
+      checked_increment(result_.memory_counters_count, "memory counters");
+      if (callbacks_.on_memory_counters) {
+        callbacks_.on_memory_counters(counters);
+      }
+    }
+    for (const auto& map : map_records) {
+      checked_increment(result_.memory_map_count, "memory map");
+      if (callbacks_.on_memory_map) {
+        callbacks_.on_memory_map(map);
+      }
+    }
+  }
+
   void process_statistics(std::span<const std::byte> payload) {
     require_capture_scope("CaptureStatistics appears before CaptureScope");
     noleax::trace::RecordCursor cursor{payload, maximum_record_size_};
@@ -623,6 +678,7 @@ class EventStreamDecoder {
   std::uint64_t previous_module_ticks_{0};
   std::uint64_t previous_event_sequence_{0};
   std::uint64_t previous_event_ticks_{0};
+  std::uint64_t previous_memory_ticks_{0};
   bool saw_event_{false};
   bool saw_end_chunk_{false};
   bool may_have_unknown_events_{false};

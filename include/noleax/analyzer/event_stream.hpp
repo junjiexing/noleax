@@ -9,6 +9,7 @@
 #include "noleax/trace/completeness.hpp"
 #include "noleax/trace/custom_hook.hpp"
 #include "noleax/trace/event.hpp"
+#include "noleax/trace/memory_snapshot.hpp"
 #include "noleax/trace/module.hpp"
 #include "noleax/trace/stack.hpp"
 #include "noleax/trace/trace_reader.hpp"
@@ -30,6 +31,8 @@ struct EventStreamCallbacks {
   std::function<void(const noleax::trace::StackDefinition&)> on_stack_definition;
   std::function<void(const noleax::trace::Event&)> on_event;
   std::function<void(const noleax::trace::LossRecord&)> on_loss;
+  std::function<void(const noleax::trace::MemoryCounters&)> on_memory_counters;
+  std::function<void(const noleax::trace::MemoryMap&)> on_memory_map;
   std::function<void(const noleax::trace::CaptureStatistics&)> on_statistics;
   std::function<void(const noleax::trace::EndOfTrace&)> on_end_of_trace;
 };
@@ -48,6 +51,8 @@ struct EventStreamResult {
   std::uint64_t module_unload_count{0};
   std::uint64_t stack_definition_count{0};
   std::uint64_t loss_record_count{0};
+  std::uint64_t memory_counters_count{0};
+  std::uint64_t memory_map_count{0};
   std::uint64_t bytes_read{0};
   bool truncated{false};
   bool partially_understood{false};

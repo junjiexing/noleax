@@ -361,6 +361,128 @@ int main(int argc, char* argv[]) {
       throw std::runtime_error{"leak stacks analysis did not aggregate the surviving allocation"};
     }
 
+    // Memory snapshot mode: a short capture with a fast counters interval and the map sampler
+    // disabled, analyzed in all three formats through the standalone (session TOML) path.
+    const auto memory_trace = output_directory / "cli-memory.nlx";
+    const auto memory_marker = output_directory / "cli-memory.ready";
+    const auto memory_console = output_directory / "cli-memory.txt";
+    const auto memory_json = output_directory / "cli-memory.json";
+    const auto memory_windowed_json = output_directory / "cli-memory-windowed.json";
+    const auto memory_csv = output_directory / "cli-memory.csv";
+    for (const auto& path : {memory_trace, memory_marker, memory_console, memory_json,
+                             memory_windowed_json, memory_csv}) {
+      remove_file(path);
+    }
+    const ChildResult memory_run = run_child(noleax,
+                                             {"run",
+                                              "--agent",
+                                              utf8_path(agent),
+                                              "--trace",
+                                              utf8_path(memory_trace),
+                                              "--capture-duration",
+                                              "900ms",
+                                              "--memory-counters-interval",
+                                              "100ms",
+                                              "--memory-map-interval",
+                                              "0s",
+                                              "--hook-profile",
+                                              "windows-nt-heap",
+                                              "--compression",
+                                              "none",
+                                              "--",
+                                              utf8_path(target),
+                                              utf8_path(memory_marker),
+                                              "1800",
+                                              "launch"},
+                                             run_log);
+    if (!analysis_completed(memory_run.exit_code) ||
+        memory_run.log.find("capture finalized:") == std::string::npos ||
+        !wait_for_marker(memory_marker, "ready=1", 2s)) {
+      throw std::runtime_error{"noleax run with memory snapshot options failed: " + memory_run.log};
+    }
+    wait_for_pid(marker_pid(memory_marker));
+
+    const ChildResult memory_console_run =
+        run_child(noleax,
+                  {"analyze", "--mode", "memory", "--format", "console", "--output",
+                   utf8_path(memory_console), utf8_path(memory_trace)},
+                  run_log);
+    const std::string memory_console_text = read_file(memory_console);
+    if (!analysis_completed(memory_console_run.exit_code) ||
+        memory_console_text.find("noleax memory") == std::string::npos ||
+        memory_console_text.find("working-set=") == std::string::npos ||
+        memory_console_text.find("peaks:") == std::string::npos) {
+      throw std::runtime_error{"memory console analysis omitted the snapshot time series"};
+    }
+
+    const ChildResult memory_json_run =
+        run_child(noleax,
+                  {"analyze", "--mode", "memory", "--format", "json", "--output",
+                   utf8_path(memory_json), utf8_path(memory_trace)},
+                  run_log);
+    const auto memory_document = noleax::testing::parse_json(read_file(memory_json));
+    const auto& memory_snapshots = memory_document.at("snapshots").array_items();
+    if (!analysis_completed(memory_json_run.exit_code) ||
+        memory_document.at("mode").scalar() != "memory" ||
+        memory_document.at("schema_version").unsigned_value() != 3U ||
+        memory_snapshots.size() < 3U) {
+      throw std::runtime_error{"memory JSON analysis did not list the periodic counters"};
+    }
+    for (const auto& snapshot : memory_snapshots) {
+      if (!snapshot.contains("counters") || snapshot.contains("map") ||
+          snapshot.at("counters").at("working_set_bytes").unsigned_value() == 0U) {
+        throw std::runtime_error{"memory JSON snapshot shape does not match the sampler selection"};
+      }
+    }
+    if (memory_document.at("summary").at("map_snapshots").unsigned_value() != 0U) {
+      throw std::runtime_error{"memory JSON listed map snapshots for a disabled sampler"};
+    }
+
+    const ChildResult memory_windowed_run = run_child(
+        noleax,
+        {"analyze", "--mode", "memory", "--format", "json", "--output",
+         utf8_path(memory_windowed_json), "--from",
+         std::to_string(memory_snapshots.at(1U).at("relative_time_ns").signed_value()) + "ns",
+         "--to",
+         std::to_string(memory_snapshots.back().at("relative_time_ns").signed_value()) + "ns",
+         utf8_path(memory_trace)},
+        run_log);
+    const auto memory_windowed = noleax::testing::parse_json(read_file(memory_windowed_json));
+    const auto& windowed_snapshots = memory_windowed.at("snapshots").array_items();
+    const auto window_from = memory_snapshots.at(1U).at("relative_time_ns").signed_value();
+    const auto window_to = memory_snapshots.back().at("relative_time_ns").signed_value();
+    // [from, to) drops exactly the first and the last snapshot of the full series.
+    if (!analysis_completed(memory_windowed_run.exit_code) ||
+        windowed_snapshots.size() + 2U != memory_snapshots.size()) {
+      throw std::runtime_error{"memory time window produced an inconsistent snapshot series"};
+    }
+    for (const auto& snapshot : windowed_snapshots) {
+      const auto relative_ns = snapshot.at("relative_time_ns").signed_value();
+      if (relative_ns < window_from || relative_ns >= window_to) {
+        throw std::runtime_error{"memory time window did not filter the snapshot series"};
+      }
+    }
+
+    const ChildResult memory_csv_run =
+        run_child(noleax,
+                  {"analyze", "--mode", "memory", "--format", "csv", "--output",
+                   utf8_path(memory_csv), utf8_path(memory_trace)},
+                  run_log);
+    const auto memory_table = noleax::testing::parse_csv(read_file(memory_csv));
+    if (!analysis_completed(memory_csv_run.exit_code) ||
+        memory_table.rows.size() != memory_snapshots.size() ||
+        memory_table.at(0U, "working_set_bytes").empty() ||
+        !memory_table.at(0U, "committed_bytes").empty()) {
+      throw std::runtime_error{"memory CSV analysis did not emit one row per snapshot"};
+    }
+
+    const ChildResult memory_sequence = run_child(
+        noleax, {"analyze", "--mode", "memory", "--from", "#5", utf8_path(memory_trace)}, run_log);
+    if (memory_sequence.exit_code != 1U ||
+        memory_sequence.log.find("#sequence") == std::string::npos) {
+      throw std::runtime_error{"memory mode did not reject a sequence window"};
+    }
+
     const auto attach_trace = output_directory / "cli-attach.nlx";
     const auto attach_marker = output_directory / "cli-attach.ready";
     const auto attach_log = output_directory / "cli-attach.log";
@@ -569,7 +691,7 @@ int main(int argc, char* argv[]) {
     }
 
     std::cout << "status=ok run=1 attach=1 hijack=1 entrypoint=1 patch=1 static=1 agent=1 "
-                 "outstanding=1 console=1 json=1 csv=1 stacks=1 seqwindow=1 errors=1\n";
+                 "outstanding=1 console=1 json=1 csv=1 stacks=1 seqwindow=1 memory=1 errors=1\n";
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "status=error message=" << error.what() << '\n';

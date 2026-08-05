@@ -16,7 +16,7 @@ inline constexpr std::array<std::byte, 8> kTraceMagic{
     std::byte{'R'}, std::byte{'A'}, std::byte{'C'}, std::byte{'E'},
 };
 inline constexpr std::uint16_t kTraceFormatMajor = 1;
-inline constexpr std::uint16_t kTraceFormatMinor = 1;
+inline constexpr std::uint16_t kTraceFormatMinor = 2;
 inline constexpr std::uint16_t kFileHeaderSize = 68;
 inline constexpr std::uint16_t kChunkHeaderSize = 56;
 inline constexpr std::uint32_t kRecordHeaderSize = 8;
@@ -50,6 +50,7 @@ enum class ChunkType : std::uint16_t {  // NOLINT(performance-enum-size)
   kEvent = 4,
   kStatistics = 5,
   kEnd = 6,
+  kMemory = 7,
 };
 
 enum class CompressionCodec : std::uint8_t {

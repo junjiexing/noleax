@@ -119,6 +119,17 @@ absolute_address|module|module_offset|symbol|symbol_offset
 写为 `\n`、`\r`、`\t`，其他 ASCII 控制字符写为 `\xHH`。缺失的 frame 子字段为空。这个子格式
 先完成自身转义，再作为整体按标准 CSV 规则引用。
 
+## 5.2 memory 表
+
+`--mode memory` 的 CSV 是独立的扁平时间序列表（不带 `csv_schema_version` 列，区域明细只进
+JSON）。每个采样 tick 一行，列为：
+
+`time_ns, working_set_bytes, peak_working_set_bytes, private_bytes, commit_bytes, committed_bytes,
+reserved_bytes, free_bytes, largest_free_bytes, region_count, truncated`
+
+`time_ns` 为相对 trace 起点的纳秒数；前四列来自计数器采样，后六列来自 map 采样。该 tick 未到期的
+采样器对应列留空；`truncated` 只在有 map 采样时填写 `true`/`false`。该表不写 summary 行。
+
 ## 6. 测试验证
 
 自动测试冻结两种 header 的完整字段顺序，并覆盖 Event/Loss/summary、九类 payload、outstanding

@@ -5,6 +5,7 @@
 #include <stdexcept>
 
 #include "noleax/analyzer/filter.hpp"
+#include "noleax/analyzer/memory.hpp"
 #include "noleax/analyzer/outstanding.hpp"
 #include "noleax/analyzer/presentation.hpp"
 #include "noleax/analyzer/stacks.hpp"
@@ -14,7 +15,7 @@
 
 namespace noleax::analyzer {
 
-inline constexpr std::uint32_t kAnalysisJsonSchemaVersion = 2U;
+inline constexpr std::uint32_t kAnalysisJsonSchemaVersion = 3U;
 
 class JsonFormatError final : public std::runtime_error {
  public:
@@ -43,6 +44,8 @@ class JsonWriter {
                           const EventPresentationResolver& resolver = {});
   void write_leak_stacks(const LeaksStacksResult& result, const AnalysisFilter& filter,
                          const EventPresentationResolver& resolver = {});
+
+  void write_memory(const MemoryAnalysisResult& result);
 
  private:
   enum class State : std::uint8_t {
@@ -95,5 +98,9 @@ class JsonWriter {
     const AnalysisFilter& filter, const EventMetadataResolver& filter_resolver = {},
     const EventPresentationResolver& presentation_resolver = {},
     EventStreamOptions stream_options = {});
+
+[[nodiscard]] MemoryAnalysisResult analyze_memory_to_json(std::istream& input, std::ostream& output,
+                                                          MemoryWindow window,
+                                                          EventStreamOptions stream_options = {});
 
 }  // namespace noleax::analyzer

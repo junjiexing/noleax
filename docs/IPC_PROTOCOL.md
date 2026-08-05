@@ -17,7 +17,7 @@ decoder 必须消费完整输入，拒绝截断和尾随数据。
 | 消息 | 方向 | 用途 |
 |---|---|---|
 | `AgentHello` | agent → controller | ABI、PID、worker TID、架构和 session token |
-| `StartCapture` | controller → agent | profile、栈深、过滤、buffer、trace、压缩配置和 custom_hooks |
+| `StartCapture` | controller → agent | profile、栈深、过滤、buffer、trace、压缩配置、内存快照间隔和 custom_hooks |
 | `CaptureReady` | agent → controller | hook 与 writer 已 ready |
 | `QueryStatus` / `CaptureStatus` | controller ↔ agent | 生命周期和守恒计数 |
 | `StopCapture` / `CaptureDrained` | controller ↔ agent | 逻辑停录与 writer final drain |
@@ -32,6 +32,10 @@ agent worker 外的目标线程，最后才允许物理卸载 hook。
 标志、wait_module_ms、三个角色的定位（none/export/RVA + export 名或 RVA）、module 与 label
 字符串，以及可选的烘焙映像 identity（timestamp/checksum/image size）。该数组自 ABI 3 起存在；
 声明非法（缺 alloc/free、定位冲突、参数位越界、count 超限）在编解码两侧均被拒绝。
+
+ABI 4 在 `flush_interval_ns` 之后为 `StartCapture` 增加 `memory_counters_interval_ns` 与
+`memory_map_interval_ns` 两个 uint64 字段：agent 按各自间隔在 writer 线程采样内存计数器与
+虚拟内存 map（0 表示关闭对应采样器）。
 
 ## 3. 传输和安全边界
 

@@ -5,6 +5,7 @@ add_library(noleax-analyzer STATIC
   filter.cpp
   generation_tracker.cpp
   json.cpp
+  memory.cpp
   outstanding.cpp
   stacks.cpp
   symbol_listing.cpp

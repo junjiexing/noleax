@@ -307,6 +307,21 @@ void checked_increment(std::uint64_t& value, const char* subject) {
   ++value;
 }
 
+// Peak value of one snapshot field and the first sampling tick that reached it.
+struct MemoryPeak {
+  std::uint64_t value{0U};
+  std::uint64_t ticks{0U};
+  bool seen{false};
+
+  void include(std::uint64_t candidate, std::uint64_t at_ticks) noexcept {
+    if (!seen || candidate > value) {
+      value = candidate;
+      ticks = at_ticks;
+      seen = true;
+    }
+  }
+};
+
 struct IssueDescription {
   noleax::trace::CompletenessIssue issue;
   std::string_view name;
@@ -570,6 +585,82 @@ void ConsoleWriter::write_leak_stacks(const LeaksStacksResult& result,
           << "  calls: " << total_calls << '\n'
           << "  bytes: " << total_bytes << '\n';
   write_common_summary(outstanding.trace);
+  state_ = State::kFinished;
+  ensure_output();
+}
+
+void ConsoleWriter::write_memory(const MemoryAnalysisResult& result) {
+  require_state(State::kReady, "write memory report");
+  header_ = result.trace.file_header;
+  capture_scope_ = result.trace.capture_scope;
+  write_preamble("noleax memory", *header_, *capture_scope_);
+  output_ << "window: [" << window_bound_text(result.window.from) << ", ";
+  if (result.window.to.has_value()) {
+    output_ << window_bound_text(*result.window.to);
+  } else {
+    output_ << "trace-end";
+  }
+  output_ << ")\nsnapshots:\n";
+  if (result.snapshots.empty()) {
+    output_ << "  none\n";
+  }
+
+  MemoryPeak working_set;
+  MemoryPeak private_bytes;
+  MemoryPeak commit_bytes;
+  MemoryPeak committed_bytes;
+  MemoryPeak reserved_bytes;
+  std::uint64_t counters_count = 0U;
+  std::uint64_t map_count = 0U;
+  for (const MemorySnapshot& snapshot : result.snapshots) {
+    output_ << "  " << relative_time(snapshot.monotonic_ticks, *header_);
+    if (snapshot.counters.has_value()) {
+      const auto& counters = *snapshot.counters;
+      output_ << " working-set=" << counters.working_set_bytes
+              << "B peak-working-set=" << counters.peak_working_set_bytes
+              << "B private=" << counters.private_bytes << "B commit=" << counters.commit_bytes
+              << "B";
+      working_set.include(counters.working_set_bytes, snapshot.monotonic_ticks);
+      private_bytes.include(counters.private_bytes, snapshot.monotonic_ticks);
+      commit_bytes.include(counters.commit_bytes, snapshot.monotonic_ticks);
+      checked_increment(counters_count, "counters snapshot");
+    }
+    if (snapshot.map.has_value()) {
+      const auto& map = *snapshot.map;
+      output_ << " committed=" << map.committed_bytes << "B reserved=" << map.reserved_bytes
+              << "B free=" << map.free_bytes << "B largest-free=" << map.largest_free_bytes
+              << "B regions=" << map.regions.size();
+      if (map.truncated) {
+        output_ << " truncated";
+      }
+      committed_bytes.include(map.committed_bytes, snapshot.monotonic_ticks);
+      reserved_bytes.include(map.reserved_bytes, snapshot.monotonic_ticks);
+      checked_increment(map_count, "map snapshot");
+    }
+    output_ << '\n';
+  }
+
+  output_ << "peaks:\n";
+  const auto write_peak = [this](const char* name, const MemoryPeak& peak) {
+    if (peak.seen) {
+      output_ << "  " << name << ": " << peak.value << "B at "
+              << relative_time(peak.ticks, *header_) << '\n';
+    }
+  };
+  write_peak("working-set", working_set);
+  write_peak("private", private_bytes);
+  write_peak("commit", commit_bytes);
+  write_peak("committed", committed_bytes);
+  write_peak("reserved", reserved_bytes);
+  if (!working_set.seen && !committed_bytes.seen) {
+    output_ << "  none\n";
+  }
+
+  output_ << "\nsummary:\n"
+          << "  snapshots: " << result.snapshots.size() << '\n'
+          << "  counter-snapshots: " << counters_count << '\n'
+          << "  map-snapshots: " << map_count << '\n';
+  write_common_summary(result.trace);
   state_ = State::kFinished;
   ensure_output();
 }
@@ -882,6 +973,15 @@ LeaksStacksResult analyze_leak_stacks_to_console(std::istream& input, std::ostre
   auto result = analyze_leak_stacks(input, window, sort, filter, filter_resolver, stream_options);
   ConsoleWriter writer{output, console_options};
   writer.write_leak_stacks(result, console_resolver);
+  return result;
+}
+
+MemoryAnalysisResult analyze_memory_to_console(std::istream& input, std::ostream& output,
+                                               MemoryWindow window, ConsoleOptions console_options,
+                                               EventStreamOptions stream_options) {
+  auto result = analyze_memory(input, window, stream_options);
+  ConsoleWriter writer{output, console_options};
+  writer.write_memory(result);
   return result;
 }
 

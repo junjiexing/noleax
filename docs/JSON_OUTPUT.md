@@ -1,7 +1,7 @@
 # Noleax JSON 输出
 
-> schema：`docs/schema/noleax-analysis-v2.schema.json`
-> 日期：2026-08-03
+> schema：`docs/schema/noleax-analysis-v3.schema.json`
+> 日期：2026-08-05
 
 ## 1. 目标与边界
 
@@ -18,20 +18,21 @@ events 输出可能包含已完成校验的前序记录，但不会包含闭合�
 
 每个文档固定包含：
 
-| 字段 | V2 含义 |
+| 字段 | V3 含义 |
 |---|---|
 | `schema` | 固定为 `noleax.analysis` |
-| `schema_version` | 固定为整数 `2` |
-| `mode` | `events`、`leaks` 或 `stacks` |
+| `schema_version` | 固定为整数 `3` |
+| `mode` | `events`、`leaks`、`stacks` 或 `memory` |
 | `metadata` | trace header 和 capture scope |
-| `filters` | 本次实际使用的全部过滤条件；未设置的范围为 `null`，空枚举为 `[]` |
+| `filters` | 本次实际使用的全部过滤条件；未设置的范围为 `null`，空枚举为 `[]`（memory 模式恒为空） |
 | `summary` | trace、完整性、统计和对应 mode 的计数 |
 
 events 文档另有 `events` 数组；leaks 文档另有 `window` 和 `allocations`；stacks 文档另有
-`dataset`、`window` 和 `groups`。V2 schema 对根对象、所有已定义对象及九类 payload 禁止未知字段。
-V2 相对 V1 增加窗口 sequence 字段，并允许对应的时间字段为 `null`；这是结构和类型变化，因此提升
-schema version。仓库保留只接受旧结构的 V1 schema。后续新增字段、改变字段类型或新增枚举值也必须
-按消费者无法静默误解的兼容策略处理。
+`dataset`、`window` 和 `groups`；memory 文档另有 `window` 和 `snapshots`。V3 schema 对根对象、
+所有已定义对象及九类 payload 禁止未知字段。V3 相对 V2 增加 `memory` mode（含
+`memory_window`/`memory_snapshot` 结构与对应 summary 计数字段）；这是结构和枚举变化，因此提升
+schema version。仓库保留只接受旧结构的 V1/V2 schema。后续新增字段、改变字段类型或新增枚举值也
+必须按消费者无法静默误解的兼容策略处理。
 
 ## 3. 基础编码规则
 
@@ -89,6 +90,23 @@ leaks 窗口结构（含 `effective_b_ns`）。
 （含调用栈）。events 数据集 summary 含 `groups`、`calls`、
 `alloc_bytes`、`free_bytes`、`net_bytes`、`aggregated_events` 和 `unmatched_frees`；leaks 数据集
 summary 含 `groups`、`calls` 和 `bytes`。
+
+## 5.2 memory 文档
+
+`--mode memory` 的输出 `mode` 为 `memory`。`window` 为 `{from_ns, to_ns|null}`（快照没有事件
+sequence，不接受 `#sequence` 窗口界）。`snapshots` 按采样 tick 升序，每项包含
+`monotonic_ticks`、`relative_time_ns`，以及按该 tick 到期情况出现的 `counters` 和/或 `map`
+（键缺省表示该 tick 无此采样）：
+
+- `counters`：`working_set_bytes`、`peak_working_set_bytes`、`private_bytes`、`commit_bytes`。
+- `map`：全量 walk 的聚合 `committed_bytes`、`reserved_bytes`、`free_bytes`、
+  `largest_free_bytes`，外加 `region_count`、`truncated` 和完整 `regions` 数组（`base` 为按
+  pointer width 补零的十六进制字符串，`size` 为十进制整数，`state` 为 `commit`/`reserve`、
+  `type` 为 `image`/`mapped`/`private`、`protect` 为十六进制字符串）。区域明细只进 JSON；
+  console/CSV 只给聚合。
+
+summary 的 mode 专属字段为 `snapshots`、`counter_snapshots` 和 `map_snapshots`（均为窗口过滤
+后的计数），公共字段与其他 mode 一致。
 
 ## 6. API、调用栈和符号
 

@@ -60,6 +60,18 @@ summary 分别显示候选数、截至 c 已结束数、最终过滤数和 outst
 额外给出 aggregated-events 与 unmatched-frees（无法追踪到 allocation 的 free 数），leaks 聚合的
 窗口行与 leaks 报告一致。
 
+## 5.1 memory 布局
+
+`--mode memory` 的报告标题为 `noleax memory`，窗口行与 events 一致（`[from, to)`，缺省上界显示
+`trace-end`），但只有时间界有效。`snapshots:` 段每个采样 tick 一行：相对时间后跟该 tick 到期的
+采样字段——计数器为 `working-set=`、`peak-working-set=`、`private=`、`commit=`，map 聚合为
+`committed=`、`reserved=`、`free=`、`largest-free=`、`regions=`，列表截断时追加 `truncated`；
+该 tick 未到期的采样器对应字段整组留空。区域明细不进 console。
+
+`peaks:` 段给出各计数器的峰值及其首次出现的采样 tick（working-set、private、commit 来自计数器
+采样，committed、reserved 来自 map 采样）；相应采样器从未出现时该段显示 `none`。summary 依次列出
+窗口内的 snapshots、counter-snapshots、map-snapshots 计数与公共 trace 摘要。
+
 ## 6. 完整性警告
 
 summary 同时显示 overall、lifecycle、stack-detail 和 understanding 状态。已知 issue 按稳定顺序列出：

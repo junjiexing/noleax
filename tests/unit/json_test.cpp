@@ -149,13 +149,19 @@ namespace {
 
 [[nodiscard]] const noleax::testing::JsonValue& analysis_schema() {
   static const noleax::testing::JsonValue schema =
-      load_analysis_schema("noleax-analysis-v2.schema.json");
+      load_analysis_schema("noleax-analysis-v3.schema.json");
   return schema;
 }
 
 [[nodiscard]] const noleax::testing::JsonValue& analysis_v1_schema() {
   static const noleax::testing::JsonValue schema =
       load_analysis_schema("noleax-analysis-v1.schema.json");
+  return schema;
+}
+
+[[nodiscard]] const noleax::testing::JsonValue& analysis_v2_schema() {
+  static const noleax::testing::JsonValue schema =
+      load_analysis_schema("noleax-analysis-v2.schema.json");
   return schema;
 }
 
@@ -181,8 +187,11 @@ namespace {
 }  // namespace
 
 TEST_CASE("analysis JSON schema version is stable", "[analyzer][json]") {
-  CHECK(noleax::analyzer::kAnalysisJsonSchemaVersion == 2U);
-  CHECK(analysis_schema().at("properties").at("schema_version").at("const").unsigned_value() == 2U);
+  CHECK(noleax::analyzer::kAnalysisJsonSchemaVersion == 3U);
+  CHECK(analysis_schema().at("properties").at("schema_version").at("const").unsigned_value() == 3U);
+
+  const auto& v2 = analysis_v2_schema();
+  CHECK(v2.at("properties").at("schema_version").at("const").unsigned_value() == 2U);
 
   const auto& v1 = analysis_v1_schema();
   CHECK(v1.at("properties").at("schema_version").at("const").unsigned_value() == 1U);

@@ -109,6 +109,17 @@ SEH 第一遍 filter 只写固定事件并返回 `EXCEPTION_CONTINUE_SEARCH`。�
 `HEAP_GENERATE_EXCEPTIONS` 和 Full Page Heap 下 `RtlFreeHeap` 非常规 flags 的异常都保留原 NTSTATUS，
 failure event 仍参与统计守恒。
 
+writer 线程在事件 drain 之外维护两个独立的采样 deadline（`memory_counters_interval` 与
+`memory_map_interval`，0 表示关闭）：到期时在同一循环迭代内调用 `K32GetProcessMemoryInfo` 和
+`VirtualQuery` 全量 walk，把到期的记录合并成一个 memory chunk（计数器在前）写出。采样代码运行在
+InternalThreadScope 内，自身分配与 API 调用不会被 hook 记录；采样失败只跳过本次记录，不影响捕获。
+捕获开始时两个启用的采样器各采一次基线（deadline 初始化为当前时间），正常 stop 的最终 drain 后
+再各补一条最终记录；`finish_after_worker_exit`（DLL_PROCESS_DETACH、loader-lock 单线程）路径不补，
+以最后一条周期快照为准。memory chunk 不携带 event sequence range，快照不参与 Statistics 的
+计数守恒；`EndOfTrace.final_monotonic_ticks` 取事件、模块与快照 ticks 三者的最大值，使最终
+快照（采样于最终 drain 之后）也落在 trace 的时间轴边界内。记录布局见
+[TRACE_FORMAT.md](TRACE_FORMAT.md) 第 15 节。
+
 ## 5. Loss 与计数守恒
 
 writer 生成以下 Loss：

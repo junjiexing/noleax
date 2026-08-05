@@ -26,6 +26,10 @@ struct RtlAllocateHeapTraceWriterOptions {
   noleax::trace::CompressionCodec compression{noleax::trace::CompressionCodec::kLz4};
   noleax::trace::CaptureScope capture_scope{false, true};
   std::chrono::milliseconds flush_interval{250};
+  // Periodic memory snapshots: sampled on the writer thread, written as kMemory chunks. A zero
+  // interval disables that sampler.
+  std::chrono::milliseconds memory_counters_interval{1'000};
+  std::chrono::milliseconds memory_map_interval{1'000};
   std::size_t chunk_target_size{64U * 1024U};
   std::size_t stack_dictionary_capacity{16'384U};
   std::size_t module_queue_capacity{256U};

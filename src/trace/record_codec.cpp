@@ -15,6 +15,7 @@
 
 #include "noleax/trace/completeness.hpp"
 #include "noleax/trace/event.hpp"
+#include "noleax/trace/memory_snapshot.hpp"
 #include "noleax/trace/module.hpp"
 #include "noleax/trace/trace_reader.hpp"
 #include "noleax/trace/wire_format.hpp"
@@ -31,6 +32,9 @@ inline constexpr std::size_t kStackDefinitionFixedPayloadSize = 16U;
 inline constexpr std::size_t kStackFramePayloadSize = 32U;
 inline constexpr std::size_t kStatisticsFixedPayloadSize = 80U;
 inline constexpr std::size_t kPerApiStatisticsSize = 48U;
+inline constexpr std::size_t kMemoryCountersPayloadSize = 48U;
+inline constexpr std::size_t kMemoryMapFixedPayloadSize = 48U;
+inline constexpr std::size_t kMemoryMapRegionPayloadSize = 24U;
 
 template <typename... Visitors>
 struct Overloaded : Visitors... {
@@ -279,6 +283,30 @@ class PayloadReader {
       return LossLocation::kDecoder;
     default:
       throw RecordCodecError{"loss location is not supported"};
+  }
+}
+
+[[nodiscard]] MemoryRegionState decode_memory_region_state(std::uint8_t value) {
+  switch (value) {
+    case static_cast<std::uint8_t>(MemoryRegionState::kCommit):
+      return MemoryRegionState::kCommit;
+    case static_cast<std::uint8_t>(MemoryRegionState::kReserve):
+      return MemoryRegionState::kReserve;
+    default:
+      throw RecordCodecError{"memory region state is not supported"};
+  }
+}
+
+[[nodiscard]] MemoryRegionType decode_memory_region_type(std::uint8_t value) {
+  switch (value) {
+    case static_cast<std::uint8_t>(MemoryRegionType::kImage):
+      return MemoryRegionType::kImage;
+    case static_cast<std::uint8_t>(MemoryRegionType::kMapped):
+      return MemoryRegionType::kMapped;
+    case static_cast<std::uint8_t>(MemoryRegionType::kPrivate):
+      return MemoryRegionType::kPrivate;
+    default:
+      throw RecordCodecError{"memory region type is not supported"};
   }
 }
 
@@ -1059,6 +1087,122 @@ std::optional<EndOfTrace> decode_end_of_trace_record(const RecordView& record) {
     throw RecordCodecError{"invalid EndOfTrace record: " + std::string{error.what()}};
   }
   return end;
+}
+
+void append_memory_counters_record(std::vector<std::byte>& chunk_payload,
+                                   const MemoryCounters& counters,
+                                   std::uint32_t maximum_record_size) {
+  validate_memory_counters(counters);
+  std::vector<std::byte> payload;
+  payload.reserve(kMemoryCountersPayloadSize);
+  append_u64(payload, counters.monotonic_ticks);
+  append_u64(payload, counters.working_set_bytes);
+  append_u64(payload, counters.peak_working_set_bytes);
+  append_u64(payload, counters.private_bytes);
+  append_u64(payload, counters.commit_bytes);
+  append_zeros(payload, 8U);
+  append_record(chunk_payload, static_cast<std::uint16_t>(MemoryRecordType::kCounters),
+                kRecordVersion, payload, maximum_record_size);
+}
+
+std::optional<MemoryCounters> decode_memory_counters_record(const RecordView& record) {
+  if (record.type != static_cast<std::uint16_t>(MemoryRecordType::kCounters) ||
+      record.version != kRecordVersion) {
+    return std::nullopt;
+  }
+  if (record.payload.size() != kMemoryCountersPayloadSize) {
+    throw RecordCodecError{"memory counters payload has an invalid size"};
+  }
+  PayloadReader reader{record.payload};
+  MemoryCounters counters;
+  counters.monotonic_ticks = reader.read_u64();
+  counters.working_set_bytes = reader.read_u64();
+  counters.peak_working_set_bytes = reader.read_u64();
+  counters.private_bytes = reader.read_u64();
+  counters.commit_bytes = reader.read_u64();
+  reader.expect_zeros(8U);
+  reader.expect_done();
+  try {
+    validate_memory_counters(counters);
+  } catch (const MemorySnapshotValidationError& error) {
+    throw RecordCodecError{"invalid MemoryCounters record: " + std::string{error.what()}};
+  }
+  return counters;
+}
+
+void append_memory_map_record(std::vector<std::byte>& chunk_payload, const MemoryMap& map,
+                              std::uint32_t maximum_record_size) {
+  validate_memory_map(map);
+  if (maximum_record_size < kRecordHeaderSize + kMemoryMapFixedPayloadSize ||
+      map.regions.size() > (maximum_record_size - kRecordHeaderSize - kMemoryMapFixedPayloadSize) /
+                               kMemoryMapRegionPayloadSize) {
+    throw RecordCodecError{"memory map exceeds the configured record size limit"};
+  }
+
+  std::vector<std::byte> payload;
+  payload.reserve(kMemoryMapFixedPayloadSize + map.regions.size() * kMemoryMapRegionPayloadSize);
+  append_u64(payload, map.monotonic_ticks);
+  append_u8(payload, map.truncated ? 1U : 0U);
+  append_zeros(payload, 3U);
+  append_u32(payload, static_cast<std::uint32_t>(map.regions.size()));
+  append_u64(payload, map.committed_bytes);
+  append_u64(payload, map.reserved_bytes);
+  append_u64(payload, map.free_bytes);
+  append_u64(payload, map.largest_free_bytes);
+  for (const MemoryMapRegion& region : map.regions) {
+    append_u64(payload, region.base);
+    append_u64(payload, region.size);
+    append_u8(payload, static_cast<std::uint8_t>(region.state));
+    append_u8(payload, static_cast<std::uint8_t>(region.type));
+    append_u32(payload, region.protect);
+    append_zeros(payload, 2U);
+  }
+  append_record(chunk_payload, static_cast<std::uint16_t>(MemoryRecordType::kMap), kRecordVersion,
+                payload, maximum_record_size);
+}
+
+std::optional<MemoryMap> decode_memory_map_record(const RecordView& record) {
+  if (record.type != static_cast<std::uint16_t>(MemoryRecordType::kMap) ||
+      record.version != kRecordVersion) {
+    return std::nullopt;
+  }
+  if (record.payload.size() < kMemoryMapFixedPayloadSize) {
+    throw RecordCodecError{"memory map payload is truncated"};
+  }
+  PayloadReader reader{record.payload};
+  MemoryMap map;
+  map.monotonic_ticks = reader.read_u64();
+  map.truncated = decode_bool(reader, "memory map truncated flag is not zero or one");
+  reader.expect_zeros(3U);
+  const std::uint32_t region_count = reader.read_u32();
+  map.committed_bytes = reader.read_u64();
+  map.reserved_bytes = reader.read_u64();
+  map.free_bytes = reader.read_u64();
+  map.largest_free_bytes = reader.read_u64();
+  if (region_count > kMaximumMemoryMapRegions ||
+      kMemoryMapFixedPayloadSize +
+              static_cast<std::size_t>(region_count) * kMemoryMapRegionPayloadSize !=
+          record.payload.size()) {
+    throw RecordCodecError{"memory map region count does not match the record payload"};
+  }
+  map.regions.reserve(region_count);
+  for (std::uint32_t index = 0U; index < region_count; ++index) {
+    MemoryMapRegion region;
+    region.base = reader.read_u64();
+    region.size = reader.read_u64();
+    region.state = decode_memory_region_state(reader.read_u8());
+    region.type = decode_memory_region_type(reader.read_u8());
+    region.protect = reader.read_u32();
+    reader.expect_zeros(2U);
+    map.regions.push_back(region);
+  }
+  reader.expect_done();
+  try {
+    validate_memory_map(map);
+  } catch (const MemorySnapshotValidationError& error) {
+    throw RecordCodecError{"invalid MemoryMap record: " + std::string{error.what()}};
+  }
+  return map;
 }
 
 }  // namespace noleax::trace

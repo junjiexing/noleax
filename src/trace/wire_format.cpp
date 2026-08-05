@@ -43,6 +43,7 @@ namespace {
     case ChunkType::kEvent:
     case ChunkType::kStatistics:
     case ChunkType::kEnd:
+    case ChunkType::kMemory:
       return true;
   }
   return false;

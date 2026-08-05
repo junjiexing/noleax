@@ -136,6 +136,8 @@ max_stack_depth = 128
 min_size = "4KiB"
 duration = "3m"
 live = true
+memory_counters_interval = "500ms"
+memory_map_interval = "2s"
 
 [trace]
 path = "traces/app.nlx"
@@ -214,6 +216,8 @@ color = "always"
   CHECK(overrides.capture.min_size.specified);
   CHECK(overrides.capture.duration.specified);
   CHECK(overrides.capture.live.specified);
+  CHECK(overrides.capture.memory_counters_interval.specified);
+  CHECK(overrides.capture.memory_map_interval.specified);
   CHECK(overrides.trace.path.specified);
   CHECK(overrides.trace.buffer_size.specified);
   CHECK(overrides.trace.max_file_size.specified);
@@ -266,6 +270,8 @@ color = "always"
   CHECK(overrides.target.args.value == std::vector<std::string>{"--one", "two"});
   CHECK(overrides.target.pid.value == std::optional<std::uint32_t>{77U});
   CHECK(overrides.capture.min_size.value == 4U * 1024U);
+  CHECK(overrides.capture.memory_counters_interval.value == std::chrono::milliseconds{500});
+  CHECK(overrides.capture.memory_map_interval.value == std::chrono::seconds{2});
   CHECK(overrides.trace.compression.value == noleax::config::Compression::kZstd);
   CHECK(overrides.analysis.inputs.value.front() == temporary.path() / "one.nlx");
   CHECK_FALSE(overrides.analysis.trim_agent_frames.value);
@@ -555,6 +561,99 @@ TEST_CASE("analysis validation enforces window sort and group rules", "[config]"
 
   configuration.symbols.mode.value = noleax::config::SymbolMode::kRequired;
   configuration.symbols.servers.value = {"https://symbols.example"};
+  CHECK_NOTHROW(noleax::config::validate_configuration(configuration));
+}
+
+TEST_CASE("memory snapshot capture intervals are validated", "[config]") {
+  using namespace std::chrono_literals;
+  TemporaryDirectory temporary;
+  const auto target = temporary.path() / "app.exe";
+  write_file(target);
+
+  auto run = noleax::config::make_default_configuration();
+  run.operation.value = noleax::config::Operation::kRun;
+  run.target.path.value = target;
+  CHECK(run.capture.memory_counters_interval.value == 1s);
+  CHECK(run.capture.memory_map_interval.value == 1s);
+  CHECK_NOTHROW(noleax::config::validate_configuration(run));
+
+  // 0s disables a sampler; 1h is the upper bound.
+  run.capture.memory_counters_interval.value = 0ns;
+  run.capture.memory_map_interval.value = 1h;
+  CHECK_NOTHROW(noleax::config::validate_configuration(run));
+  run.capture.memory_counters_interval.value = 1h + 1ns;
+  CHECK_THROWS_AS(noleax::config::validate_configuration(run), noleax::config::ConfigError);
+  run.capture.memory_counters_interval.value = 1s;
+  run.capture.memory_map_interval.value = 1h + 1ns;
+  CHECK_THROWS_AS(noleax::config::validate_configuration(run), noleax::config::ConfigError);
+  run.capture.memory_map_interval.value = 1s;
+  CHECK_NOTHROW(noleax::config::validate_configuration(run));
+
+  // Non-capture operations reject the snapshot interval keys.
+  auto doctor = noleax::config::make_default_configuration();
+  doctor.operation.value = noleax::config::Operation::kDoctor;
+  doctor.capture.memory_counters_interval.value = 2s;
+  CHECK_THROWS_AS(noleax::config::validate_configuration(doctor), noleax::config::ConfigError);
+  doctor.capture.memory_counters_interval.value = 1s;
+  doctor.capture.memory_map_interval.value = 0ns;
+  CHECK_THROWS_AS(noleax::config::validate_configuration(doctor), noleax::config::ConfigError);
+}
+
+TEST_CASE("memory analysis mode rejects event-only settings", "[config]") {
+  using namespace std::chrono_literals;
+  TemporaryDirectory temporary;
+  const auto trace = temporary.path() / "input.nlx";
+  write_file(trace);
+
+  auto configuration = noleax::config::make_default_configuration();
+  configuration.operation.value = noleax::config::Operation::kAnalyze;
+  configuration.analysis.inputs.value = {trace};
+  configuration.analysis.mode.value = noleax::config::AnalysisMode::kMemory;
+  CHECK_NOTHROW(noleax::config::validate_configuration(configuration));
+
+  // Time windows stay valid; sequence windows do not (snapshots have no sequence).
+  configuration.analysis.from.value = time_bound(1s);
+  configuration.analysis.to.value = time_bound(2s);
+  CHECK_NOTHROW(noleax::config::validate_configuration(configuration));
+  configuration.analysis.from.value = sequence_bound(1U);
+  CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
+                  noleax::config::ConfigError);
+  configuration.analysis.from.value = time_bound(1s);
+  configuration.analysis.to.value = sequence_bound(2U);
+  CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
+                  noleax::config::ConfigError);
+  configuration.analysis.to.value = time_bound(2s);
+
+  configuration.analysis.end.value = time_bound(3s);
+  CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
+                  noleax::config::ConfigError);
+  configuration.analysis.end.value.reset();
+
+  configuration.analysis.group_by.value = noleax::config::AnalysisGroupBy::kStack;
+  configuration.analysis.group_by.source = noleax::config::ValueSource::kCommandLine;
+  CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
+                  noleax::config::ConfigError);
+  configuration.analysis.group_by.value.reset();
+  configuration.analysis.group_by.source = noleax::config::ValueSource::kDefault;
+
+  configuration.analysis.sort.source = noleax::config::ValueSource::kCommandLine;
+  CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
+                  noleax::config::ConfigError);
+  configuration.analysis.sort.source = noleax::config::ValueSource::kDefault;
+
+  configuration.analysis.trim_agent_frames.value = false;
+  configuration.analysis.trim_agent_frames.source = noleax::config::ValueSource::kCommandLine;
+  CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
+                  noleax::config::ConfigError);
+  configuration.analysis.trim_agent_frames.value = true;
+  configuration.analysis.trim_agent_frames.source = noleax::config::ValueSource::kDefault;
+
+  configuration.filters.apis.value = {"RtlAllocateHeap"};
+  configuration.filters.apis.source = noleax::config::ValueSource::kCommandLine;
+  CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
+                  noleax::config::ConfigError);
+  configuration.filters.apis.value = {};
+  configuration.filters.apis.source = noleax::config::ValueSource::kDefault;
   CHECK_NOTHROW(noleax::config::validate_configuration(configuration));
 }
 

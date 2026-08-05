@@ -445,6 +445,8 @@ std::vector<std::byte> encode_start_capture(const StartCaptureRequest& request) 
   writer.integer(request.buffer_size);
   writer.integer(request.maximum_trace_size);
   writer.integer(request.flush_interval_ns);
+  writer.integer(request.memory_counters_interval_ns);
+  writer.integer(request.memory_map_interval_ns);
   writer.integer(request.compression_level);
   writer.integer(std::uint32_t{0U});
   writer.string(request.trace_path_utf8);
@@ -466,6 +468,8 @@ StartCaptureRequest decode_start_capture(std::span<const std::byte> payload) {
   request.buffer_size = reader.integer<std::uint64_t>();
   request.maximum_trace_size = reader.integer<std::uint64_t>();
   request.flush_interval_ns = reader.integer<std::uint64_t>();
+  request.memory_counters_interval_ns = reader.integer<std::uint64_t>();
+  request.memory_map_interval_ns = reader.integer<std::uint64_t>();
   request.compression_level = reader.integer<std::int32_t>();
   const std::uint32_t reserved32 = reader.integer<std::uint32_t>();
   request.trace_path_utf8 = reader.string();

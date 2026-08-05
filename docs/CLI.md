@@ -121,6 +121,8 @@ trace 完整性驱动（preexisting 盲点使结果为 2）。`--live` 恢复管
 | --hook-profile PROFILE | capture.hook_profile | windows-native |
 | --max-stack-depth N | capture.max_stack_depth | 64 |
 | --capture-min-size SIZE | capture.min_size | 0B |
+| --memory-counters-interval DURATION | capture.memory_counters_interval | 1s（0s 关闭） |
+| --memory-map-interval DURATION | capture.memory_map_interval | 1s（0s 关闭） |
 | --live / --no-live | capture.live | false（agent 直写） |
 | --buffer-size SIZE | trace.buffer_size | 16MiB |
 | --max-trace-size SIZE | trace.max_file_size | 256MiB |
@@ -177,6 +179,13 @@ compression：
 
 compression-level 只在 codec 支持时有效；不支持的组合报错。
 V1 中 none、lz4 只接受 0；zstd 接受 0（codec 默认，即 level 1）或显式的 1。
+
+`--memory-counters-interval` / `--memory-map-interval` 控制捕获期间的定时内存快照：
+agent 的 writer 线程按各自间隔把进程内存计数器（working set、peak working set、private
+bytes、commit 量）和全量虚拟内存 map（VirtualQuery walk 的 region 明细与聚合统计）写入
+memory chunk。两者默认各 1s，`0s` 关闭对应采样器，上限 1h；捕获开始即采一次基线，正常收尾
+再补一条最终快照（进程强拆的 DLL_PROCESS_DETACH 路径不补）。快照布局见
+[TRACE_FORMAT.md](TRACE_FORMAT.md) 第 15 节，分析见 `--mode memory`。
 
 ## 7. patch
 
@@ -254,6 +263,10 @@ mode：
 - leaks：泄露分析，列出在 `[from,to)` 内创建、到 `--end` 时刻仍未释放的对象（即原
   outstanding 语义）。三个窗口参数全部可选，裸 `--mode leaks` 即“任何时间申请、trace 结束时
   仍未释放”。
+- memory：定时内存快照的时间序列（trace minor 2 起）。`--from`/`--to` 只接受时间界；
+  快照没有事件 sequence，`#sequence` 窗口、`--end`、`--group-by`/`--sort`、
+  `--trim-agent-frames` 与全部事件过滤器在该模式下被配置校验拒绝。区域明细只进 JSON；
+  console 另附各计数器的峰值汇总。
 
 每个窗口界可以是相对 trace 起点的时间（如 `10s`），也可以是事件 sequence（`#` 前缀加序号，
 如 `#123456`）。`--to`/`--end` 超过 trace 终点（时间轴或最终 sequence）时不再报错：排他的
@@ -430,6 +443,13 @@ noleax analyze --mode events --format console app.nlx
 
 ~~~powershell
 noleax analyze --mode leaks app.nlx
+~~~
+
+查看捕获期间的内存计数器与虚拟内存 map 快照序列：
+
+~~~powershell
+noleax analyze --mode memory app.nlx
+noleax analyze --mode memory --from 5s --to 20s --format csv --output memory.csv app.nlx
 ~~~
 
 分析时间窗口并聚合调用栈：

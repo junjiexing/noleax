@@ -362,7 +362,9 @@ void load_injection(const toml::table& table, ConfigurationOverrides& result,
 }
 
 void load_capture(const toml::table& table, ConfigurationOverrides& result) {
-  constexpr std::array allowed{"hook_profile", "max_stack_depth", "min_size", "duration", "live"};
+  constexpr std::array allowed{
+      "hook_profile", "max_stack_depth",          "min_size",           "duration",
+      "live",         "memory_counters_interval", "memory_map_interval"};
   reject_unknown_keys(table, allowed, "capture");
 
   if (const auto* node = optional_node(table, "hook_profile")) {
@@ -383,6 +385,14 @@ void load_capture(const toml::table& table, ConfigurationOverrides& result) {
   }
   if (const auto* node = optional_node(table, "live")) {
     result.capture.live.set(read_boolean(*node, "capture.live", "--live"));
+  }
+  if (const auto* node = optional_node(table, "memory_counters_interval")) {
+    result.capture.memory_counters_interval.set(
+        read_duration(*node, "capture.memory_counters_interval", "--memory-counters-interval"));
+  }
+  if (const auto* node = optional_node(table, "memory_map_interval")) {
+    result.capture.memory_map_interval.set(
+        read_duration(*node, "capture.memory_map_interval", "--memory-map-interval"));
   }
 }
 

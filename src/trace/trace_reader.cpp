@@ -86,6 +86,8 @@ namespace {
       return ChunkType::kStatistics;
     case static_cast<std::uint16_t>(ChunkType::kEnd):
       return ChunkType::kEnd;
+    case static_cast<std::uint16_t>(ChunkType::kMemory):
+      return ChunkType::kMemory;
     default:
       return std::nullopt;
   }

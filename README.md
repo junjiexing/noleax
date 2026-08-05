@@ -19,6 +19,8 @@ GitHub Releases；尚未完成的能力见 [docs/ROADMAP.md](docs/ROADMAP.md)。
   无需控制器（`docs/STATIC_PE_PATCH.md` 第 8 节）。
 - 基于 Hoox v0.1.1 的 hook profile 覆盖 Windows NT Heap 与 NT virtual memory 共九个逻辑 API。
 - 有界 trace：大小上限、定期 flush、lz4/zstd 压缩、Module/Stack 字典去重，损坏时可部分恢复。
+- 定时内存快照：捕获期间按可配间隔记录进程内存计数器与全量虚拟内存 map，
+  `--mode memory` 输出时间序列。
 - 离线分析：events/leaks 两种模式加调用栈聚合，多维过滤，console/JSON/CSV 输出，离线符号解析。
 - TOML 配置与 CLI 等价，优先级为 built-in defaults < TOML < CLI。
 - 只读 `doctor` 环境诊断，不执行注入。
@@ -179,6 +181,8 @@ noleax patch --input C:\apps\demo.exe --output C:\apps\demo.patched.exe
 | `--hook-profile PROFILE` | windows-native | 见下方 profile 表 |
 | `--max-stack-depth N` | 64 | 每个事件的最大栈帧数 |
 | `--capture-min-size SIZE` | 0B | 过滤小于阈值的创建侧事件 |
+| `--memory-counters-interval DURATION` | 1s | 内存计数器快照间隔；`0s` 关闭 |
+| `--memory-map-interval DURATION` | 1s | 虚拟内存 map 快照间隔；`0s` 关闭 |
 | `--buffer-size SIZE` | 16MiB | trace 缓冲 |
 | `--max-trace-size SIZE` | 256MiB | 单文件上限，保证不超限 |
 | `--max-trace-files N` | 1 | 当前只支持 1 |
@@ -205,19 +209,21 @@ create/destroy 始终记录。被过滤的调用仍计入统计，但没有事�
 noleax analyze [options] trace.nlx
 ~~~
 
-当前每次执行接受一个 trace。两种模式：
+当前每次执行接受一个 trace。三种模式：
 
 - `events`：输出（过滤后的）全部事件，每个事件引用去重后的 stack id，analyzer 展开为调用栈；
   可用 `--from`/`--to` 限定时间窗。
 - `leaks`：泄露分析，选择在 `[from,to)` 内创建、到观察点 `--end` 仍未释放的对象；窗口全部可选，
   裸命令即"任何时间申请、trace 结束时仍未释放"。这是一份候选集合，不等同于语义上的泄漏证明，
   应重复 workload、缩小时间窗口并结合调用栈判断。
-- 两个模式都可加 `--group-by stack` 按调用栈聚合：events 下统计成功 alloc/realloc/free 的调用次数与
+- `memory`：捕获期间定时内存快照的时间序列（内存计数器与虚拟内存 map 聚合），窗口只接受时间界；
+  区域明细只见于 JSON 输出。
+- events 与 leaks 两个模式都可加 `--group-by stack` 按调用栈聚合：events 下统计成功 alloc/realloc/free 的调用次数与
   分配/释放字节，leaks 下统计存活分配的个数与字节；每组同时列出涉及的分配 API；`--sort` 选择排序键。
 
 | 选项 | 默认值 | 说明 |
 |---|---|---|
-| `--mode MODE` | events | events、leaks |
+| `--mode MODE` | events | events、leaks、memory |
 | `--format FORMAT` | console | console、json、csv |
 | `--output PATH` | stdout | 输出文件 |
 | `--from TIME\|#SEQ` / `--to TIME\|#SEQ` | trace 起点 / trace 终点 | 创建窗口；时间相对 trace 起点，sequence 使用 `#` 前缀 |

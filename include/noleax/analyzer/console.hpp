@@ -5,6 +5,7 @@
 #include <stdexcept>
 
 #include "noleax/analyzer/filter.hpp"
+#include "noleax/analyzer/memory.hpp"
 #include "noleax/analyzer/outstanding.hpp"
 #include "noleax/analyzer/presentation.hpp"
 #include "noleax/analyzer/stacks.hpp"
@@ -50,6 +51,8 @@ class ConsoleWriter {
                           const ConsoleMetadataResolver& resolver = {});
   void write_leak_stacks(const LeaksStacksResult& result,
                          const ConsoleMetadataResolver& resolver = {});
+
+  void write_memory(const MemoryAnalysisResult& result);
 
  private:
   enum class State : std::uint8_t {
@@ -100,5 +103,9 @@ class ConsoleWriter {
     const AnalysisFilter& filter, const EventMetadataResolver& filter_resolver = {},
     const ConsoleMetadataResolver& console_resolver = {}, ConsoleOptions console_options = {},
     EventStreamOptions stream_options = {});
+
+[[nodiscard]] MemoryAnalysisResult analyze_memory_to_console(
+    std::istream& input, std::ostream& output, MemoryWindow window,
+    ConsoleOptions console_options = {}, EventStreamOptions stream_options = {});
 
 }  // namespace noleax::analyzer

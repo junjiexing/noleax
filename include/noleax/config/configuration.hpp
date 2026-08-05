@@ -77,6 +77,7 @@ enum class Compression : std::uint8_t {
 enum class AnalysisMode : std::uint8_t {
   kEvents,
   kOutstanding,
+  kMemory,
 };
 
 enum class AnalysisSort : std::uint8_t {
@@ -276,6 +277,7 @@ struct EnumTraits<AnalysisMode> {
   inline static constexpr auto values = std::array{
       NamedEnumValue{std::string_view{"events"}, AnalysisMode::kEvents},
       NamedEnumValue{std::string_view{"leaks"}, AnalysisMode::kOutstanding},
+      NamedEnumValue{std::string_view{"memory"}, AnalysisMode::kMemory},
   };
 };
 
@@ -433,6 +435,8 @@ struct CaptureSettings {
   Setting<std::uint64_t> min_size;
   Setting<std::optional<std::chrono::nanoseconds>> duration;
   Setting<bool> live;
+  Setting<std::chrono::nanoseconds> memory_counters_interval;
+  Setting<std::chrono::nanoseconds> memory_map_interval;
 };
 
 struct TraceSettings {
@@ -538,6 +542,8 @@ struct CaptureOverrides {
   SettingOverride<std::uint64_t> min_size;
   SettingOverride<std::optional<std::chrono::nanoseconds>> duration;
   SettingOverride<bool> live;
+  SettingOverride<std::chrono::nanoseconds> memory_counters_interval;
+  SettingOverride<std::chrono::nanoseconds> memory_map_interval;
 };
 
 struct TraceOverrides {

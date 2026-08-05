@@ -17,6 +17,7 @@ add_executable(noleax-unit-tests
   unit/generation_tracker_test.cpp
   unit/json_test.cpp
   unit/ipc_protocol_test.cpp
+  unit/memory_analysis_test.cpp
   unit/outstanding_test.cpp
   unit/stacks_test.cpp
   unit/replacement_lifecycle_test.cpp
@@ -132,7 +133,7 @@ if(WIN32)
   set_tests_properties(cli.end-to-end-trace-analyze PROPERTIES
     LABELS "cli;controller;agent;run;attach;trace;analyzer;outstanding;windows"
     PASS_REGULAR_EXPRESSION
-      "^status=ok run=1 attach=1 hijack=1 entrypoint=1 patch=1 static=1 agent=1 outstanding=1 console=1 json=1 csv=1 stacks=1 seqwindow=1 errors=1"
+      "^status=ok run=1 attach=1 hijack=1 entrypoint=1 patch=1 static=1 agent=1 outstanding=1 console=1 json=1 csv=1 stacks=1 seqwindow=1 memory=1 errors=1"
     RUN_SERIAL TRUE
     TIMEOUT 90
   )
@@ -1067,6 +1068,29 @@ if(WIN32)
     )
     set_tests_properties(hook.rtl-allocate-heap-trace-writer-${trace_mode} PROPERTIES
       LABELS "hook;trace;writer;windows;rtl-heap;stress"
+      RUN_SERIAL TRUE
+      TIMEOUT 120
+    )
+  endforeach()
+
+  add_executable(noleax-memory-snapshot-trace-writer-test
+    integration/memory_snapshot_trace_writer_test.cpp
+  )
+  target_link_libraries(noleax-memory-snapshot-trace-writer-test PRIVATE
+    noleax::hook-backend
+    noleax::analyzer
+  )
+  noleax_set_project_warnings(noleax-memory-snapshot-trace-writer-test)
+
+  foreach(snapshot_mode IN ITEMS both counters-only map-only disabled mixed)
+    add_test(NAME hook.memory-snapshot-${snapshot_mode}
+      COMMAND noleax-memory-snapshot-trace-writer-test
+        "${snapshot_mode}"
+        "$<TARGET_FILE_DIR:noleax-memory-snapshot-trace-writer-test>/memory-snapshot-${snapshot_mode}.nlx"
+    )
+    set_tests_properties(hook.memory-snapshot-${snapshot_mode} PROPERTIES
+      LABELS "hook;trace;writer;windows;memory;snapshot"
+      PASS_REGULAR_EXPRESSION "^status=ok mode=${snapshot_mode} "
       RUN_SERIAL TRUE
       TIMEOUT 120
     )
