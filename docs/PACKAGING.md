@@ -16,15 +16,15 @@ cpack --config .\build\windows-x64-release\CPackConfig.cmake -G ZIP
 
 默认输出位于 `build/windows-x64-release/package/`：
 
-- `noleax-0.3.0-windows-x64.zip`
-- `noleax-0.3.0-windows-x64.zip.sha256`
+- `noleax-0.4.0-windows-x64.zip`
+- `noleax-0.4.0-windows-x64.zip.sha256`
 
 这些是本地生成物，不加入 Git，也不代表获准发布。
 
 ## 包布局
 
 ~~~text
-noleax-0.3.0-windows-x64/
+noleax-0.4.0-windows-x64/
   bin/
     noleax.exe
     noleax-agent.dll
@@ -87,7 +87,7 @@ pwsh -NoProfile -File .\scripts\Test-NoleaxPackage.ps1 -SkipBuild
 ## CI 发布
 
 ci workflow 在 `windows-x64-release` job 的构建与测试全部通过后执行 `cpack -G ZIP`，把
-`noleax-0.3.0-windows-x64.zip` 与 `.sha256` 作为 workflow artifact 保留（30 天）。当整个 CI
+`noleax-0.4.0-windows-x64.zip` 与 `.sha256` 作为 workflow artifact 保留（30 天）。当整个 CI
 在以下事件上成功时，`release` job 会把同一对文件上传到 GitHub Releases：
 
 - 推送 `v*` 标签：创建（或更新）该标签对应的 release，ZIP 作为附件。
