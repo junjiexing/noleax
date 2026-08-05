@@ -113,7 +113,10 @@ jobs:
 
           $PSNativeCommandUseErrorActionPreference = $true
 
-          $configureArguments = @("-DCMAKE_MAKE_PROGRAM=`"$ninjaPath`"")
+          # pwsh passes each array element as a single argv entry, so the path must not carry
+          # embedded quotes: a literal `"` in CMAKE_MAKE_PROGRAM makes CMake's ninja probe
+          # fail with "no such file or directory".
+          $configureArguments = @("-DCMAKE_MAKE_PROGRAM=$ninjaPath")
           if ($env:ENABLE_CLANG_TIDY -eq "true") {
             $llvmCandidates = @(
               "C:\Program Files\LLVM\bin",
