@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.25)
 
 project(
   noleax
-  VERSION 0.2.0
+  VERSION 0.3.0
   DESCRIPTION "Hook-based memory event capture and analysis tool"
   LANGUAGES C CXX
 )
