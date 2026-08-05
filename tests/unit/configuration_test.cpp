@@ -175,6 +175,15 @@ mode = "auto"
 paths = ["symbols"]
 servers = ["https://symbols.example.test"]
 
+[symbol_listing]
+input = "app.dll"
+format = "csv"
+output = "symbols.csv"
+name = ["*alloc*", "?free*"]
+match_case = true
+kind = ["function", "public"]
+fields = ["name", "rva"]
+
 [patch]
 input = "input.exe"
 output = "output.exe"
@@ -235,6 +244,13 @@ color = "always"
   CHECK(overrides.symbols.mode.specified);
   CHECK(overrides.symbols.paths.specified);
   CHECK(overrides.symbols.servers.specified);
+  CHECK(overrides.symbol_listing.input.specified);
+  CHECK(overrides.symbol_listing.format.specified);
+  CHECK(overrides.symbol_listing.output.specified);
+  CHECK(overrides.symbol_listing.name.specified);
+  CHECK(overrides.symbol_listing.match_case.specified);
+  CHECK(overrides.symbol_listing.kind.specified);
+  CHECK(overrides.symbol_listing.fields.specified);
   CHECK(overrides.patch.input.specified);
   CHECK(overrides.patch.output.specified);
   CHECK(overrides.patch.method.specified);
@@ -258,6 +274,16 @@ color = "always"
   CHECK(overrides.filters.statuses.value == std::vector{noleax::config::EventStatus::kSuccess,
                                                         noleax::config::EventStatus::kUnmatched,
                                                         noleax::config::EventStatus::kPreexisting});
+  CHECK(overrides.symbol_listing.input.value == temporary.path() / "app.dll");
+  CHECK(overrides.symbol_listing.format.value == noleax::config::OutputFormat::kCsv);
+  CHECK(overrides.symbol_listing.output.value == temporary.path() / "symbols.csv");
+  CHECK(overrides.symbol_listing.name.value == std::vector<std::string>{"*alloc*", "?free*"});
+  CHECK(overrides.symbol_listing.match_case.value);
+  CHECK(overrides.symbol_listing.kind.value == std::vector{noleax::analyzer::SymbolKind::kFunction,
+                                                           noleax::analyzer::SymbolKind::kPublic});
+  CHECK(overrides.symbol_listing.fields.value ==
+        std::vector{noleax::analyzer::SymbolListingField::kName,
+                    noleax::analyzer::SymbolListingField::kRva});
   CHECK_FALSE(overrides.patch.verify.value);
 }
 
@@ -275,6 +301,8 @@ TEST_CASE("TOML loader rejects missing schema, unknown keys, and wrong types", "
       "schema_version = 1\n[filters]\nevents = [\"ALLOC\"]\n",
       "schema_version = 1\n[target]\nargs = [\"ok\", 7]\n",
       "schema_version = 1\nschema_version = 1\n",
+      "schema_version = 1\n[symbol_listing]\nunknown = true\n",
+      "schema_version = 1\n[symbol_listing]\nkind = [\"bogus\"]\n",
   };
 
   for (const auto document : invalidDocuments) {
@@ -528,4 +556,76 @@ TEST_CASE("analysis validation enforces window sort and group rules", "[config]"
   configuration.symbols.mode.value = noleax::config::SymbolMode::kRequired;
   configuration.symbols.servers.value = {"https://symbols.example"};
   CHECK_NOTHROW(noleax::config::validate_configuration(configuration));
+}
+
+TEST_CASE("symbols listing validation enforces input fields and symbol mode rules", "[config]") {
+  TemporaryDirectory temporary;
+  const auto input = temporary.path() / "foo.dll";
+  write_file(input);
+
+  auto configuration = noleax::config::make_default_configuration();
+  configuration.operation.value = noleax::config::Operation::kSymbols;
+
+  // symbol_listing.input is required and must exist.
+  CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
+                  noleax::config::ConfigError);
+  configuration.symbol_listing.input.value = temporary.path() / "missing.dll";
+  CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
+                  noleax::config::ConfigError);
+  configuration.symbol_listing.input.value = input;
+  CHECK_NOTHROW(noleax::config::validate_configuration(configuration));
+
+  // symbol_listing.output must differ from the input.
+  configuration.symbol_listing.output.value = input;
+  CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
+                  noleax::config::ConfigError);
+  configuration.symbol_listing.output.value = temporary.path() / "symbols.json";
+  CHECK_NOTHROW(noleax::config::validate_configuration(configuration));
+  configuration.symbol_listing.output.value.reset();
+
+  // An explicitly empty fields selection is invalid; duplicates are rejected.
+  configuration.symbol_listing.fields.source = noleax::config::ValueSource::kCommandLine;
+  CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
+                  noleax::config::ConfigError);
+  configuration.symbol_listing.fields.value = {noleax::analyzer::SymbolListingField::kName,
+                                               noleax::analyzer::SymbolListingField::kName};
+  CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
+                  noleax::config::ConfigError);
+  configuration.symbol_listing.fields.value = {noleax::analyzer::SymbolListingField::kName,
+                                               noleax::analyzer::SymbolListingField::kRva};
+  CHECK_NOTHROW(noleax::config::validate_configuration(configuration));
+  configuration.symbol_listing.fields.value = {};
+  configuration.symbol_listing.fields.source = noleax::config::ValueSource::kDefault;
+
+  // symbols.mode off conflicts with the enumeration this command performs.
+  configuration.symbols.mode.value = noleax::config::SymbolMode::kOff;
+  CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
+                  noleax::config::ConfigError);
+  configuration.symbols.mode.value = noleax::config::SymbolMode::kRequired;
+  CHECK_NOTHROW(noleax::config::validate_configuration(configuration));
+  configuration.symbols.mode.value = noleax::config::SymbolMode::kAuto;
+  configuration.symbols.paths.value = {temporary.path()};
+  CHECK_NOTHROW(noleax::config::validate_configuration(configuration));
+  configuration.symbols.paths.value = {};
+
+  // Sections that are irrelevant to symbols must stay at their defaults.
+  configuration.analysis.mode.value = noleax::config::AnalysisMode::kOutstanding;
+  CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
+                  noleax::config::ConfigError);
+  configuration.analysis.mode.value = noleax::config::AnalysisMode::kEvents;
+  configuration.capture.live.value = true;
+  CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
+                  noleax::config::ConfigError);
+  configuration.capture.live.value = false;
+  configuration.patch.verify.value = false;
+  CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
+                  noleax::config::ConfigError);
+  configuration.patch.verify.value = true;
+  CHECK_NOTHROW(noleax::config::validate_configuration(configuration));
+
+  // Other operations reject symbol_listing overrides.
+  auto doctor = noleax::config::make_default_configuration();
+  doctor.operation.value = noleax::config::Operation::kDoctor;
+  doctor.symbol_listing.format.value = noleax::config::OutputFormat::kJson;
+  CHECK_THROWS_AS(noleax::config::validate_configuration(doctor), noleax::config::ConfigError);
 }

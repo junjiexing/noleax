@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://noleax.dev/schema/symbols-v1.json",
+  "title": "Noleax symbols listing v1",
+  "type": "object",
+  "required": ["schema", "schema_version", "module", "filters", "fields", "summary", "symbols"],
+  "properties": {
+    "schema": { "const": "noleax.symbols" },
+    "schema_version": { "const": 1 },
+    "module": { "$ref": "#/$defs/module" },
+    "filters": { "$ref": "#/$defs/filters" },
+    "fields": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/field" }
+    },
+    "summary": { "$ref": "#/$defs/summary" },
+    "symbols": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/symbol" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "hex": {
+      "type": "string",
+      "pattern": "^0x[0-9a-f]+$"
+    },
+    "kind": {
+      "enum": ["function", "data", "public", "export", "other"]
+    },
+    "field": {
+      "enum": ["name", "undecorated_name", "rva", "va", "size", "kind"]
+    },
+    "module": {
+      "type": "object",
+      "required": ["path", "status", "image_size", "image_base", "timestamp", "checksum"],
+      "properties": {
+        "path": { "type": "string" },
+        "status": {
+          "enum": [
+            "symbols_loaded",
+            "exports_only",
+            "no_symbols",
+            "image_not_found",
+            "image_identity_mismatch",
+            "pdb_not_found",
+            "pdb_identity_mismatch",
+            "load_failed",
+            "unsupported_platform"
+          ]
+        },
+        "image_size": { "type": "integer" },
+        "image_base": { "$ref": "#/$defs/hex" },
+        "timestamp": { "$ref": "#/$defs/hex" },
+        "checksum": { "$ref": "#/$defs/hex" }
+      },
+      "additionalProperties": false
+    },
+    "filters": {
+      "type": "object",
+      "required": ["names", "match_case", "kinds"],
+      "properties": {
+        "names": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "match_case": { "type": "boolean" },
+        "kinds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/kind" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "summary": {
+      "type": "object",
+      "required": ["total", "matched"],
+      "properties": {
+        "total": { "type": "integer" },
+        "matched": { "type": "integer" }
+      },
+      "additionalProperties": false
+    },
+    "symbol": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "undecorated_name": { "type": "string" },
+        "rva": { "$ref": "#/$defs/hex" },
+        "va": { "$ref": "#/$defs/hex" },
+        "size": { "type": "integer" },
+        "kind": { "$ref": "#/$defs/kind" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -81,11 +81,35 @@ module map 使用读写锁：多个查询可同时读取元数据，但进入 Db
 module map。锁顺序固定为 module map 在前、DbgHelp mutex 在后。对象析构仍要求调用方先停止针对该
 对象的并发调用，这是普通 C++ 对象生命周期约束。
 
-## 7. 测试验证
+## 7. 符号枚举
+
+`OfflineSymbolizer::enumerate_symbols(module_id)` 枚举已注册模块的全部符号（PDB
+publics/globals，exports-only 模块为导出表），供 `noleax symbols` 使用。每个条目包含：
+
+- `name`：存储名（C++ 符号为修饰名）。枚举期间在 DbgHelp 临界区内临时用
+  `SymSetOptions(SymGetOptions() & ~SYMOPT_UNDNAME)` 关掉 undname 以拿到原始名，返回前恢复；
+- `undecorated_name`：`UnDecorateSymbolNameW(UNDNAME_COMPLETE)` 的结果，失败时回退为
+  `name`（C 符号两者相同）；
+- `rva`：`Address - dbghelp_base`（模块合成基址相对偏移）；
+- `size`：DbgHelp 报告的字节数，未知为 0；
+- `tag`：SymTagEnum 原值，kind 归类（function/data/public/export/other）由 symbol_listing
+  模块完成。
+
+模块没有可用符号（`dbghelp_loaded == false`）或在非 Windows 平台时返回空 vector。锁序与第 6
+节不变：module map 的 shared_lock 在前，DbgHelp mutex 在后；回调内不抛异常穿越 DbgHelp 栈帧。
+
+`SYMOPT_EXACT_SYMBOLS`（所有 DbgHelp 调用统一启用）会在模块加载时抑制导出表回退：无 PDB 的
+模块因此报告 `no_symbols` 而不是 `exports_only`。trace 分析保持这一严格行为；
+`SymbolizerOptions::allow_export_symbols`（默认 false，仅 `noleax symbols` 启用）在加载该
+模块时临时清掉 EXACT_SYMBOLS（option guard 析构时恢复），使导出表回退生效、模块报告
+`exports_only`，其符号的 kind 一律归为 `export`。
+
+## 8. 测试验证
 
 Windows 组件测试使用带完整 PDB 和导出函数的专用 DLL，覆盖：
 
 - 匹配 PDB 的真实函数名解析；
+- 符号枚举：名称与 RVA 一致性、C 符号的反修饰恒等、无符号模块返回空；
 - 记录的 PE/PDB identity 匹配与不匹配；
 - 默认无隐式 symbol server 时的 PDB 缺失；
 - 映像缺失、地址越界、重复/非法 module ID 和非法 path；

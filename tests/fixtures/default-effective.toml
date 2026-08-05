@@ -58,6 +58,15 @@ mode = "auto" # source: default
 paths = [] # source: default
 servers = [] # source: default
 
+[symbol_listing]
+input = "" # source: default
+format = "console" # source: default
+output = "" # source: default
+name = [] # source: default
+match_case = false # source: default
+kind = [] # source: default
+fields = [] # source: default
+
 [patch]
 input = "" # source: default
 output = "" # source: default

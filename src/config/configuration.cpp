@@ -107,6 +107,9 @@ Configuration make_default_configuration() {
 
   configuration.symbols.mode.value = SymbolMode::kAuto;
 
+  configuration.symbol_listing.format.value = OutputFormat::kConsole;
+  configuration.symbol_listing.match_case.value = false;
+
   configuration.patch.method.value = PatchMethod::kEntrypointSection;
   configuration.patch.agent_name.value = "noleax-agent.dll";
   configuration.patch.allow_break_signature.value = false;
@@ -178,6 +181,15 @@ void apply_overrides(Configuration& configuration, const ConfigurationOverrides&
   apply_override(configuration.symbols.mode, overrides.symbols.mode, source);
   apply_override(configuration.symbols.paths, overrides.symbols.paths, source);
   apply_override(configuration.symbols.servers, overrides.symbols.servers, source);
+
+  apply_override(configuration.symbol_listing.input, overrides.symbol_listing.input, source);
+  apply_override(configuration.symbol_listing.format, overrides.symbol_listing.format, source);
+  apply_override(configuration.symbol_listing.output, overrides.symbol_listing.output, source);
+  apply_override(configuration.symbol_listing.name, overrides.symbol_listing.name, source);
+  apply_override(configuration.symbol_listing.match_case, overrides.symbol_listing.match_case,
+                 source);
+  apply_override(configuration.symbol_listing.kind, overrides.symbol_listing.kind, source);
+  apply_override(configuration.symbol_listing.fields, overrides.symbol_listing.fields, source);
 
   apply_override(configuration.patch.input, overrides.patch.input, source);
   apply_override(configuration.patch.output, overrides.patch.output, source);

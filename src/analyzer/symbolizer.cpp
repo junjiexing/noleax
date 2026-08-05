@@ -179,6 +179,42 @@ class DbgHelpOptionsGuard {
   return SymbolModuleStatus::kNoSymbols;
 }
 
+struct EnumerateSymbolsContext {
+  DWORD64 module_base;
+  std::vector<EnumeratedSymbol>* symbols;
+  bool failed{false};
+};
+
+BOOL CALLBACK enumerate_symbols_callback(PSYMBOL_INFOW symbol, ULONG /*symbol_size*/,
+                                         PVOID user_context) {
+  auto& context = *static_cast<EnumerateSymbolsContext*>(user_context);
+  try {
+    EnumeratedSymbol enumerated;
+    enumerated.rva = symbol->Address - context.module_base;
+    enumerated.size = symbol->Size;
+    enumerated.tag = symbol->Tag;
+    // SymEnumSymbolsW may report NameLen including the terminating NUL; trim it.
+    std::wstring_view name{symbol->Name, static_cast<std::size_t>(symbol->NameLen)};
+    if (!name.empty() && name.back() == L'\0') {
+      name.remove_suffix(1U);
+    }
+    enumerated.name = wide_to_utf8(name);
+    std::array<wchar_t, 4096U> undecorated{};
+    const DWORD undecorated_length = UnDecorateSymbolNameW(
+        symbol->Name, undecorated.data(), static_cast<DWORD>(undecorated.size()), UNDNAME_COMPLETE);
+    enumerated.undecorated_name =
+        undecorated_length != 0U
+            ? wide_to_utf8(std::wstring_view{undecorated.data(), undecorated_length})
+            : enumerated.name;
+    context.symbols->push_back(std::move(enumerated));
+  } catch (...) {
+    // Exceptions must not propagate through the DbgHelp callback frame.
+    context.failed = true;
+    return FALSE;
+  }
+  return TRUE;
+}
+
 #endif
 
 }  // namespace
@@ -361,6 +397,34 @@ class OfflineSymbolizer::Impl {
 #endif
   }
 
+  [[nodiscard]] std::vector<EnumeratedSymbol> enumerate_symbols(
+      noleax::trace::ModuleId module_id) const {
+    std::shared_lock modules_lock{modules_mutex_};
+    const Entry& entry = find_module(module_id);
+    std::vector<EnumeratedSymbol> result;
+#ifdef _WIN32
+    if (!entry.dbghelp_loaded) {
+      return result;
+    }
+    std::scoped_lock lock{dbghelp_mutex()};
+    DbgHelpOptionsGuard options_guard;
+    // DbgHelpOptionsGuard enables SYMOPT_UNDNAME, which would make the enumeration report
+    // undecorated names; drop it so `name` stays the stored (decorated) name, and restore it
+    // before leaving the critical section.
+    static_cast<void>(SymSetOptions(SymGetOptions() & ~static_cast<DWORD>(SYMOPT_UNDNAME)));
+    EnumerateSymbolsContext context{entry.dbghelp_base, &result};
+    static_cast<void>(
+        SymEnumSymbolsW(process_, entry.dbghelp_base, L"*", enumerate_symbols_callback, &context));
+    static_cast<void>(SymSetOptions(SymGetOptions() | SYMOPT_UNDNAME));
+    if (context.failed) {
+      throw SymbolizerError{"cannot enumerate the module symbols"};
+    }
+#else
+    static_cast<void>(entry);
+#endif
+    return result;
+  }
+
  private:
   struct Entry {
     SymbolModule module;
@@ -442,6 +506,11 @@ class OfflineSymbolizer::Impl {
     const std::wstring image_path = absolute_path(entry.module.image_path);
     std::scoped_lock lock{dbghelp_mutex()};
     DbgHelpOptionsGuard options_guard;
+    if (options_.allow_export_symbols) {
+      // SYMOPT_EXACT_SYMBOLS suppresses the export-symbol fallback at load time; drop it for
+      // this load (the options guard restores it on destruction).
+      static_cast<void>(SymSetOptions(SymGetOptions() & ~static_cast<DWORD>(SYMOPT_EXACT_SYMBOLS)));
+    }
     const DWORD64 loaded_base =
         SymLoadModuleExW(process_, nullptr, image_path.c_str(), nullptr, requested_base,
                          static_cast<DWORD>(entry.module.image_size), nullptr, 0U);
@@ -584,6 +653,11 @@ ResolvedStackFrame OfflineSymbolizer::resolve_frame(noleax::trace::ModuleId modu
 std::optional<std::uint64_t> OfflineSymbolizer::resolve_symbol(noleax::trace::ModuleId module_id,
                                                                std::string_view symbol_name) const {
   return impl_->resolve_symbol(module_id, symbol_name);
+}
+
+std::vector<EnumeratedSymbol> OfflineSymbolizer::enumerate_symbols(
+    noleax::trace::ModuleId module_id) const {
+  return impl_->enumerate_symbols(module_id);
 }
 
 }  // namespace noleax::analyzer

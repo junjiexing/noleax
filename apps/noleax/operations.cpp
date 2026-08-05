@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -24,6 +25,7 @@
 #include "noleax/analyzer/json.hpp"
 #include "noleax/analyzer/outstanding.hpp"
 #include "noleax/analyzer/stacks.hpp"
+#include "noleax/analyzer/symbol_listing.hpp"
 #include "noleax/analyzer/symbolizer.hpp"
 #include "noleax/analyzer/trace_metadata.hpp"
 #include "noleax/config/config_io.hpp"
@@ -210,30 +212,53 @@ struct PeImageInfo {
   std::uint32_t timestamp{0U};
   std::uint32_t checksum{0U};
   std::uint32_t image_size{0U};
+  std::uint64_t image_base{0U};
+  bool x64{false};
 };
 
-[[nodiscard]] PeImageInfo read_pe_image_info(const std::filesystem::path& path) {
+[[noreturn]] void pe_image_error(int exit_code, const std::string& message) {
+  throw ApplicationError{exit_code, message};
+}
+
+// Reads the PE identity fields and the optional-header image base. Both PE32 and PE32+ are
+// accepted; `x64` lets callers that can only handle 64-bit images (custom hook resolution)
+// reject 32-bit ones.
+[[nodiscard]] PeImageInfo read_pe_image_info(const std::filesystem::path& path, int exit_code) {
   std::ifstream input{path, std::ios::binary};
   if (!input) {
-    custom_hook_resolution_error("cannot open module image '" + noleax::config::path_to_utf8(path) +
-                                 "'");
+    pe_image_error(exit_code,
+                   "cannot open module image '" + noleax::config::path_to_utf8(path) + "'");
   }
   IMAGE_DOS_HEADER dos{};
   input.read(reinterpret_cast<char*>(&dos), sizeof(dos));
   if (!input || dos.e_magic != IMAGE_DOS_SIGNATURE) {
-    custom_hook_resolution_error("module image '" + noleax::config::path_to_utf8(path) +
-                                 "' is not a PE file");
+    pe_image_error(exit_code,
+                   "module image '" + noleax::config::path_to_utf8(path) + "' is not a PE file");
   }
   input.seekg(static_cast<std::streamoff>(dos.e_lfanew), std::ios::beg);
   IMAGE_NT_HEADERS64 nt{};
   input.read(reinterpret_cast<char*>(&nt), sizeof(nt));
   if (!input || nt.Signature != IMAGE_NT_SIGNATURE ||
-      nt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) {
-    custom_hook_resolution_error("module image '" + noleax::config::path_to_utf8(path) +
-                                 "' is not an x64 PE file");
+      (nt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC &&
+       nt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC)) {
+    pe_image_error(exit_code,
+                   "module image '" + noleax::config::path_to_utf8(path) + "' is not a PE file");
   }
-  return PeImageInfo{nt.FileHeader.TimeDateStamp, nt.OptionalHeader.CheckSum,
-                     nt.OptionalHeader.SizeOfImage};
+  // CheckSum and SizeOfImage share their offsets between the PE32 and PE32+ optional header
+  // layouts; only ImageBase differs (32-bit at optional-header offset 0x1C for PE32, 64-bit at
+  // offset 0x18 for PE32+).
+  PeImageInfo info{nt.FileHeader.TimeDateStamp, nt.OptionalHeader.CheckSum,
+                   nt.OptionalHeader.SizeOfImage, 0U,
+                   nt.OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC};
+  if (info.x64) {
+    info.image_base = nt.OptionalHeader.ImageBase;
+  } else {
+    std::uint32_t image_base = 0U;
+    const auto* optional_header = reinterpret_cast<const unsigned char*>(&nt.OptionalHeader);
+    std::memcpy(&image_base, optional_header + 0x1CU, sizeof(image_base));
+    info.image_base = image_base;
+  }
+  return info;
 }
 
 [[nodiscard]] std::filesystem::path locate_custom_hook_module(
@@ -321,7 +346,11 @@ void resolve_custom_hook_pdb_role(noleax::analyzer::OfflineSymbolizer& symbolize
     return spec;
   }
   const std::filesystem::path module_path = locate_custom_hook_module(configuration, hook);
-  const PeImageInfo image = read_pe_image_info(module_path);
+  const PeImageInfo image = read_pe_image_info(module_path, 3);
+  if (!image.x64) {
+    custom_hook_resolution_error("module image '" + noleax::config::path_to_utf8(module_path) +
+                                 "' is not an x64 PE file");
+  }
   noleax::analyzer::OfflineSymbolizer symbolizer{make_symbolizer_options(configuration)};
   noleax::analyzer::SymbolModule symbol_module;
   symbol_module.module_id = noleax::trace::ModuleId{1U};
@@ -1122,6 +1151,125 @@ void remove_quietly(const std::filesystem::path& path) noexcept {
 
 #endif
 
+#if defined(_WIN32)
+
+[[nodiscard]] int execute_symbols(const noleax::config::Configuration& configuration) {
+  const std::filesystem::path& input = *configuration.symbol_listing.input.value;
+  const PeImageInfo image = read_pe_image_info(input, 1);
+
+  // Registering with base address 0 makes DbgHelp report RVAs directly (mirrors the custom
+  // hook resolution path above). Unlike trace analysis, the listing enables the export-symbol
+  // fallback so modules without a usable PDB still enumerate their exports.
+  auto symbolizer_options = make_symbolizer_options(configuration);
+  symbolizer_options.allow_export_symbols = true;
+  noleax::analyzer::OfflineSymbolizer symbolizer{symbolizer_options};
+  noleax::analyzer::SymbolModule module;
+  module.module_id = noleax::trace::ModuleId{1U};
+  module.image_size = image.image_size;
+  module.image_path = input;
+  const noleax::analyzer::SymbolModuleResult registered = symbolizer.register_module(module);
+  switch (registered.status) {
+    case noleax::analyzer::SymbolModuleStatus::kSymbolsLoaded:
+    case noleax::analyzer::SymbolModuleStatus::kExportsOnly:
+    case noleax::analyzer::SymbolModuleStatus::kNoSymbols:
+      break;
+    case noleax::analyzer::SymbolModuleStatus::kUnsupportedPlatform:
+      throw ApplicationError{5, "symbols is not supported on this platform"};
+    case noleax::analyzer::SymbolModuleStatus::kImageNotFound:
+    case noleax::analyzer::SymbolModuleStatus::kImageIdentityMismatch:
+    case noleax::analyzer::SymbolModuleStatus::kPdbNotFound:
+    case noleax::analyzer::SymbolModuleStatus::kPdbIdentityMismatch:
+    case noleax::analyzer::SymbolModuleStatus::kLoadFailed:
+      throw ApplicationError{
+          1, "cannot load symbols for '" + noleax::config::path_to_utf8(input) + "': " +
+                 std::string{noleax::analyzer::symbol_module_status_name(registered.status)}};
+  }
+
+  noleax::analyzer::SymbolListing listing;
+  listing.module_path = noleax::config::path_to_utf8(input);
+  listing.status = std::string{noleax::analyzer::symbol_module_status_name(registered.status)};
+  listing.image_size = image.image_size;
+  listing.image_base = image.image_base;
+  listing.timestamp = image.timestamp;
+  listing.checksum = image.checksum;
+  listing.name_filters = configuration.symbol_listing.name.value;
+  listing.match_case = configuration.symbol_listing.match_case.value;
+  listing.kind_filters = configuration.symbol_listing.kind.value;
+
+  const bool exports_only = registered.status == noleax::analyzer::SymbolModuleStatus::kExportsOnly;
+  const auto enumerated = symbolizer.enumerate_symbols(module.module_id);
+  listing.total = enumerated.size();
+  for (const auto& symbol : enumerated) {
+    const auto kind = noleax::analyzer::symbol_kind_from_tag(symbol.tag, exports_only);
+    if (!listing.name_filters.empty()) {
+      const bool matched =
+          std::any_of(listing.name_filters.begin(), listing.name_filters.end(),
+                      [&](const std::string& pattern) {
+                        return noleax::analyzer::detail::wildcard_match(pattern, symbol.name,
+                                                                        listing.match_case) ||
+                               noleax::analyzer::detail::wildcard_match(
+                                   pattern, symbol.undecorated_name, listing.match_case);
+                      });
+      if (!matched) {
+        continue;
+      }
+    }
+    if (!listing.kind_filters.empty() &&
+        std::find(listing.kind_filters.begin(), listing.kind_filters.end(), kind) ==
+            listing.kind_filters.end()) {
+      continue;
+    }
+    noleax::analyzer::SymbolListingEntry entry;
+    entry.name = symbol.name;
+    entry.undecorated_name = symbol.undecorated_name;
+    entry.rva = symbol.rva;
+    entry.va = image.image_base + symbol.rva;
+    entry.size = symbol.size;
+    entry.kind = kind;
+    listing.entries.push_back(std::move(entry));
+  }
+  symbolizer.unregister_module(module.module_id);
+
+  std::ofstream output_file;
+  std::ostream* output = &std::cout;
+  if (configuration.symbol_listing.output.value.has_value()) {
+    ensure_output_directory(*configuration.symbol_listing.output.value);
+    output_file.open(*configuration.symbol_listing.output.value,
+                     std::ios::binary | std::ios::trunc);
+    if (!output_file) {
+      throw ApplicationError{
+          1, "cannot create symbols output '" +
+                 noleax::config::path_to_utf8(*configuration.symbol_listing.output.value) + "'"};
+    }
+    output = &output_file;
+  }
+  const auto& fields = configuration.symbol_listing.fields.value;
+  switch (configuration.symbol_listing.format.value) {
+    case noleax::config::OutputFormat::kConsole:
+      noleax::analyzer::write_symbol_listing_console(*output, listing, fields);
+      break;
+    case noleax::config::OutputFormat::kJson:
+      noleax::analyzer::write_symbol_listing_json(*output, listing, fields);
+      break;
+    case noleax::config::OutputFormat::kCsv:
+      noleax::analyzer::write_symbol_listing_csv(*output, listing, fields);
+      break;
+  }
+  output->flush();
+  if (!*output) {
+    throw ApplicationError{1, "cannot finish symbols output"};
+  }
+  return 0;
+}
+
+#else
+
+[[nodiscard]] int execute_symbols(const noleax::config::Configuration&) {
+  unsupported("symbols is not implemented on this platform");
+}
+
+#endif
+
 }  // namespace
 
 ApplicationError::ApplicationError(int exit_code, const std::string& message)
@@ -1144,6 +1292,8 @@ int execute_operation(const noleax::config::Configuration& configuration) {
       return execute_doctor(configuration);
     case noleax::config::Operation::kPatch:
       return execute_patch(configuration);
+    case noleax::config::Operation::kSymbols:
+      return execute_symbols(configuration);
   }
   unsupported("operation is not supported");
 }

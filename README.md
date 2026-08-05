@@ -117,6 +117,7 @@ noleax [global-options] run [run-options] -- target [args...]
 noleax [global-options] attach [attach-options]
 noleax [global-options] patch [patch-options]
 noleax [global-options] analyze [analyze-options] trace...
+noleax [global-options] symbols [symbols-options] file
 noleax [global-options] config validate
 noleax [global-options] config print-effective
 noleax [global-options] doctor [doctor-options]
@@ -240,6 +241,17 @@ noleax analyze [options] trace.nlx
 
 `--symbol-path` 与 `--symbol-server` 都未配置时回退到 `_NT_SYMBOL_PATH`/`_NT_ALT_SYMBOL_PATH`
 环境变量（DbgHelp 惯例）；配置任一者则忽略环境变量。符号服务器下载由 DbgHelp 按需进行。
+
+### symbols：枚举 PE 符号
+
+~~~powershell
+noleax symbols [--name PATTERN] [--kind KIND] [--fields a,b,c] [--format console|json|csv] [--output PATH] app.dll
+~~~
+
+枚举一个 PE 文件（exe/dll，x86/x64 均可）的符号：有匹配 PDB 时枚举 PDB publics/globals，
+否则回退导出表。`--name` 支持 `*`/`?` glob（OR，默认大小写不敏感，`--match-case` 改为敏感），
+`--kind` 按 function/data/public/export/other 过滤，`--fields` 选择输出列。JSON 输出遵循
+版本化 schema `noleax.symbols` v1。详见 [docs/SYMBOLS.md](docs/SYMBOLS.md)。
 
 ### config：配置验证与查看
 

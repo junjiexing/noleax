@@ -10,6 +10,7 @@
 #include <utility>
 #include <vector>
 
+#include "noleax/analyzer/symbol_listing.hpp"
 #include "noleax/config/value_parser.hpp"
 
 namespace noleax::config {
@@ -32,6 +33,7 @@ enum class Operation : std::uint8_t {
   kPatch,
   kAnalyze,
   kDoctor,
+  kSymbols,
 };
 
 enum class LogLevel : std::uint8_t {
@@ -201,6 +203,7 @@ struct EnumTraits<Operation> {
       NamedEnumValue{std::string_view{"patch"}, Operation::kPatch},
       NamedEnumValue{std::string_view{"analyze"}, Operation::kAnalyze},
       NamedEnumValue{std::string_view{"doctor"}, Operation::kDoctor},
+      NamedEnumValue{std::string_view{"symbols"}, Operation::kSymbols},
   };
 };
 
@@ -312,6 +315,32 @@ struct EnumTraits<SymbolMode> {
       std::array{NamedEnumValue{std::string_view{"auto"}, SymbolMode::kAuto},
                  NamedEnumValue{std::string_view{"off"}, SymbolMode::kOff},
                  NamedEnumValue{std::string_view{"required"}, SymbolMode::kRequired}};
+};
+
+template <>
+struct EnumTraits<noleax::analyzer::SymbolKind> {
+  inline static constexpr std::string_view kind = "symbol kind";
+  inline static constexpr auto values = std::array{
+      NamedEnumValue{std::string_view{"function"}, noleax::analyzer::SymbolKind::kFunction},
+      NamedEnumValue{std::string_view{"data"}, noleax::analyzer::SymbolKind::kData},
+      NamedEnumValue{std::string_view{"public"}, noleax::analyzer::SymbolKind::kPublic},
+      NamedEnumValue{std::string_view{"export"}, noleax::analyzer::SymbolKind::kExport},
+      NamedEnumValue{std::string_view{"other"}, noleax::analyzer::SymbolKind::kOther},
+  };
+};
+
+template <>
+struct EnumTraits<noleax::analyzer::SymbolListingField> {
+  inline static constexpr std::string_view kind = "symbol listing field";
+  inline static constexpr auto values = std::array{
+      NamedEnumValue{std::string_view{"name"}, noleax::analyzer::SymbolListingField::kName},
+      NamedEnumValue{std::string_view{"undecorated_name"},
+                     noleax::analyzer::SymbolListingField::kUndecoratedName},
+      NamedEnumValue{std::string_view{"rva"}, noleax::analyzer::SymbolListingField::kRva},
+      NamedEnumValue{std::string_view{"va"}, noleax::analyzer::SymbolListingField::kVa},
+      NamedEnumValue{std::string_view{"size"}, noleax::analyzer::SymbolListingField::kSize},
+      NamedEnumValue{std::string_view{"kind"}, noleax::analyzer::SymbolListingField::kKind},
+  };
 };
 
 template <>
@@ -448,6 +477,16 @@ struct SymbolSettings {
   Setting<std::vector<std::string>> servers;
 };
 
+struct SymbolListingSettings {
+  Setting<std::optional<std::filesystem::path>> input;
+  Setting<OutputFormat> format;
+  Setting<std::optional<std::filesystem::path>> output;
+  Setting<std::vector<std::string>> name;
+  Setting<bool> match_case;
+  Setting<std::vector<noleax::analyzer::SymbolKind>> kind;
+  Setting<std::vector<noleax::analyzer::SymbolListingField>> fields;
+};
+
 struct PatchSettings {
   Setting<std::optional<std::filesystem::path>> input;
   Setting<std::optional<std::filesystem::path>> output;
@@ -473,6 +512,7 @@ struct Configuration {
   AnalysisSettings analysis;
   FilterSettings filters;
   SymbolSettings symbols;
+  SymbolListingSettings symbol_listing;
   PatchSettings patch;
   DiagnosticSettings diagnostics;
   Setting<std::vector<CustomHook>> custom_hooks;
@@ -542,6 +582,16 @@ struct SymbolOverrides {
   SettingOverride<std::vector<std::string>> servers;
 };
 
+struct SymbolListingOverrides {
+  SettingOverride<std::optional<std::filesystem::path>> input;
+  SettingOverride<OutputFormat> format;
+  SettingOverride<std::optional<std::filesystem::path>> output;
+  SettingOverride<std::vector<std::string>> name;
+  SettingOverride<bool> match_case;
+  SettingOverride<std::vector<noleax::analyzer::SymbolKind>> kind;
+  SettingOverride<std::vector<noleax::analyzer::SymbolListingField>> fields;
+};
+
 struct PatchOverrides {
   SettingOverride<std::optional<std::filesystem::path>> input;
   SettingOverride<std::optional<std::filesystem::path>> output;
@@ -567,6 +617,7 @@ struct ConfigurationOverrides {
   AnalysisOverrides analysis;
   FilterOverrides filters;
   SymbolOverrides symbols;
+  SymbolListingOverrides symbol_listing;
   PatchOverrides patch;
   DiagnosticOverrides diagnostics;
   SettingOverride<std::vector<CustomHook>> custom_hooks;

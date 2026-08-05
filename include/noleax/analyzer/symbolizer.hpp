@@ -61,6 +61,18 @@ enum class SymbolResolutionMode : std::uint8_t {
   kRequired,
 };
 
+// One symbol enumerated from a registered module: PDB publics/globals, or the export table for
+// exports-only modules. `name` is the stored name (decorated for C++ symbols),
+// `undecorated_name` the UnDecorateSymbolName result (equal to `name` for C symbols), and `tag`
+// the raw DbgHelp SymTagEnum value.
+struct EnumeratedSymbol {
+  std::string name;
+  std::string undecorated_name;
+  std::uint64_t rva{0};
+  std::uint64_t size{0};
+  std::uint32_t tag{0};
+};
+
 struct SymbolizerOptions {
   SymbolResolutionMode mode{SymbolResolutionMode::kAuto};
   std::vector<std::filesystem::path> search_paths;
@@ -68,6 +80,10 @@ struct SymbolizerOptions {
   // Verbatim DbgHelp search path used only when search_paths and symbol_servers are both
   // empty (the CLI fills this from _NT_SYMBOL_PATH/_NT_ALT_SYMBOL_PATH).
   std::wstring raw_search_path;
+  // SYMOPT_EXACT_SYMBOLS (set for every DbgHelp call) suppresses the export-symbol fallback at
+  // module load time. Trace analysis keeps that strictness; the symbols listing sets this flag
+  // so modules without a usable PDB are registered as exports_only instead of no_symbols.
+  bool allow_export_symbols{false};
 };
 
 // Joins search paths and symbol servers into a DbgHelp search path. Servers get an "srv*"
@@ -104,6 +120,10 @@ class OfflineSymbolizer {
   // lies outside the module (for example a same-named symbol from another module).
   [[nodiscard]] std::optional<std::uint64_t> resolve_symbol(noleax::trace::ModuleId module_id,
                                                             std::string_view symbol_name) const;
+  // Enumerates every symbol DbgHelp exposes for a registered module. Returns an empty vector
+  // when the module has no usable symbols loaded, and on non-Windows platforms.
+  [[nodiscard]] std::vector<EnumeratedSymbol> enumerate_symbols(
+      noleax::trace::ModuleId module_id) const;
 
  private:
   class Impl;
