@@ -96,12 +96,14 @@ install(FILES "${PROJECT_SOURCE_DIR}/docs/CSV_OUTPUT.md" DESTINATION "docs" RENA
 install(FILES "${PROJECT_SOURCE_DIR}/docs/TRACE_FORMAT.md" DESTINATION "docs" RENAME "trace-format.md")
 install(FILES "${PROJECT_SOURCE_DIR}/docs/TRACE_RECOVERY.md" DESTINATION "docs" RENAME "trace-recovery.md")
 install(FILES "${PROJECT_SOURCE_DIR}/docs/SYMBOLIZATION.md" DESTINATION "docs" RENAME "symbolization.md")
+install(FILES "${PROJECT_SOURCE_DIR}/docs/SYMBOLS.md" DESTINATION "docs" RENAME "symbols.md")
 install(FILES "${PROJECT_SOURCE_DIR}/docs/STATIC_PE_PATCH.md" DESTINATION "docs" RENAME "static-pe-patch.md")
 install(FILES "${PROJECT_SOURCE_DIR}/docs/WINDOWS_HOOK_PROFILES.md" DESTINATION "docs" RENAME "hook-profiles.md")
 install(FILES "${PROJECT_SOURCE_DIR}/docs/ROADMAP.md" DESTINATION "docs" RENAME "roadmap.md")
 install(FILES
   "${PROJECT_SOURCE_DIR}/docs/schema/noleax-analysis-v1.schema.json"
   "${PROJECT_SOURCE_DIR}/docs/schema/noleax-analysis-v2.schema.json"
+  "${PROJECT_SOURCE_DIR}/docs/schema/noleax-symbols-v1.schema.json"
   DESTINATION "docs/schema")
 install(DIRECTORY "${PROJECT_SOURCE_DIR}/examples/" DESTINATION "examples")
 

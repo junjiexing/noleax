@@ -9,6 +9,7 @@ noleax [global-options] run [run-options] -- target [args...]
 noleax [global-options] attach [attach-options]
 noleax [global-options] patch [patch-options]
 noleax [global-options] analyze [analyze-options] trace...
+noleax [global-options] symbols [symbols-options] file
 noleax [global-options] config validate
 noleax [global-options] config print-effective
 noleax [global-options] doctor [doctor-options]
@@ -309,7 +310,44 @@ DbgHelp 在解析缺失 PDB 时按需进行。
 同一过滤类别的重复选项为 OR，不同类别为 AND；大小范围包含端点。模块 pattern 支持 `*` 和
 `?`，ASCII 大小写及 `/`、`\` 路径分隔符不敏感。API 名称区分大小写。
 
-## 9. config
+## 9. symbols
+
+~~~
+noleax symbols [options] file
+~~~
+
+枚举一个 PE 文件（exe/dll，x86/x64 均可）的符号：有匹配 PDB 时枚举 PDB publics/globals，
+否则回退导出表。只读离线映像，不启动或注入进程。file operand 存在时覆盖
+symbol_listing.input。
+
+| CLI | 配置键 | 默认值 |
+|---|---|---|
+| --format FORMAT | symbol_listing.format | console |
+| --output PATH | symbol_listing.output | stdout |
+| --name PATTERN（可重复） | symbol_listing.name | 空 = 全部 |
+| --match-case / --no-match-case | symbol_listing.match_case | false |
+| --kind KIND（可重复） | symbol_listing.kind | 空 = 全部 |
+| --fields a,b,c | symbol_listing.fields | 空 = 全部字段 |
+| --symbol-path PATH | symbols.paths | 空 |
+| --symbol-server URL | symbols.servers | 空 |
+
+kind：
+
+- function
+- data
+- public
+- export
+- other
+
+fields：`name`、`undecorated_name`、`rva`、`va`、`size`、`kind`；缺省全选且顺序固定，
+同时控制 console 列、CSV 列和 JSON 符号对象的键。
+
+`--name` pattern 支持 `*` 与 `?`，同时匹配 `name` 与 `undecorated_name`；同类重复选项为
+OR，name 与 kind 之间为 AND。`symbols.mode = off` 与本命令冲突，配置校验报错。
+`--symbol-path`/`--symbol-server` 的搜索路径规则与 analyze 相同。完整的输出格式、状态处理
+与示例见 [SYMBOLS.md](SYMBOLS.md)。
+
+## 10. config
 
 ~~~
 noleax --config noleax.toml config validate
@@ -328,7 +366,7 @@ print-effective：
 - 明确每个值来自 default、config 或 CLI。
 - 不输出不应公开的随机 session token。
 
-## 10. doctor
+## 11. doctor
 
 doctor 是只读诊断命令，检查：
 
@@ -351,7 +389,7 @@ noleax doctor [--agent PATH] [--target PATH] [--pid PID] [--inject-method METHOD
 完成文件架构、运行进程架构和注入权限检查。所有四项均可通过 TOML 的
 `injection.agent_path`、`target.path`、`target.pid` 和 `injection.method` 设置，CLI 优先。
 
-## 11. 退出码
+## 12. 退出码
 
 | code | 含义 |
 |---:|---|
@@ -368,7 +406,7 @@ run 正常完成时优先返回目标进程退出码会与工具退出码冲突�
 - noleax 自身成功时返回 0，并在摘要中报告 target_exit_code。
 - 未来如需透传目标退出码，新增显式选项，不改变默认行为。
 
-## 12. 示例
+## 13. 示例
 
 只 hook NT Heap：
 
@@ -410,6 +448,13 @@ noleax analyze --mode events --from '#1000' --to '#5000' app.nlx
 
 ~~~powershell
 noleax analyze --mode events --group-by stack --sort net-bytes app.nlx
+~~~
+
+列出一个 PE 文件的符号（PDB 优先，无 PDB 回退导出表），按名字与种类筛选并导出 JSON：
+
+~~~powershell
+noleax symbols app.dll
+noleax symbols --name "*alloc*" --kind function --format json --output symbols.json app.dll
 ~~~
 
 等价 TOML 和从捕获到分析的完整流程见 [QUICKSTART.md](QUICKSTART.md) 与

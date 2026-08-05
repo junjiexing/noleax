@@ -7,6 +7,7 @@ add_library(noleax-analyzer STATIC
   json.cpp
   outstanding.cpp
   stacks.cpp
+  symbol_listing.cpp
   symbolizer.cpp
   time.cpp
   trace_metadata.cpp

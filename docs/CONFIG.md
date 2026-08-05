@@ -82,6 +82,15 @@ mode = "auto"
 paths = []
 servers = []
 
+[symbol_listing]
+input = "app.dll"
+format = "console"
+output = ""
+name = []
+match_case = false
+kind = []
+fields = []
+
 [patch]
 input = ""
 output = ""
@@ -156,6 +165,15 @@ standalone 激活参数烧进镜像，patched 副本可直接运行：agent 读�
 DbgHelp（不探测映像、不下载符号），与 `symbols.paths`/`symbols.servers` 同时配置校验报错；
 `required` 要求每个模块都解析出符号（symbols_loaded 或 exports_only），否则分析失败。
 
+`[symbol_listing]` 段是 `noleax symbols` 命令的配置面（仅该 operation 有效）：`input` 是待
+枚举的 PE 文件（exe/dll，x86/x64 均可）；`format` 取 `console`/`json`/`csv`；`output` 缺省
+写 stdout；`name` 是 glob pattern 数组（`*`/`?`，OR，同时匹配符号的存储名与反修饰名），
+`match_case` 控制大小写敏感；`kind` 按 `function`/`data`/`public`/`export`/`other` 过滤
+（OR）；`fields` 从 `name`、`undecorated_name`、`rva`、`va`、`size`、`kind` 中选择输出字段
+（缺省全选、顺序固定）。符号搜索路径复用 `[symbols]` 段的 `paths`/`servers` 规则；枚举必须
+经过 DbgHelp，因此 `symbols.mode = "off"` 与本命令冲突。详见
+[SYMBOLS.md](SYMBOLS.md)。
+
 `analysis.from`、`analysis.to`、`analysis.end` 接受两种窗口界：相对 trace 起点的时长
 （如 `"10s"`），或 `"#"` 前缀加事件 sequence（如 `"#123456"`）。空串表示未设置。三类界可以
 混用；超出 trace 终点（时间轴或最终 sequence）的 `analysis.to` 使用最后事件之后的排他边界，
@@ -170,6 +188,7 @@ DbgHelp（不探测映像、不下载符号），与 `symbols.paths`/`symbols.se
 - patch
 - analyze
 - doctor
+- symbols
 
 CLI subcommand存在时覆盖 operation。若 CLI 和配置均缺失，显示顶层帮助并返回 1。
 
@@ -257,6 +276,17 @@ analyze：
 - filters.statuses 接受 success、failure、unmatched 和 preexisting。
 - filters.events、threads、apis、modules、stack_modules、allocation_ids 和 statuses 中，同一数组的
   值为 OR；不同非空过滤类别之间为 AND。
+
+symbols：
+
+- symbol_listing.input 必须设置且存在。
+- symbol_listing.output 不得与 input 相同，父目录必须存在或可创建。
+- symbol_listing.fields 显式提供时不得为空、不得重复；取值为 name、undecorated_name、
+  rva、va、size、kind。
+- symbol_listing.kind 取值为 function、data、public、export、other。
+- symbols.mode 不得为 off（枚举必须经过 DbgHelp）；symbols.paths/servers 按通用规则生效。
+- target、injection、capture、trace、analysis、filters、patch 与 custom_hooks 段必须保持
+  默认；其余 operation 下 symbol_listing 段必须保持默认。
 
 ## 6. CLI 对应性测试
 

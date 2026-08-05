@@ -116,6 +116,18 @@ struct DoctorBindings {
   TextOption agent_path;
 };
 
+struct SymbolsBindings {
+  TextOption format;
+  TextOption output;
+  ListOption names;
+  BooleanOption match_case;
+  ListOption kinds;
+  TextOption fields;
+  ListOption symbol_paths;
+  ListOption symbol_servers;
+  std::vector<std::string> inputs;
+};
+
 [[nodiscard]] bool was_set(const TextOption& binding) {
   return binding.option != nullptr && binding.option->count() != 0U;
 }
@@ -674,6 +686,58 @@ void apply_doctor_bindings(const DoctorBindings& bindings,
   }
 }
 
+void apply_symbols_bindings(const SymbolsBindings& bindings,
+                            config::ConfigurationOverrides& overrides,
+                            const std::filesystem::path& current_directory) {
+  overrides.operation.set(config::Operation::kSymbols);
+  if (!bindings.inputs.empty()) {
+    if (bindings.inputs.size() != 1U) {
+      throw config::ConfigError{"symbols accepts exactly one input file operand"};
+    }
+    overrides.symbol_listing.input.set(
+        parse_cli_path(bindings.inputs.front(), "symbols file operand", current_directory));
+  }
+  if (was_set(bindings.format)) {
+    overrides.symbol_listing.format.set(
+        parse_cli_enum<config::OutputFormat>(bindings.format.value, "--format"));
+  }
+  if (was_set(bindings.output)) {
+    overrides.symbol_listing.output.set(
+        parse_cli_path(bindings.output.value, "--output", current_directory));
+  }
+  if (was_set(bindings.names)) {
+    overrides.symbol_listing.name.set(bindings.names.values);
+  }
+  if (const auto value = boolean_value(bindings.match_case)) {
+    overrides.symbol_listing.match_case.set(*value);
+  }
+  if (was_set(bindings.kinds)) {
+    overrides.symbol_listing.kind.set(
+        parse_cli_enums<noleax::analyzer::SymbolKind>(bindings.kinds.values, "--kind"));
+  }
+  if (was_set(bindings.fields)) {
+    std::vector<noleax::analyzer::SymbolListingField> fields;
+    std::string_view rest{bindings.fields.value};
+    for (;;) {
+      const std::size_t comma = rest.find(',');
+      const std::string_view token = rest.substr(0U, comma);
+      fields.push_back(parse_cli_enum<noleax::analyzer::SymbolListingField>(token, "--fields"));
+      if (comma == std::string_view::npos) {
+        break;
+      }
+      rest.remove_prefix(comma + 1U);
+    }
+    overrides.symbol_listing.fields.set(std::move(fields));
+  }
+  if (was_set(bindings.symbol_paths)) {
+    overrides.symbols.paths.set(
+        parse_cli_paths(bindings.symbol_paths.values, "--symbol-path", current_directory));
+  }
+  if (was_set(bindings.symbol_servers)) {
+    overrides.symbols.servers.set(bindings.symbol_servers.values);
+  }
+}
+
 }  // namespace
 
 CommandLineExit::CommandLineExit(int exit_code, std::string standard_output,
@@ -798,6 +862,21 @@ ParsedCommandLine parse_command_line(int argc, const char* const* argv,
                   "Symbol server URL");
   analyze->add_option("trace", analyze_bindings.inputs, "Input trace paths")->expected(0, -1);
 
+  SymbolsBindings symbols_bindings;
+  CLI::App* const symbols =
+      app.add_subcommand("symbols", "List the symbols of a PE file (PDB, else exports)");
+  add_text_option(*symbols, symbols_bindings.format, "--format", "Output format");
+  add_text_option(*symbols, symbols_bindings.output, "--output", "Output path");
+  add_list_option(*symbols, symbols_bindings.names, "--name", "Symbol name glob filter");
+  add_boolean_option(*symbols, symbols_bindings.match_case, "--match-case", "--no-match-case",
+                     "Match symbol names case-sensitively");
+  add_list_option(*symbols, symbols_bindings.kinds, "--kind", "Symbol kind filter");
+  add_text_option(*symbols, symbols_bindings.fields, "--fields", "Comma-separated output fields");
+  add_list_option(*symbols, symbols_bindings.symbol_paths, "--symbol-path", "Local symbol path");
+  add_list_option(*symbols, symbols_bindings.symbol_servers, "--symbol-server",
+                  "Symbol server URL");
+  symbols->add_option("file", symbols_bindings.inputs, "Input PE file")->expected(0, -1);
+
   CLI::App* const config_command =
       app.add_subcommand("config", "Validate or print Noleax configuration");
   config_command->require_subcommand(1, 1);
@@ -851,6 +930,8 @@ ParsedCommandLine parse_command_line(int argc, const char* const* argv,
     apply_patch_bindings(patch_bindings, result.overrides, current_directory);
   } else if (*analyze) {
     apply_analyze_bindings(analyze_bindings, result.overrides, current_directory);
+  } else if (*symbols) {
+    apply_symbols_bindings(symbols_bindings, result.overrides, current_directory);
   } else if (*validate) {
     result.meta_command = MetaCommand::kValidateConfig;
   } else if (*print_effective) {

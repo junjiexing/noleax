@@ -1,5 +1,6 @@
 #include "noleax/analyzer/symbolizer.hpp"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
@@ -359,6 +360,52 @@ TEST_CASE("offline symbolizer in off mode never touches DbgHelp", "[analyzer][sy
   CHECK_FALSE(frame.symbol_name.has_value());
 }
 
+TEST_CASE("offline symbolizer enumerates PDB symbols with matching RVAs",
+          "[analyzer][symbolizer]") {
+  const LoadedImage image{fixture_path()};
+  const std::uint64_t function_offset = image.exported_offset("noleax_symbolizer_fixture_target");
+
+  noleax::analyzer::SymbolizerOptions options;
+  options.search_paths.push_back(fixture_path().parent_path());
+  noleax::analyzer::OfflineSymbolizer symbolizer{options};
+  const auto module = fixture_module(50U, 0U, image.size());
+  const auto result = symbolizer.register_module(module);
+  CAPTURE(noleax::analyzer::symbol_module_status_name(result.status));
+  REQUIRE(result.status == noleax::analyzer::SymbolModuleStatus::kSymbolsLoaded);
+
+  const auto symbols = symbolizer.enumerate_symbols(module.module_id);
+  REQUIRE(!symbols.empty());
+  const auto found = std::find_if(symbols.begin(), symbols.end(), [](const auto& symbol) {
+    return symbol.name.find("noleax_symbolizer_fixture_target") != std::string::npos;
+  });
+  REQUIRE(found != symbols.end());
+  // Incremental linking makes the export point at a jump stub, so compare against DbgHelp's
+  // own name resolution instead of the exported offset.
+  const auto resolved = symbolizer.resolve_symbol(module.module_id, found->name);
+  REQUIRE(resolved.has_value());
+  CHECK(found->rva == *resolved);
+  // The exported jump stub still resolves back to the same function name.
+  const auto frame = symbolizer.resolve_frame(module.module_id, function_offset);
+  REQUIRE(frame.symbol_name.has_value());
+  CHECK(frame.symbol_name->find("noleax_symbolizer_fixture_target") != std::string::npos);
+  // The fixture target is a C symbol, so undecoration is an identity mapping.
+  CHECK(found->undecorated_name == found->name);
+}
+
+TEST_CASE("offline symbolizer enumerates nothing without usable symbols",
+          "[analyzer][symbolizer]") {
+  const LoadedImage image{fixture_path()};
+
+  noleax::analyzer::SymbolizerOptions options;
+  options.mode = noleax::analyzer::SymbolResolutionMode::kOff;
+  options.search_paths.push_back(fixture_path().parent_path());
+  noleax::analyzer::OfflineSymbolizer symbolizer{options};
+  const auto module = fixture_module(60U, 0U, image.size());
+  REQUIRE(symbolizer.register_module(module).status ==
+          noleax::analyzer::SymbolModuleStatus::kNoSymbols);
+  CHECK(symbolizer.enumerate_symbols(module.module_id).empty());
+}
+
 #else
 
 TEST_CASE("offline symbolizer reports unsupported non-Windows platforms",
@@ -370,6 +417,7 @@ TEST_CASE("offline symbolizer reports unsupported non-Windows platforms",
   module.image_path = "module";
   CHECK(symbolizer.register_module(module).status ==
         noleax::analyzer::SymbolModuleStatus::kUnsupportedPlatform);
+  CHECK(symbolizer.enumerate_symbols(module.module_id).empty());
 }
 
 #endif

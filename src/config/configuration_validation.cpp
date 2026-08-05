@@ -135,6 +135,24 @@ void require_default_symbols(const Configuration& configuration, const Configura
                   operation);
 }
 
+void require_default_symbol_listing(const Configuration& configuration,
+                                    const Configuration& defaults, Operation operation) {
+  require_default(configuration.symbol_listing.input, defaults.symbol_listing.input,
+                  "symbol_listing.input", operation);
+  require_default(configuration.symbol_listing.format, defaults.symbol_listing.format,
+                  "symbol_listing.format", operation);
+  require_default(configuration.symbol_listing.output, defaults.symbol_listing.output,
+                  "symbol_listing.output", operation);
+  require_default(configuration.symbol_listing.name, defaults.symbol_listing.name,
+                  "symbol_listing.name", operation);
+  require_default(configuration.symbol_listing.match_case, defaults.symbol_listing.match_case,
+                  "symbol_listing.match_case", operation);
+  require_default(configuration.symbol_listing.kind, defaults.symbol_listing.kind,
+                  "symbol_listing.kind", operation);
+  require_default(configuration.symbol_listing.fields, defaults.symbol_listing.fields,
+                  "symbol_listing.fields", operation);
+}
+
 void require_default_patch(const Configuration& configuration, const Configuration& defaults,
                            Operation operation) {
   require_default(configuration.patch.input, defaults.patch.input, "patch.input", operation);
@@ -353,6 +371,7 @@ void validate_run(const Configuration& configuration, const Configuration& defau
   if (configuration.custom_hooks.value.empty()) {
     require_default_symbols(configuration, defaults, Operation::kRun);
   }
+  require_default_symbol_listing(configuration, defaults, Operation::kRun);
   require_default_patch(configuration, defaults, Operation::kRun);
 }
 
@@ -377,6 +396,7 @@ void validate_attach(const Configuration& configuration, const Configuration& de
   if (configuration.custom_hooks.value.empty()) {
     require_default_symbols(configuration, defaults, Operation::kAttach);
   }
+  require_default_symbol_listing(configuration, defaults, Operation::kAttach);
   require_default_patch(configuration, defaults, Operation::kAttach);
 }
 
@@ -390,6 +410,7 @@ void validate_patch(const Configuration& configuration, const Configuration& def
   if (configuration.custom_hooks.value.empty()) {
     require_default_symbols(configuration, defaults, Operation::kPatch);
   }
+  require_default_symbol_listing(configuration, defaults, Operation::kPatch);
   validate_custom_hooks(configuration);
 
   require_existing_path(configuration.patch.input.value, "patch.input");
@@ -415,6 +436,7 @@ void validate_analyze(const Configuration& configuration, const Configuration& d
   require_default_capture(configuration, defaults, Operation::kAnalyze);
   require_default_trace(configuration, defaults, Operation::kAnalyze);
   require_default_patch(configuration, defaults, Operation::kAnalyze);
+  require_default_symbol_listing(configuration, defaults, Operation::kAnalyze);
   require_default(configuration.custom_hooks, defaults.custom_hooks, "custom_hooks",
                   Operation::kAnalyze);
 
@@ -496,9 +518,44 @@ void validate_doctor(const Configuration& configuration, const Configuration& de
   require_default_analysis(configuration, defaults, Operation::kDoctor);
   require_default_filters(configuration, defaults, Operation::kDoctor);
   require_default_symbols(configuration, defaults, Operation::kDoctor);
+  require_default_symbol_listing(configuration, defaults, Operation::kDoctor);
   require_default_patch(configuration, defaults, Operation::kDoctor);
   require_default(configuration.custom_hooks, defaults.custom_hooks, "custom_hooks",
                   Operation::kDoctor);
+}
+
+void validate_symbols_listing(const Configuration& configuration, const Configuration& defaults) {
+  require_default_target(configuration, defaults, Operation::kSymbols);
+  require_default_injection(configuration, defaults, Operation::kSymbols);
+  require_default_capture(configuration, defaults, Operation::kSymbols);
+  require_default_trace(configuration, defaults, Operation::kSymbols);
+  require_default_analysis(configuration, defaults, Operation::kSymbols);
+  require_default_filters(configuration, defaults, Operation::kSymbols);
+  require_default_patch(configuration, defaults, Operation::kSymbols);
+  require_default(configuration.custom_hooks, defaults.custom_hooks, "custom_hooks",
+                  Operation::kSymbols);
+
+  require_existing_path(configuration.symbol_listing.input.value, "symbol_listing.input");
+  if (configuration.symbol_listing.output.value.has_value() &&
+      *configuration.symbol_listing.output.value == *configuration.symbol_listing.input.value) {
+    fail("symbol_listing.output", "must be different from symbol_listing.input");
+  }
+  validate_output_parent(configuration.symbol_listing.output.value, "symbol_listing.output");
+  if (configuration.symbol_listing.fields.source != ValueSource::kDefault &&
+      configuration.symbol_listing.fields.value.empty()) {
+    fail("symbol_listing.fields", "must not be empty when provided");
+  }
+  const auto& fields = configuration.symbol_listing.fields.value;
+  for (std::size_t index = 0U; index < fields.size(); ++index) {
+    for (std::size_t other = index + 1U; other < fields.size(); ++other) {
+      if (fields[index] == fields[other]) {
+        fail("symbol_listing.fields", "must not contain duplicates");
+      }
+    }
+  }
+  if (configuration.symbols.mode.value == SymbolMode::kOff) {
+    fail("symbols.mode", "off is not valid for symbols; enumeration requires DbgHelp");
+  }
 }
 
 }  // namespace
@@ -527,6 +584,9 @@ void validate_configuration(const Configuration& configuration) {
       break;
     case Operation::kDoctor:
       validate_doctor(configuration, defaults);
+      break;
+    case Operation::kSymbols:
+      validate_symbols_listing(configuration, defaults);
       break;
   }
 }

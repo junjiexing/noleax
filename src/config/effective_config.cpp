@@ -387,6 +387,24 @@ std::string serialize_effective_config(const Configuration& configuration) {
   append_setting(output, "servers", format_strings(configuration.symbols.servers.value),
                  configuration.symbols.servers.source);
 
+  append_table(output, "symbol_listing");
+  append_setting(output, "input", format_path(configuration.symbol_listing.input.value),
+                 configuration.symbol_listing.input.source);
+  append_setting(output, "format",
+                 quote_toml(enum_value_name(configuration.symbol_listing.format.value)),
+                 configuration.symbol_listing.format.source);
+  append_setting(output, "output", format_path(configuration.symbol_listing.output.value),
+                 configuration.symbol_listing.output.source);
+  append_setting(output, "name", format_strings(configuration.symbol_listing.name.value),
+                 configuration.symbol_listing.name.source);
+  append_setting(output, "match_case",
+                 configuration.symbol_listing.match_case.value ? "true" : "false",
+                 configuration.symbol_listing.match_case.source);
+  append_setting(output, "kind", format_enums(configuration.symbol_listing.kind.value),
+                 configuration.symbol_listing.kind.source);
+  append_setting(output, "fields", format_enums(configuration.symbol_listing.fields.value),
+                 configuration.symbol_listing.fields.source);
+
   append_table(output, "patch");
   append_setting(output, "input", format_path(configuration.patch.input.value),
                  configuration.patch.input.source);

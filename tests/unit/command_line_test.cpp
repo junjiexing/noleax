@@ -389,3 +389,73 @@ TEST_CASE("custom-hook CLI rejects malformed specs and other subcommands",
       parse({"analyze", "--custom-hook", "m.dll:alloc=a,free=f", "x.nlx"}, current_directory),
       noleax::cli::CommandLineExit);
 }
+
+TEST_CASE("symbols CLI maps every listing option and the symbol search path", "[cli][config]") {
+  const auto current_directory = std::filesystem::current_path();
+  const auto parsed =
+      parse({"symbols",       "--format",      "json",    "--output",        "symbols.json",
+             "--name",        "*alloc*",       "--name",  "?free*",          "--match-case",
+             "--kind",        "function",      "--kind",  "public",          "--fields",
+             "name,rva,kind", "--symbol-path", "symbols", "--symbol-server", "https://server",
+             "foo.dll"},
+            current_directory);
+
+  const auto& overrides = parsed.overrides;
+  CHECK(overrides.operation.value == noleax::config::Operation::kSymbols);
+  CHECK(overrides.symbol_listing.input.value == current_directory / "foo.dll");
+  CHECK(overrides.symbol_listing.format.value == noleax::config::OutputFormat::kJson);
+  CHECK(overrides.symbol_listing.output.value == current_directory / "symbols.json");
+  CHECK(overrides.symbol_listing.name.value == std::vector<std::string>{"*alloc*", "?free*"});
+  CHECK(overrides.symbol_listing.match_case.specified);
+  CHECK(overrides.symbol_listing.match_case.value);
+  CHECK(overrides.symbol_listing.kind.value == std::vector{noleax::analyzer::SymbolKind::kFunction,
+                                                           noleax::analyzer::SymbolKind::kPublic});
+  CHECK(overrides.symbol_listing.fields.value ==
+        std::vector{noleax::analyzer::SymbolListingField::kName,
+                    noleax::analyzer::SymbolListingField::kRva,
+                    noleax::analyzer::SymbolListingField::kKind});
+  CHECK(overrides.symbols.paths.value ==
+        std::vector<std::filesystem::path>{current_directory / "symbols"});
+  CHECK(overrides.symbols.servers.value == std::vector<std::string>{"https://server"});
+}
+
+TEST_CASE("symbols CLI defaults and boolean overrides", "[cli][config]") {
+  const auto current_directory = std::filesystem::current_path();
+
+  const auto minimal = parse({"symbols", "foo.dll"}, current_directory);
+  CHECK(minimal.overrides.operation.value == noleax::config::Operation::kSymbols);
+  CHECK(minimal.overrides.symbol_listing.input.value == current_directory / "foo.dll");
+  CHECK_FALSE(minimal.overrides.symbol_listing.format.specified);
+  CHECK_FALSE(minimal.overrides.symbol_listing.output.specified);
+  CHECK_FALSE(minimal.overrides.symbol_listing.name.specified);
+  CHECK_FALSE(minimal.overrides.symbol_listing.match_case.specified);
+  CHECK_FALSE(minimal.overrides.symbol_listing.kind.specified);
+  CHECK_FALSE(minimal.overrides.symbol_listing.fields.specified);
+
+  const auto insensitive = parse({"symbols", "--no-match-case", "foo.dll"}, current_directory);
+  CHECK(insensitive.overrides.symbol_listing.match_case.specified);
+  CHECK_FALSE(insensitive.overrides.symbol_listing.match_case.value);
+}
+
+TEST_CASE("symbols CLI rejects malformed options", "[cli][config]") {
+  const auto current_directory = std::filesystem::current_path();
+
+  CHECK_THROWS_AS(parse({"symbols", "one.dll", "two.dll"}, current_directory),
+                  noleax::config::ConfigError);
+  CHECK_THROWS_AS(parse({"symbols", "--format", "yaml", "foo.dll"}, current_directory),
+                  noleax::config::ConfigError);
+  CHECK_THROWS_AS(parse({"symbols", "--kind", "bogus", "foo.dll"}, current_directory),
+                  noleax::config::ConfigError);
+  CHECK_THROWS_AS(parse({"symbols", "--fields", "name,bogus", "foo.dll"}, current_directory),
+                  noleax::config::ConfigError);
+  CHECK_THROWS_AS(parse({"symbols", "--fields", "", "foo.dll"}, current_directory),
+                  noleax::config::ConfigError);
+  CHECK_THROWS_AS(parse({"symbols", "--fields", "name,", "foo.dll"}, current_directory),
+                  noleax::config::ConfigError);
+
+  // Unknown option and an option registered only on other subcommands.
+  CHECK_THROWS_AS(parse({"symbols", "--bogus", "foo.dll"}, current_directory),
+                  noleax::cli::CommandLineExit);
+  CHECK_THROWS_AS(parse({"symbols", "--symbols", "off", "foo.dll"}, current_directory),
+                  noleax::cli::CommandLineExit);
+}

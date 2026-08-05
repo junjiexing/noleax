@@ -522,6 +522,40 @@ void load_symbols(const toml::table& table, ConfigurationOverrides& result,
   }
 }
 
+void load_symbol_listing(const toml::table& table, ConfigurationOverrides& result,
+                         const std::filesystem::path& base_directory) {
+  constexpr std::array allowed{"input", "format", "output", "name", "match_case", "kind", "fields"};
+  reject_unknown_keys(table, allowed, "symbol_listing");
+
+  if (const auto* node = optional_node(table, "input")) {
+    result.symbol_listing.input.set(
+        read_optional_path(*node, "symbol_listing.input", "symbols file operand", base_directory));
+  }
+  if (const auto* node = optional_node(table, "format")) {
+    result.symbol_listing.format.set(
+        read_enum<OutputFormat>(*node, "symbol_listing.format", "--format"));
+  }
+  if (const auto* node = optional_node(table, "output")) {
+    result.symbol_listing.output.set(
+        read_optional_path(*node, "symbol_listing.output", "--output", base_directory));
+  }
+  if (const auto* node = optional_node(table, "name")) {
+    result.symbol_listing.name.set(read_string_array(*node, "symbol_listing.name", "--name"));
+  }
+  if (const auto* node = optional_node(table, "match_case")) {
+    result.symbol_listing.match_case.set(
+        read_boolean(*node, "symbol_listing.match_case", "--match-case"));
+  }
+  if (const auto* node = optional_node(table, "kind")) {
+    result.symbol_listing.kind.set(
+        read_enum_array<noleax::analyzer::SymbolKind>(*node, "symbol_listing.kind", "--kind"));
+  }
+  if (const auto* node = optional_node(table, "fields")) {
+    result.symbol_listing.fields.set(read_enum_array<noleax::analyzer::SymbolListingField>(
+        *node, "symbol_listing.fields", "--fields"));
+  }
+}
+
 void load_patch(const toml::table& table, ConfigurationOverrides& result,
                 const std::filesystem::path& base_directory) {
   constexpr std::array allowed{
@@ -702,9 +736,10 @@ ConfigurationOverrides load_toml_config(const std::filesystem::path& config_path
                       "': " + std::string{error.description()}};
   }
 
-  constexpr std::array root_keys{"schema_version", "operation", "target",      "injection",
-                                 "capture",        "trace",     "analysis",    "filters",
-                                 "symbols",        "patch",     "diagnostics", "custom_hooks"};
+  constexpr std::array root_keys{"schema_version", "operation",      "target",   "injection",
+                                 "capture",        "trace",          "analysis", "filters",
+                                 "symbols",        "symbol_listing", "patch",    "diagnostics",
+                                 "custom_hooks"};
   reject_unknown_keys(root, root_keys, {});
 
   const toml::node* const schema_node = root.get("schema_version");
@@ -743,6 +778,9 @@ ConfigurationOverrides load_toml_config(const std::filesystem::path& config_path
   }
   if (const auto* table = optional_table(root, "symbols")) {
     load_symbols(*table, result, base_directory);
+  }
+  if (const auto* table = optional_table(root, "symbol_listing")) {
+    load_symbol_listing(*table, result, base_directory);
   }
   if (const auto* table = optional_table(root, "patch")) {
     load_patch(*table, result, base_directory);

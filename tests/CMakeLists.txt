@@ -20,6 +20,7 @@ add_executable(noleax-unit-tests
   unit/outstanding_test.cpp
   unit/stacks_test.cpp
   unit/replacement_lifecycle_test.cpp
+  unit/symbol_listing_test.cpp
   unit/symbolizer_test.cpp
   unit/time_test.cpp
   unit/command_line_test.cpp
@@ -1187,6 +1188,32 @@ if(WIN32)
         /DEBUG:FULL /OPT:NOREF /OPT:NOICF)
     endif()
   endforeach()
+
+  add_executable(noleax-symbol-listing-test
+    integration/symbol_listing_test.cpp
+    support/csv_table.cpp
+    support/json_dom.cpp
+    support/json_schema.cpp
+  )
+  target_include_directories(noleax-symbol-listing-test PRIVATE "${PROJECT_SOURCE_DIR}/tests")
+  target_link_libraries(noleax-symbol-listing-test PRIVATE noleax::controller)
+  noleax_set_project_warnings(noleax-symbol-listing-test)
+
+  add_dependencies(noleax-symbol-listing-test noleax noleax-custom-alloc-a)
+  add_test(NAME cli.symbol-listing
+    COMMAND noleax-symbol-listing-test
+      "$<TARGET_FILE:noleax>"
+      "$<TARGET_FILE:noleax-custom-alloc-a>"
+      "${PROJECT_SOURCE_DIR}/docs/schema/noleax-symbols-v1.schema.json"
+      "$<TARGET_FILE_DIR:noleax-symbol-listing-test>/symbol-listing"
+  )
+  set_tests_properties(cli.symbol-listing PROPERTIES
+    LABELS "cli;symbols;symbolizer;analyzer;windows"
+    PASS_REGULAR_EXPRESSION
+      "^status=ok console=1 names=1 kinds=1 json=1 csv=1 exports=1 errors=1"
+    RUN_SERIAL TRUE
+    TIMEOUT 90
+  )
 
   add_executable(noleax-custom-alloc-target
     targets/custom_alloc_target.cpp
