@@ -43,6 +43,8 @@ max_stack_depth = 64
 min_size = "0B"
 duration = ""
 live = false
+memory_counters_interval = "1s"
+memory_map_interval = "1s"
 
 [trace]
 path = "example.nlx"
@@ -237,6 +239,8 @@ CLI subcommand存在时覆盖 operation。若 CLI 和配置均缺失，显示顶
 - on_full=rotate 时 max_files 至少为 2。
 - compression=none 或 lz4 时 compression_level 必须为 0。
 - compression=zstd 时 V1 接受 0（codec 默认，即 level 1）或 1。
+- capture.memory_counters_interval / capture.memory_map_interval 为 duration，`0s` 关闭对应
+  内存快照采样器，上限 1h；仅 run/attach 可非默认。
 - trace.path 的父目录必须存在或可创建。
 - custom_hooks：alloc 与 free 必填，每角色的三种定位互斥，参数位 0–7，`kind = "calloc"` 与
   `count_arg` 必须同时出现，同一模块不得重复声明（大小写不敏感），一次捕获最多 32 个
@@ -266,6 +270,9 @@ analyze：
 
 - analysis.inputs 至少一个。
 - events 模式不得设置 analysis.end。
+- memory 模式只接受时间形式的 from/to；`#sequence` 窗口、analysis.end、group_by、sort、
+  trim_agent_frames 和全部 filters 键在该模式下被拒绝（快照没有事件 sequence，也不需要
+  符号化）。
 - analysis.sort 必须搭配 analysis.group_by（当前唯一取值 "stack"）；events 聚合接受 calls、alloc-bytes、free-bytes 和
   net-bytes，leaks 聚合接受 calls 和 bytes。
 - from 小于等于 to；end 若设置，必须大于等于 to。顺序校验只在同种类的界之间进行

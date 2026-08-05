@@ -103,6 +103,7 @@ install(FILES "${PROJECT_SOURCE_DIR}/docs/ROADMAP.md" DESTINATION "docs" RENAME 
 install(FILES
   "${PROJECT_SOURCE_DIR}/docs/schema/noleax-analysis-v1.schema.json"
   "${PROJECT_SOURCE_DIR}/docs/schema/noleax-analysis-v2.schema.json"
+  "${PROJECT_SOURCE_DIR}/docs/schema/noleax-analysis-v3.schema.json"
   "${PROJECT_SOURCE_DIR}/docs/schema/noleax-symbols-v1.schema.json"
   DESTINATION "docs/schema")
 install(DIRECTORY "${PROJECT_SOURCE_DIR}/examples/" DESTINATION "examples")

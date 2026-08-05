@@ -45,6 +45,7 @@ noleax-0.3.0-windows-x64/
     schema/
       noleax-analysis-v1.schema.json
       noleax-analysis-v2.schema.json
+      noleax-analysis-v3.schema.json
   examples/
   licenses/
   README.md

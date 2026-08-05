@@ -13,8 +13,10 @@
 #include <variant>
 #include <vector>
 
+#include "noleax/analyzer/event_stream.hpp"
 #include "noleax/trace/completeness.hpp"
 #include "noleax/trace/event.hpp"
+#include "noleax/trace/memory_snapshot.hpp"
 #include "noleax/trace/record_codec.hpp"
 #include "noleax/trace/trace_reader.hpp"
 #include "noleax/trace/trace_writer.hpp"
@@ -137,6 +139,7 @@ void set_once(std::optional<Value>& destination, Value value, const char* duplic
         }
         case noleax::trace::ChunkType::kModule:
         case noleax::trace::ChunkType::kStack:
+        case noleax::trace::ChunkType::kMemory:
           throw std::runtime_error{"unexpected synthetic chunk type"};
       }
     }
@@ -275,6 +278,31 @@ TEST_CASE("synthetic trace reports a configured file limit", "[trace][synthetic]
   options.writer_options.max_file_size = noleax::trace::kFileHeaderSize;
   noleax::testing::SyntheticTraceBuilder builder{file_header(), {true, false}, options};
   CHECK_THROWS_AS(builder.build(), noleax::testing::SyntheticTraceError);
+}
+
+TEST_CASE("synthetic trace carries memory snapshot records", "[trace][synthetic][memory]") {
+  using namespace noleax::trace;
+  const MemoryCounters counters{100U, 1'000U, 2'000U, 500U, 600U};
+  MemoryMap map;
+  map.monotonic_ticks = 110U;
+  map.committed_bytes = 4'096U;
+  map.regions.push_back(MemoryMapRegion{0x10000U, 0x1000U, MemoryRegionState::kCommit,
+                                        MemoryRegionType::kPrivate, 0x04U});
+
+  noleax::testing::SyntheticTraceBuilder builder{file_header(), {true, false}};
+  builder.add_memory_counters(counters).add_memory_map(map).finish_normally();
+  const auto encoded = builder.build();
+  std::istringstream input{encoded, std::ios::binary};
+  const auto result = noleax::analyzer::analyze_event_stream(input);
+  CHECK(result.memory_counters_count == 1U);
+  CHECK(result.memory_map_count == 1U);
+  CHECK(result.end_of_trace.has_value());
+
+  SECTION("memory ticks must not move backwards") {
+    noleax::testing::SyntheticTraceBuilder reversed{file_header(), {true, false}};
+    reversed.add_memory_map(map).add_memory_counters(counters);
+    CHECK_THROWS_AS(reversed.build(), noleax::testing::SyntheticTraceError);
+  }
 }
 
 TEST_CASE("synthetic trace may intentionally omit EndOfTrace", "[trace][synthetic]") {

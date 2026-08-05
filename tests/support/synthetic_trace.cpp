@@ -15,6 +15,7 @@
 
 #include "noleax/trace/completeness.hpp"
 #include "noleax/trace/event.hpp"
+#include "noleax/trace/memory_snapshot.hpp"
 #include "noleax/trace/record_codec.hpp"
 #include "noleax/trace/trace_writer.hpp"
 #include "noleax/trace/wire_format.hpp"
@@ -172,6 +173,31 @@ SyntheticTraceBuilder& SyntheticTraceBuilder::add_loss(const noleax::trace::Loss
   return *this;
 }
 
+SyntheticTraceBuilder& SyntheticTraceBuilder::add_memory_counters(
+    const noleax::trace::MemoryCounters& counters) {
+  if (end_.has_value()) {
+    throw SyntheticTraceError{"cannot add memory counters after EndOfTrace"};
+  }
+  noleax::trace::validate_memory_counters(counters);
+  if (counters.monotonic_ticks < file_header_.monotonic_origin) {
+    throw SyntheticTraceError{"synthetic memory counters ticks precede the trace origin"};
+  }
+  memory_records_.emplace_back(counters);
+  return *this;
+}
+
+SyntheticTraceBuilder& SyntheticTraceBuilder::add_memory_map(const noleax::trace::MemoryMap& map) {
+  if (end_.has_value()) {
+    throw SyntheticTraceError{"cannot add a memory map after EndOfTrace"};
+  }
+  noleax::trace::validate_memory_map(map);
+  if (map.monotonic_ticks < file_header_.monotonic_origin) {
+    throw SyntheticTraceError{"synthetic memory map ticks precede the trace origin"};
+  }
+  memory_records_.emplace_back(map);
+  return *this;
+}
+
 SyntheticTraceBuilder& SyntheticTraceBuilder::set_statistics(
     const noleax::trace::CaptureStatistics& statistics) {
   if (statistics_.has_value()) {
@@ -297,6 +323,33 @@ std::string SyntheticTraceBuilder::build() const {
     event_descriptor.sequence_begin = noleax::trace::Sequence{bounds.sequence_begin};
     event_descriptor.sequence_end = noleax::trace::Sequence{bounds.sequence_end};
     require_written(writer, event_descriptor, event_payload);
+  }
+
+  if (!memory_records_.empty()) {
+    std::vector<std::byte> memory_payload;
+    std::uint64_t previous_ticks = 0U;
+    bool has_previous = false;
+    for (const auto& record : memory_records_) {
+      const std::uint64_t ticks =
+          std::visit([](const auto& value) { return value.monotonic_ticks; }, record);
+      if (has_previous && ticks < previous_ticks) {
+        throw SyntheticTraceError{"synthetic memory record ticks must not move backwards"};
+      }
+      previous_ticks = ticks;
+      has_previous = true;
+      if (const auto* counters = std::get_if<noleax::trace::MemoryCounters>(&record)) {
+        noleax::trace::append_memory_counters_record(memory_payload, *counters,
+                                                     options_.maximum_record_size);
+      } else {
+        noleax::trace::append_memory_map_record(memory_payload,
+                                                std::get<noleax::trace::MemoryMap>(record),
+                                                options_.maximum_record_size);
+      }
+    }
+    noleax::trace::ChunkDescriptor memory_descriptor;
+    memory_descriptor.type = noleax::trace::ChunkType::kMemory;
+    memory_descriptor.codec = options_.codec;
+    require_written(writer, memory_descriptor, memory_payload);
   }
 
   if (statistics_.has_value()) {

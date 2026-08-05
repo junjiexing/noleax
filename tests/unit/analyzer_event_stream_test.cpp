@@ -561,3 +561,85 @@ TEST_CASE("event stream requires one CaptureScope before events", "[analyzer][ev
                     noleax::analyzer::TraceAnalysisError);
   }
 }
+
+TEST_CASE("event stream decodes memory snapshot chunks", "[analyzer][events][memory]") {
+  using namespace noleax::trace;
+  const MemoryCounters counters{10U, 100U, 200U, 50U, 60U};
+  MemoryMap map;
+  map.monotonic_ticks = 10U;
+  map.committed_bytes = 1'000U;
+  map.reserved_bytes = 2'000U;
+  map.free_bytes = 3'000U;
+  map.largest_free_bytes = 2'500U;
+  map.regions.push_back(MemoryMapRegion{0x10000U, 0x1000U, MemoryRegionState::kCommit,
+                                        MemoryRegionType::kPrivate, 0x04U});
+
+  std::vector<std::byte> payload;
+  append_memory_counters_record(payload, counters);
+  append_memory_map_record(payload, map);
+  const std::vector chunks{
+      ChunkInput{descriptor(ChunkType::kMetadata), metadata_payload()},
+      ChunkInput{descriptor(ChunkType::kMemory), payload},
+      ChunkInput{descriptor(ChunkType::kEnd), end_payload(normal_end(0U, 10U))},
+  };
+
+  std::vector<MemoryCounters> seen_counters;
+  std::vector<MemoryMap> seen_maps;
+  noleax::analyzer::EventStreamCallbacks callbacks;
+  callbacks.on_memory_counters = [&seen_counters](const MemoryCounters& value) {
+    seen_counters.push_back(value);
+  };
+  callbacks.on_memory_map = [&seen_maps](const MemoryMap& value) { seen_maps.push_back(value); };
+  const auto result = analyze(write_trace(chunks), callbacks);
+  CHECK(seen_counters == std::vector{counters});
+  CHECK(seen_maps == std::vector{map});
+  CHECK(result.memory_counters_count == 1U);
+  CHECK(result.memory_map_count == 1U);
+  CHECK(result.completeness.overall_state() == CompletenessState::kComplete);
+}
+
+TEST_CASE("event stream rejects malformed memory snapshot chunks", "[analyzer][events][memory]") {
+  using namespace noleax::trace;
+
+  SECTION("memory chunk with an event sequence range") {
+    std::vector<std::byte> payload;
+    append_memory_counters_record(payload, MemoryCounters{10U, 100U, 200U, 50U, 60U});
+    const std::vector chunks{
+        ChunkInput{descriptor(ChunkType::kMetadata), metadata_payload()},
+        ChunkInput{descriptor(ChunkType::kMemory, 1U, 2U), payload},
+    };
+    std::istringstream input{write_trace(chunks), std::ios::binary};
+    CHECK_THROWS_AS(noleax::analyzer::analyze_event_stream(input),
+                    noleax::analyzer::TraceAnalysisError);
+  }
+
+  SECTION("memory record ticks move backwards") {
+    std::vector<std::byte> payload;
+    append_memory_counters_record(payload, MemoryCounters{10U, 100U, 200U, 50U, 60U});
+    append_memory_counters_record(payload, MemoryCounters{9U, 100U, 200U, 50U, 60U});
+    const std::vector chunks{
+        ChunkInput{descriptor(ChunkType::kMetadata), metadata_payload()},
+        ChunkInput{descriptor(ChunkType::kMemory), payload},
+    };
+    std::istringstream input{write_trace(chunks), std::ios::binary};
+    CHECK_THROWS_AS(noleax::analyzer::analyze_event_stream(input),
+                    noleax::analyzer::TraceAnalysisError);
+  }
+
+  SECTION("unknown memory record is skipped and marks the trace partial") {
+    std::vector<std::byte> payload;
+    append_memory_counters_record(payload, MemoryCounters{10U, 100U, 200U, 50U, 60U});
+    const std::array<std::byte, 4> unknown_payload{};
+    append_record(payload, 77U, 1U, unknown_payload, kDefaultMaximumRecordSize);
+    const std::vector chunks{
+        ChunkInput{descriptor(ChunkType::kMetadata), metadata_payload()},
+        ChunkInput{descriptor(ChunkType::kMemory), payload},
+        ChunkInput{descriptor(ChunkType::kEnd), end_payload(normal_end(0U, 10U))},
+    };
+    std::istringstream input{write_trace(chunks), std::ios::binary};
+    const auto result = noleax::analyzer::analyze_event_stream(input);
+    CHECK(result.memory_counters_count == 1U);
+    CHECK(result.partially_understood);
+    CHECK(result.completeness.has(CompletenessIssue::kUnknownRecordSkipped));
+  }
+}

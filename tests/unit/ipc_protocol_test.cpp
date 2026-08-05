@@ -89,6 +89,8 @@ TEST_CASE("IPC payload codecs preserve capture contracts", "[ipc][protocol]") {
   start.buffer_size = 8U * 1024U * 1024U;
   start.maximum_trace_size = 64U * 1024U * 1024U;
   start.flush_interval_ns = 10U * 1000U * 1000U;
+  start.memory_counters_interval_ns = 500U * 1000U * 1000U;
+  start.memory_map_interval_ns = 0U;
   start.compression_level = 1;
   start.trace_path_utf8 = "C:/traces/app.nlx";
   start.unload_on_stop = true;

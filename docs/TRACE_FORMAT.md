@@ -34,7 +34,7 @@ V1 固定头为 68 bytes，位于文件起始位置：
 | 0 | magic | byte[8] | ASCII `NLXTRACE` |
 | 8 | header_size | uint16 | 68 |
 | 10 | format_major | uint16 | 1 |
-| 12 | format_minor | uint16 | 1 |
+| 12 | format_minor | uint16 | 2 |
 | 14 | byte_order | uint8 | little=1、big=2；V1 writer 写 1 |
 | 15 | pointer_width | uint8 | 4 或 8 |
 | 16 | platform | uint16 | unknown=0、windows=1、linux=2、macos=3 |
@@ -55,7 +55,7 @@ platform/architecture、非 4/8 的 pointer_width 以及零 monotonic_frequency�
 
 | offset | 字段 | 类型 | V1 编码/含义 |
 |---:|---|---|---|
-| 0 | chunk_type | uint16 | metadata=1、module=2、stack=3、event=4、statistics=5、end=6 |
+| 0 | chunk_type | uint16 | metadata=1、module=2、stack=3、event=4、statistics=5、end=6、memory=7（minor 2 起） |
 | 2 | chunk_version | uint16 | chunk payload 版本，必须非零 |
 | 4 | header_size | uint16 | 56 |
 | 6 | flags | uint16 | chunk flags |
@@ -112,6 +112,7 @@ record_version=1：
 | event | VmAllocate=6、VmFree=7、Map=8、Unmap=9、Loss=10 |
 | statistics | CaptureStatistics=1 |
 | end | EndOfTrace=1 |
+| memory | MemoryCounters=1、MemoryMap=2（minor 2 起） |
 
 同一 type 的更高 record_version 按未知 record 跳过并标记 partially understood，不能按 V1
 payload 猜测解析。
@@ -537,7 +538,40 @@ normal_stop uint8、target_exit_code_present uint8、reserved byte[6]、target_e
 reserved uint32、completeness mask uint32、reserved uint32。缺省 target exit code 的存储值必须为零。
 final_monotonic_ticks 必须大于等于 FileHeader.monotonic_origin。
 
-## 15. Compression
+## 15. Memory snapshot records
+
+format minor 2 增加 memory chunk（chunk_type=7）：agent 的 writer 线程按独立间隔周期采样进程
+内存状态，每次写出包含一到两条 record 的一个 memory chunk。chunk descriptor 不带 event
+sequence range；reader 按非 event chunk 要求其为空。两种 record 的 ticks 都来自与事件相同的
+单调时钟，由单线程顺序采样，天然非递减；analyzer 校验 ticks 不小于 monotonic_origin 且不回退。
+捕获开始（基线）和正常收尾各对每个启用的采样器补一条记录；DLL_PROCESS_DETACH 收尾路径不补
+最终快照，以最后一条周期快照为准。老 minor reader 将整个 memory chunk 按未知 chunk 跳过并
+标记 partially understood。
+
+### 15.1 MemoryCounters（record_type=1）
+
+payload 固定 48 bytes：monotonic_ticks uint64、working_set_bytes uint64、
+peak_working_set_bytes uint64、private_bytes uint64、commit_bytes uint64、reserved byte[8]。
+Windows 数据源为 `K32GetProcessMemoryInfo`（PROCESS_MEMORY_COUNTERS_EX），commit_bytes 取
+PagefileUsage。codec 校验 peak 不低于当前 working set。
+
+### 15.2 MemoryMap（record_type=2）
+
+全量 VirtualQuery 地址空间 walk 的快照。payload 固定前缀 48 bytes：monotonic_ticks uint64、
+flags uint8（bit0 = truncated，其余为零）、reserved byte[3]、region_count uint32、
+committed_bytes uint64、reserved_bytes uint64、free_bytes uint64、largest_free_bytes uint64；
+随后为 region_count 条各 24 bytes 的 region：base uint64、size uint64、state uint8
+（commit=1、reserve=2）、type uint8（image=1、mapped=2、private=3）、protect uint32、
+reserved byte[2]。
+
+- 只列出 MEM_COMMIT/MEM_RESERVE region；MEM_FREE region 只计入 free_bytes 与
+  largest_free_bytes 聚合。
+- region 按 base 升序排列，不得重叠，size 不得为零；region 数上限为 32768 条
+  （kMaximumMemoryMapRegions，约占单 record 1 MiB 上限的 3/4），超出时截断列表并置
+  truncated 标志。
+- 聚合计数（committed/reserved/free/largest_free）始终是全量 walk 的结果，不受列表截断影响。
+
+## 16. Compression
 
 - codec 逐 chunk 指定。
 - 默认 LZ4。
@@ -553,7 +587,7 @@ final_monotonic_ticks 必须大于等于 FileHeader.monotonic_origin。
 Windows writer 对数据 chunk 使用所选 codec；最后的 Loss、Statistics 和 EndOfTrace 使用
 none。终止记录较小，固定为 none 可给文件尾保留空间建立不依赖压缩 bound 的硬上限证明。
 
-## 16. Rotation
+## 17. Rotation
 
 - 同一 session 的文件共享 session_id。
 - file_index 从 0 增加。
@@ -562,7 +596,7 @@ none。终止记录较小，固定为 none 可给文件尾保留空间建立不�
 - rotate 达到 max_files 后停止并写 Loss/Statistics。
 - 若未来支持删除最旧文件，必须使用不同 policy 名称并明确结果不完整。
 
-## 17. 安全限制
+## 18. 安全限制
 
 reader 将 trace 视为不可信输入：
 
@@ -577,15 +611,16 @@ reader 将 trace 视为不可信输入：
 reader 默认限制：file/chunk header 各 64 KiB、stored chunk 17 MiB、uncompressed
 chunk 16 MiB、最大展开比例 65536:1。所有长度在分配和解压前验证；调用方可以进一步收紧。
 
-## 18. 合成 trace fixture
+## 19. 合成 trace fixture
 
 提供仅供测试使用的 SyntheticTraceBuilder，以正式 TraceWriter 和 V1 record codec 生成
 fixture，再用正式 TraceReader 和 decoder 验证，不维护第二套 wire-format 实现。
 
 生成规则：
 
-- chunk 固定按 metadata、event、statistics、end 排列；后三类在没有对应 record 时省略。
+- chunk 固定按 metadata、event、memory、statistics、end 排列；后四类在没有对应 record 时省略。
 - metadata 当前包含一个 CaptureScope；event chunk 按调用顺序保存 Event 和 Loss。
+- memory chunk 按调用顺序保存 MemoryCounters 和 MemoryMap，其 ticks 同样不得回退。
 - event sequence 必须严格递增，monotonic ticks 不得回退。
 - event chunk 的 sequence 范围覆盖事件和具有 sequence range 的 Loss；正常结束的最终 sequence
   和 ticks 自动覆盖所有事件及 Loss 范围。

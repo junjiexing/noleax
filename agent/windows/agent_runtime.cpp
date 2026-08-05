@@ -201,6 +201,17 @@ class CaptureRuntime final {
     writer_options.flush_interval = (std::max)(
         std::chrono::milliseconds{1}, std::chrono::duration_cast<std::chrono::milliseconds>(
                                           flush_ns + std::chrono::milliseconds{1}));
+    // 0 disables the sampler; any positive value is rounded up to whole milliseconds.
+    const auto snapshot_interval = [](std::uint64_t interval_ns) {
+      if (interval_ns == 0U) {
+        return std::chrono::milliseconds::zero();
+      }
+      return std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::nanoseconds{interval_ns} + std::chrono::nanoseconds{999'999});
+    };
+    writer_options.memory_counters_interval =
+        snapshot_interval(request.memory_counters_interval_ns);
+    writer_options.memory_map_interval = snapshot_interval(request.memory_map_interval_ns);
     writer_ = std::make_unique<RtlAllocateHeapTraceWriter>(
         *hooks_, *output_, make_header(session_token_), writer_options);
     const auto installed = hooks_->install();
@@ -736,6 +747,10 @@ void standalone_report(const std::string& message) noexcept {
   request.maximum_trace_size = configuration.trace.max_file_size.value;
   request.flush_interval_ns =
       static_cast<std::uint64_t>(configuration.trace.flush_interval.value.count());
+  request.memory_counters_interval_ns =
+      static_cast<std::uint64_t>(configuration.capture.memory_counters_interval.value.count());
+  request.memory_map_interval_ns =
+      static_cast<std::uint64_t>(configuration.capture.memory_map_interval.value.count());
   request.compression = ipc_compression(configuration.trace.compression.value);
   request.compression_level = configuration.trace.compression_level.value;
   const std::filesystem::path trace_path = configuration.trace.path.value.value_or(

@@ -10,6 +10,7 @@
 
 #include "noleax/trace/completeness.hpp"
 #include "noleax/trace/event.hpp"
+#include "noleax/trace/memory_snapshot.hpp"
 #include "noleax/trace/module.hpp"
 #include "noleax/trace/trace_reader.hpp"
 #include "noleax/trace/wire_format.hpp"
@@ -570,4 +571,173 @@ TEST_CASE("record encoders honor the configured record size limit", "[trace][rec
   CHECK(encoded.empty());
   CHECK_THROWS_AS(append_module_load_record(encoded, module_load(), 87U), RecordCodecError);
   CHECK(encoded.empty());
+}
+
+TEST_CASE("memory counters record has stable layout and round trips", "[trace][record-codec]") {
+  using namespace noleax::trace;
+  const MemoryCounters expected{0x0102030405060708ULL, 0x1111U, 0x2222U, 0x3333U, 0x4444U};
+  std::vector<std::byte> encoded;
+  append_memory_counters_record(encoded, expected);
+
+  REQUIRE(encoded.size() == 56U);
+  CHECK(std::to_integer<std::uint8_t>(encoded[0]) ==
+        static_cast<std::uint8_t>(MemoryRecordType::kCounters));
+  CHECK(read_u32(encoded, 4U) == 56U);
+  CHECK(read_u64(encoded, 8U) == expected.monotonic_ticks);
+  CHECK(read_u64(encoded, 16U) == expected.working_set_bytes);
+  CHECK(read_u64(encoded, 24U) == expected.peak_working_set_bytes);
+  CHECK(read_u64(encoded, 32U) == expected.private_bytes);
+  CHECK(read_u64(encoded, 40U) == expected.commit_bytes);
+  CHECK(read_u64(encoded, 48U) == 0U);
+
+  RecordCursor cursor{encoded};
+  const auto decoded = decode_memory_counters_record(*cursor.next());
+  REQUIRE(decoded.has_value());
+  CHECK(*decoded == expected);
+  CHECK(cursor.done());
+}
+
+TEST_CASE("memory map record has stable layout and round trips", "[trace][record-codec]") {
+  using namespace noleax::trace;
+  MemoryMap expected;
+  expected.monotonic_ticks = 0x0102030405060708ULL;
+  expected.committed_bytes = 0x1000U;
+  expected.reserved_bytes = 0x2000U;
+  expected.free_bytes = 0x3000U;
+  expected.largest_free_bytes = 0x2800U;
+  expected.regions = {
+      MemoryMapRegion{0x10000U, 0x2000U, MemoryRegionState::kCommit, MemoryRegionType::kPrivate,
+                      0x04U},
+      MemoryMapRegion{0x40000000U, 0x100000U, MemoryRegionState::kReserve,
+                      MemoryRegionType::kMapped, 0x02U},
+  };
+  std::vector<std::byte> encoded;
+  append_memory_map_record(encoded, expected);
+
+  REQUIRE(encoded.size() == 8U + 48U + 2U * 24U);
+  CHECK(std::to_integer<std::uint8_t>(encoded[0]) ==
+        static_cast<std::uint8_t>(MemoryRecordType::kMap));
+  CHECK(read_u32(encoded, 4U) == 8U + 48U + 2U * 24U);
+  CHECK(read_u64(encoded, 8U) == expected.monotonic_ticks);
+  CHECK(std::to_integer<std::uint8_t>(encoded[16]) == 0U);
+  CHECK(read_u32(encoded, 20U) == 2U);
+  CHECK(read_u64(encoded, 24U) == expected.committed_bytes);
+  CHECK(read_u64(encoded, 32U) == expected.reserved_bytes);
+  CHECK(read_u64(encoded, 40U) == expected.free_bytes);
+  CHECK(read_u64(encoded, 48U) == expected.largest_free_bytes);
+  CHECK(read_u64(encoded, 56U) == expected.regions[0].base);
+  CHECK(read_u64(encoded, 64U) == expected.regions[0].size);
+  CHECK(std::to_integer<std::uint8_t>(encoded[72]) ==
+        static_cast<std::uint8_t>(MemoryRegionState::kCommit));
+  CHECK(std::to_integer<std::uint8_t>(encoded[73]) ==
+        static_cast<std::uint8_t>(MemoryRegionType::kPrivate));
+  CHECK(read_u32(encoded, 74U) == expected.regions[0].protect);
+
+  RecordCursor cursor{encoded};
+  const auto decoded = decode_memory_map_record(*cursor.next());
+  REQUIRE(decoded.has_value());
+  CHECK(*decoded == expected);
+  CHECK(cursor.done());
+}
+
+TEST_CASE("memory map record supports the region limit and the truncated flag",
+          "[trace][record-codec]") {
+  using namespace noleax::trace;
+  MemoryMap map;
+  map.monotonic_ticks = 42U;
+  map.truncated = true;
+  map.regions.reserve(kMaximumMemoryMapRegions);
+  for (std::uint32_t index = 0U; index < kMaximumMemoryMapRegions; ++index) {
+    map.regions.push_back(MemoryMapRegion{0x10000ULL + 0x3000ULL * index, 0x1000U,
+                                          MemoryRegionState::kReserve, MemoryRegionType::kImage,
+                                          0x01U});
+  }
+  std::vector<std::byte> encoded;
+  append_memory_map_record(encoded, map);
+  RecordCursor cursor{encoded};
+  const auto decoded = decode_memory_map_record(*cursor.next());
+  REQUIRE(decoded.has_value());
+  CHECK(*decoded == map);
+
+  MemoryMap too_many = map;
+  too_many.regions.push_back(MemoryMapRegion{0x7F0000000000ULL, 0x1000U, MemoryRegionState::kCommit,
+                                             MemoryRegionType::kPrivate, 0x04U});
+  std::vector<std::byte> overflow;
+  CHECK_THROWS_AS(append_memory_map_record(overflow, too_many), MemorySnapshotValidationError);
+  CHECK(overflow.empty());
+}
+
+TEST_CASE("memory record decoders skip unknown types and versions", "[trace][record-codec]") {
+  using namespace noleax::trace;
+  const std::array<std::byte, 1> payload{std::byte{0}};
+  const RecordView unknown_type{0xFFFFU, 1U, payload};
+  const RecordView unknown_version{1U, 2U, payload};
+  const RecordView unknown_map_version{2U, 2U, payload};
+
+  CHECK_FALSE(decode_memory_counters_record(unknown_type).has_value());
+  CHECK_FALSE(decode_memory_map_record(unknown_type).has_value());
+  CHECK_FALSE(decode_memory_counters_record(unknown_version).has_value());
+  CHECK_FALSE(decode_memory_map_record(unknown_version).has_value());
+  // type=1 matches the counters decoder but never reaches the map decoder's version check.
+  CHECK_FALSE(decode_memory_map_record(unknown_map_version).has_value());
+}
+
+TEST_CASE("memory record decoders reject malformed payloads", "[trace][record-codec]") {
+  using namespace noleax::trace;
+
+  SECTION("counters payload has trailing bytes") {
+    const std::array<std::byte, 49> payload{};
+    CHECK_THROWS_AS(decode_memory_counters_record(RecordView{
+                        static_cast<std::uint16_t>(MemoryRecordType::kCounters), 1U, payload}),
+                    RecordCodecError);
+  }
+
+  SECTION("counters peak below working set") {
+    std::vector<std::byte> encoded;
+    append_memory_counters_record(encoded, MemoryCounters{1U, 0x2000U, 0x2000U, 0U, 0U});
+    write_u64(encoded, 24U, 0x1000U);
+    RecordCursor cursor{encoded};
+    CHECK_THROWS_AS(decode_memory_counters_record(*cursor.next()), RecordCodecError);
+  }
+
+  SECTION("map region count exceeds payload") {
+    MemoryMap map;
+    map.regions.push_back(MemoryMapRegion{0x10000U, 0x1000U, MemoryRegionState::kCommit,
+                                          MemoryRegionType::kPrivate, 0x04U});
+    std::vector<std::byte> encoded;
+    append_memory_map_record(encoded, map);
+    write_u32(encoded, 20U, 2U);
+    RecordCursor cursor{encoded};
+    CHECK_THROWS_AS(decode_memory_map_record(*cursor.next()), RecordCodecError);
+  }
+
+  SECTION("map region state is unknown") {
+    MemoryMap map;
+    map.regions.push_back(MemoryMapRegion{0x10000U, 0x1000U, MemoryRegionState::kCommit,
+                                          MemoryRegionType::kPrivate, 0x04U});
+    std::vector<std::byte> encoded;
+    append_memory_map_record(encoded, map);
+    encoded[72] = std::byte{0xFF};
+    RecordCursor cursor{encoded};
+    CHECK_THROWS_AS(decode_memory_map_record(*cursor.next()), RecordCodecError);
+  }
+
+  SECTION("map regions overlap") {
+    MemoryMap map;
+    map.regions.push_back(MemoryMapRegion{0x10000U, 0x2000U, MemoryRegionState::kCommit,
+                                          MemoryRegionType::kPrivate, 0x04U});
+    map.regions.push_back(MemoryMapRegion{0x11000U, 0x1000U, MemoryRegionState::kCommit,
+                                          MemoryRegionType::kPrivate, 0x04U});
+    std::vector<std::byte> encoded;
+    CHECK_THROWS_AS(append_memory_map_record(encoded, map), MemorySnapshotValidationError);
+  }
+
+  SECTION("memory map exceeds the configured record size limit") {
+    MemoryMap map;
+    map.regions.push_back(MemoryMapRegion{0x10000U, 0x1000U, MemoryRegionState::kCommit,
+                                          MemoryRegionType::kPrivate, 0x04U});
+    std::vector<std::byte> encoded;
+    CHECK_THROWS_AS(append_memory_map_record(encoded, map, 79U), RecordCodecError);
+    CHECK(encoded.empty());
+  }
 }

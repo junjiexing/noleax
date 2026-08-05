@@ -67,6 +67,10 @@ TEST_CASE("run CLI maps every capture option and target operands", "[cli][config
                              "trace.nlx",
                              "--capture-duration",
                              "5m",
+                             "--memory-counters-interval",
+                             "500ms",
+                             "--memory-map-interval",
+                             "0s",
                              "--",
                              "app.exe",
                              "--target-flag"},
@@ -86,6 +90,8 @@ TEST_CASE("run CLI maps every capture option and target operands", "[cli][config
   CHECK(overrides.capture.max_stack_depth.value == 96U);
   CHECK(overrides.capture.min_size.value == 4U * 1024U);
   CHECK(overrides.capture.duration.value == 5min);
+  CHECK(overrides.capture.memory_counters_interval.value == 500ms);
+  CHECK(overrides.capture.memory_map_interval.value == 0ns);
   CHECK(overrides.trace.path.value == working_directory / "trace.nlx");
   CHECK(overrides.trace.buffer_size.value == 8U * 1024U * 1024U);
   CHECK(overrides.trace.max_file_size.value == 64U * 1024U * 1024U);
@@ -214,6 +220,14 @@ TEST_CASE("analyze CLI replaces arrays and maps all filters", "[cli][config]") {
   CHECK(overrides.symbols.paths.value ==
         std::vector<std::filesystem::path>{current_directory / "symbols"});
   CHECK(overrides.symbols.servers.value == std::vector<std::string>{"https://server"});
+}
+
+TEST_CASE("analyze CLI parses the memory mode", "[cli][config]") {
+  const auto current_directory = std::filesystem::current_path();
+  const auto parsed =
+      parse({"analyze", "--mode", "memory", "--from", "1s", "one.nlx"}, current_directory);
+  CHECK(parsed.overrides.analysis.mode.value == noleax::config::AnalysisMode::kMemory);
+  CHECK(parsed.overrides.analysis.from.value->time == std::chrono::seconds{1});
 }
 
 TEST_CASE("analyze CLI parses time and sequence window bounds", "[cli][config]") {

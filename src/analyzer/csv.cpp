@@ -605,6 +605,33 @@ template <typename Column>
   return static_cast<std::size_t>(column);
 }
 
+// The memory snapshot table is a flat time series: one row per sampling tick, with the counters
+// and map columns left empty when that sampler was not due at the tick.
+enum class MemoryColumn : std::uint8_t {
+  kTimeNs,
+  kWorkingSetBytes,
+  kPeakWorkingSetBytes,
+  kPrivateBytes,
+  kCommitBytes,
+  kCommittedBytes,
+  kReservedBytes,
+  kFreeBytes,
+  kLargestFreeBytes,
+  kRegionCount,
+  kTruncated,
+  kCount,
+};
+
+constexpr std::size_t kMemoryColumnCount = static_cast<std::size_t>(MemoryColumn::kCount);
+using MemoryRow = std::array<std::string, kMemoryColumnCount>;
+
+constexpr std::array<std::string_view, kMemoryColumnCount> kMemoryHeader{
+    "time_ns",        "working_set_bytes", "peak_working_set_bytes",
+    "private_bytes",  "commit_bytes",      "committed_bytes",
+    "reserved_bytes", "free_bytes",        "largest_free_bytes",
+    "region_count",   "truncated",
+};
+
 void set(EventRow& row, EventColumn column, std::string value) {
   row[column_index(column)] = std::move(value);
 }
@@ -1484,6 +1511,40 @@ void CsvWriter::write_leak_stacks(const LeaksStacksResult& result,
   ensure_output();
 }
 
+void CsvWriter::write_memory(const MemoryAnalysisResult& result) {
+  require_state(State::kReady, "write memory report");
+  header_ = result.trace.file_header;
+  capture_scope_ = result.trace.capture_scope;
+  CsvEmitter csv{output_};
+  csv.row(kMemoryHeader);
+  for (const MemorySnapshot& snapshot : result.snapshots) {
+    MemoryRow row{};
+    row[column_index(MemoryColumn::kTimeNs)] =
+        decimal(trace_time_floor(snapshot.monotonic_ticks, header_).count());
+    if (snapshot.counters.has_value()) {
+      const auto& counters = *snapshot.counters;
+      row[column_index(MemoryColumn::kWorkingSetBytes)] = decimal(counters.working_set_bytes);
+      row[column_index(MemoryColumn::kPeakWorkingSetBytes)] =
+          decimal(counters.peak_working_set_bytes);
+      row[column_index(MemoryColumn::kPrivateBytes)] = decimal(counters.private_bytes);
+      row[column_index(MemoryColumn::kCommitBytes)] = decimal(counters.commit_bytes);
+    }
+    if (snapshot.map.has_value()) {
+      const auto& map = *snapshot.map;
+      row[column_index(MemoryColumn::kCommittedBytes)] = decimal(map.committed_bytes);
+      row[column_index(MemoryColumn::kReservedBytes)] = decimal(map.reserved_bytes);
+      row[column_index(MemoryColumn::kFreeBytes)] = decimal(map.free_bytes);
+      row[column_index(MemoryColumn::kLargestFreeBytes)] = decimal(map.largest_free_bytes);
+      row[column_index(MemoryColumn::kRegionCount)] =
+          decimal(static_cast<std::uint64_t>(map.regions.size()));
+      row[column_index(MemoryColumn::kTruncated)] = map.truncated ? "true" : "false";
+    }
+    csv.row(row);
+  }
+  state_ = State::kFinished;
+  ensure_output();
+}
+
 void CsvWriter::require_state(State expected, const char* operation) const {
   if (state_ != expected) {
     throw CsvFormatError{std::string{"cannot "} + operation + " in the current writer state"};
@@ -1557,6 +1618,14 @@ LeaksStacksResult analyze_leak_stacks_to_csv(std::istream& input, std::ostream& 
   auto result = analyze_leak_stacks(input, window, sort, filter, filter_resolver, stream_options);
   CsvWriter writer{output};
   writer.write_leak_stacks(result, presentation_resolver);
+  return result;
+}
+
+MemoryAnalysisResult analyze_memory_to_csv(std::istream& input, std::ostream& output,
+                                           MemoryWindow window, EventStreamOptions stream_options) {
+  auto result = analyze_memory(input, window, stream_options);
+  CsvWriter writer{output};
+  writer.write_memory(result);
   return result;
 }
 

@@ -24,11 +24,13 @@
 
 #include "noleax/agent/hook_guard.hpp"
 #include "noleax/agent/windows/custom_symbol_hooks.hpp"
+#include "noleax/agent/windows/memory_snapshot.hpp"
 #include "noleax/agent/windows/module_tracker.hpp"
 #include "noleax/agent/windows/stack_dictionary.hpp"
 #include "noleax/trace/completeness.hpp"
 #include "noleax/trace/custom_hook.hpp"
 #include "noleax/trace/event.hpp"
+#include "noleax/trace/memory_snapshot.hpp"
 #include "noleax/trace/module.hpp"
 #include "noleax/trace/record_codec.hpp"
 #include "noleax/trace/stack.hpp"
@@ -266,6 +268,10 @@ struct LiveModule {
   }
   if (options.flush_interval <= std::chrono::milliseconds::zero()) {
     throw std::invalid_argument{"trace writer flush interval must be positive"};
+  }
+  if (options.memory_counters_interval < std::chrono::milliseconds::zero() ||
+      options.memory_map_interval < std::chrono::milliseconds::zero()) {
+    throw std::invalid_argument{"trace writer memory snapshot intervals must not be negative"};
   }
   if (options.chunk_target_size == 0U ||
       options.chunk_target_size > options.trace.max_uncompressed_chunk_size) {
@@ -660,6 +666,10 @@ class RtlAllocateHeapTraceWriter::Implementation final {
     }
     collect_module_drops();
     auto next_flush = std::chrono::steady_clock::now() + options_.flush_interval;
+    // Both samplers are due immediately: every enabled sampler takes a baseline sample at
+    // capture start.
+    auto next_counters = std::chrono::steady_clock::now();
+    auto next_map = next_counters;
     for (;;) {
       bool drained_event = false;
       RtlAllocateHeapEvent raw_event;
@@ -680,6 +690,18 @@ class RtlAllocateHeapTraceWriter::Implementation final {
         flush_pending();
         next_flush = now + options_.flush_interval;
       }
+      const bool counters_due =
+          options_.memory_counters_interval.count() > 0 && now >= next_counters;
+      const bool map_due = options_.memory_map_interval.count() > 0 && now >= next_map;
+      if (counters_due || map_due) {
+        capture_memory_snapshot(counters_due, map_due);
+        if (counters_due) {
+          next_counters = now + options_.memory_counters_interval;
+        }
+        if (map_due) {
+          next_map = now + options_.memory_map_interval;
+        }
+      }
       if (!drained_event) {
         std::unique_lock lock{state_mutex_};
         state_changed_.wait_for(lock, kEmptyPollInterval,
@@ -698,7 +720,56 @@ class RtlAllocateHeapTraceWriter::Implementation final {
     collect_queue_drops();
     collect_module_drops();
     flush_pending();
+    // Take one final sample of every enabled sampler on the orderly stop path. The
+    // finish_after_worker_exit() (DLL_PROCESS_DETACH) path skips this on purpose: the last
+    // periodic snapshot stands.
+    if (options_.memory_counters_interval.count() > 0 || options_.memory_map_interval.count() > 0) {
+      capture_memory_snapshot(options_.memory_counters_interval.count() > 0,
+                              options_.memory_map_interval.count() > 0);
+    }
     finalize_trace();
+  }
+
+  // Samples the due memory record kinds and writes them as one kMemory chunk (counters first).
+  // Sampling runs on the writer thread (an internal thread), so its own allocations and API
+  // calls are never recorded. A failed or throwing sampler skips its record; a failed chunk
+  // write degrades to the usual file-limit handling. Sampling never aborts the capture.
+  void capture_memory_snapshot(bool want_counters, bool want_map) noexcept {
+    if (file_limit_reached_) {
+      return;
+    }
+    try {
+      memory_payload_.clear();
+      LARGE_INTEGER counter{};
+      if (QueryPerformanceCounter(&counter) == FALSE || counter.QuadPart < 0) {
+        return;
+      }
+      const std::uint64_t ticks = (std::max)(static_cast<std::uint64_t>(counter.QuadPart),
+                                             (std::max)(last_memory_ticks_, monotonic_origin_));
+      last_memory_ticks_ = ticks;
+      if (want_counters) {
+        noleax::trace::MemoryCounters counters;
+        if (capture_memory_counters(counters)) {
+          counters.monotonic_ticks = ticks;
+          noleax::trace::append_memory_counters_record(memory_payload_, counters,
+                                                       options_.maximum_record_size);
+        }
+      }
+      if (want_map) {
+        noleax::trace::MemoryMap map;
+        if (capture_memory_map(map)) {
+          map.monotonic_ticks = ticks;
+          noleax::trace::append_memory_map_record(memory_payload_, map,
+                                                  options_.maximum_record_size);
+        }
+      }
+      if (!memory_payload_.empty()) {
+        static_cast<void>(write_data_chunk(noleax::trace::ChunkType::kMemory, memory_payload_));
+        memory_payload_.clear();
+      }
+    } catch (...) {
+      memory_payload_.clear();
+    }
   }
 
   void drain_modules_through(std::uint64_t maximum_ticks) {
@@ -2124,8 +2195,12 @@ class RtlAllocateHeapTraceWriter::Implementation final {
 
     noleax::trace::EndOfTrace end;
     end.final_sequence = noleax::trace::Sequence{last_sequence_};
+    // Memory snapshots are sampled after the final event drain, so their ticks can be the
+    // latest in the trace; include them in the end boundary or consumers that use the summary
+    // end as the time axis would clip the last snapshots.
     end.final_monotonic_ticks =
-        (std::max)((std::max)(last_ticks_, last_module_ticks_), monotonic_origin_);
+        (std::max)((std::max)((std::max)(last_ticks_, last_module_ticks_), last_memory_ticks_),
+                   monotonic_origin_);
     end.normal_stop = true;
     end.aggregate_completeness = completeness_.report();
     end.aggregate_completeness.remove(noleax::trace::CompletenessIssue::kMissingEndOfTrace);
@@ -2167,6 +2242,7 @@ class RtlAllocateHeapTraceWriter::Implementation final {
   std::vector<std::byte> module_payload_;
   std::vector<std::byte> stack_payload_;
   std::vector<std::byte> event_payload_;
+  std::vector<std::byte> memory_payload_;
   std::unordered_map<AllocationKey, noleax::trace::AllocationId, AllocationKeyHash>
       live_allocations_;
   std::unordered_map<std::uint32_t, std::uint64_t> custom_allocation_counters_;
@@ -2196,6 +2272,7 @@ class RtlAllocateHeapTraceWriter::Implementation final {
   std::uint64_t last_sequence_{0U};
   std::uint64_t last_ticks_{0U};
   std::uint64_t last_module_ticks_{0U};
+  std::uint64_t last_memory_ticks_{0U};
   std::uint64_t pending_module_loads_{0U};
   std::uint64_t pending_module_unloads_{0U};
   std::uint64_t pending_event_count_{0U};

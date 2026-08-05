@@ -15,6 +15,7 @@ namespace {
 
 constexpr std::uint64_t kMinimumTraceBufferSize = 4U * 1024U;
 constexpr std::uint64_t kMinimumTraceOverhead = 4U * 1024U;
+constexpr auto kMaximumMemorySnapshotInterval = std::chrono::hours{1};
 
 [[noreturn]] void fail(std::string_view key, std::string_view detail) {
   std::string message{"configuration key '"};
@@ -67,6 +68,11 @@ void require_default_capture(const Configuration& configuration, const Configura
   require_default(configuration.capture.duration, defaults.capture.duration, "capture.duration",
                   operation);
   require_default(configuration.capture.live, defaults.capture.live, "capture.live", operation);
+  require_default(configuration.capture.memory_counters_interval,
+                  defaults.capture.memory_counters_interval, "capture.memory_counters_interval",
+                  operation);
+  require_default(configuration.capture.memory_map_interval, defaults.capture.memory_map_interval,
+                  "capture.memory_map_interval", operation);
 }
 
 void require_default_trace(const Configuration& configuration, const Configuration& defaults,
@@ -319,6 +325,14 @@ void validate_common_capture(const Configuration& configuration) {
       *configuration.capture.duration.value <= std::chrono::nanoseconds::zero()) {
     fail("capture.duration", "must be greater than zero when provided");
   }
+  if (configuration.capture.memory_counters_interval.value < std::chrono::nanoseconds::zero() ||
+      configuration.capture.memory_counters_interval.value > kMaximumMemorySnapshotInterval) {
+    fail("capture.memory_counters_interval", "must be between 0s (disabled) and 1h");
+  }
+  if (configuration.capture.memory_map_interval.value < std::chrono::nanoseconds::zero() ||
+      configuration.capture.memory_map_interval.value > kMaximumMemorySnapshotInterval) {
+    fail("capture.memory_map_interval", "must be between 0s (disabled) and 1h");
+  }
   validate_optional_existing_path(configuration.injection.agent_path.value, "injection.agent_path");
 
   if (configuration.trace.buffer_size.value < kMinimumTraceBufferSize) {
@@ -448,8 +462,37 @@ void validate_analyze(const Configuration& configuration, const Configuration& d
   }
   validate_output_parent(configuration.analysis.output.value, "analysis.output");
   const bool events_mode = configuration.analysis.mode.value == AnalysisMode::kEvents;
-  if (events_mode && configuration.analysis.end.value.has_value()) {
+  if (configuration.analysis.mode.value != AnalysisMode::kOutstanding &&
+      configuration.analysis.end.value.has_value()) {
     fail("analysis.end", "is only valid in leaks mode");
+  }
+  const bool memory_mode = configuration.analysis.mode.value == AnalysisMode::kMemory;
+  if (memory_mode) {
+    const auto reject_setting = [](ValueSource source, std::string_view key) {
+      if (source != ValueSource::kDefault) {
+        fail(key, "is not valid with --mode memory");
+      }
+    };
+    if (configuration.analysis.from.value.has_value() &&
+        configuration.analysis.from.value->sequence.has_value()) {
+      fail("analysis.from", "a #sequence window is not valid with --mode memory");
+    }
+    if (configuration.analysis.to.value.has_value() &&
+        configuration.analysis.to.value->sequence.has_value()) {
+      fail("analysis.to", "a #sequence window is not valid with --mode memory");
+    }
+    reject_setting(configuration.analysis.group_by.source, "analysis.group_by");
+    reject_setting(configuration.analysis.sort.source, "analysis.sort");
+    reject_setting(configuration.analysis.trim_agent_frames.source, "analysis.trim_agent_frames");
+    reject_setting(configuration.filters.min_size.source, "filters.min_size");
+    reject_setting(configuration.filters.max_size.source, "filters.max_size");
+    reject_setting(configuration.filters.events.source, "filters.events");
+    reject_setting(configuration.filters.threads.source, "filters.threads");
+    reject_setting(configuration.filters.apis.source, "filters.apis");
+    reject_setting(configuration.filters.modules.source, "filters.modules");
+    reject_setting(configuration.filters.stack_modules.source, "filters.stack_modules");
+    reject_setting(configuration.filters.allocation_ids.source, "filters.allocation_ids");
+    reject_setting(configuration.filters.statuses.source, "filters.statuses");
   }
   validate_window_bound(configuration.analysis.from.value, "analysis.from");
   validate_window_bound(configuration.analysis.to.value, "analysis.to");

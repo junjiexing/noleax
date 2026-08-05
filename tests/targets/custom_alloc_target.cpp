@@ -41,8 +41,14 @@ FreeFunction g_free_internal = nullptr;
 }
 
 void write_marker(const std::filesystem::path& path, const std::string& content) {
-  std::ofstream output{path, std::ios::binary | std::ios::trunc};
-  output << content;
+  // Write through a staging file so polling readers only ever observe the complete content;
+  // a plain trunc-open lets a poller read the marker while it is still empty.
+  const std::filesystem::path staging = path.parent_path() / (path.filename().wstring() + L".tmp");
+  {
+    std::ofstream output{staging, std::ios::binary | std::ios::trunc};
+    output << content;
+  }
+  static_cast<void>(MoveFileExW(staging.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING));
 }
 
 [[nodiscard]] bool marker_exists(const std::filesystem::path& path) {

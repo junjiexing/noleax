@@ -10,6 +10,7 @@
 #include "noleax/trace/completeness.hpp"
 #include "noleax/trace/custom_hook.hpp"
 #include "noleax/trace/event.hpp"
+#include "noleax/trace/memory_snapshot.hpp"
 #include "noleax/trace/module.hpp"
 #include "noleax/trace/stack.hpp"
 #include "noleax/trace/trace_reader.hpp"
@@ -41,6 +42,8 @@ class SyntheticTraceBuilder {
   SyntheticTraceBuilder& add_custom_hook_definition(
       const noleax::trace::CustomHookDefinition& definition);
   SyntheticTraceBuilder& add_loss(const noleax::trace::LossRecord& loss);
+  SyntheticTraceBuilder& add_memory_counters(const noleax::trace::MemoryCounters& counters);
+  SyntheticTraceBuilder& add_memory_map(const noleax::trace::MemoryMap& map);
   SyntheticTraceBuilder& set_statistics(const noleax::trace::CaptureStatistics& statistics);
   SyntheticTraceBuilder& set_end_of_trace(const noleax::trace::EndOfTrace& end);
   SyntheticTraceBuilder& finish_normally(std::optional<std::int32_t> target_exit_code = 0);
@@ -49,6 +52,7 @@ class SyntheticTraceBuilder {
 
  private:
   using EventRecord = std::variant<noleax::trace::Event, noleax::trace::LossRecord>;
+  using MemoryRecord = std::variant<noleax::trace::MemoryCounters, noleax::trace::MemoryMap>;
 
   noleax::trace::FileHeader file_header_;
   noleax::trace::CaptureScope capture_scope_;
@@ -57,6 +61,7 @@ class SyntheticTraceBuilder {
   std::vector<noleax::trace::ModuleRecord> module_records_;
   std::vector<noleax::trace::StackDefinition> stack_definitions_;
   std::vector<noleax::trace::CustomHookDefinition> custom_hook_definitions_;
+  std::vector<MemoryRecord> memory_records_;
   std::optional<noleax::trace::CaptureStatistics> statistics_;
   std::optional<noleax::trace::EndOfTrace> end_;
 };

@@ -56,6 +56,8 @@ struct CaptureBindings {
   TextOption compression_level;
   TextOption trace_path;
   TextOption duration;
+  TextOption memory_counters_interval;
+  TextOption memory_map_interval;
   BooleanOption live;
   ListOption custom_hooks;
 };
@@ -193,6 +195,10 @@ void add_capture_options(CLI::App& app, CaptureBindings& bindings) {
                   "Trace compression level");
   add_text_option(app, bindings.trace_path, "--trace", "Trace output path");
   add_text_option(app, bindings.duration, "--capture-duration", "Maximum capture duration");
+  add_text_option(app, bindings.memory_counters_interval, "--memory-counters-interval",
+                  "Memory counters snapshot interval (0s disables)");
+  add_text_option(app, bindings.memory_map_interval, "--memory-map-interval",
+                  "Virtual memory map snapshot interval (0s disables)");
   add_list_option(app, bindings.custom_hooks, "--custom-hook",
                   "Custom allocator hook: \"module.dll:alloc=fn,free=fn2[,realloc=fn3]"
                   "[,size_arg=1][,ptr_arg=0][,result_arg=0][,kind=calloc][,count_arg=0]"
@@ -485,6 +491,14 @@ void apply_capture_bindings(const CaptureBindings& bindings, config::CaptureOver
   }
   if (was_set(bindings.duration)) {
     capture.duration.set(parse_cli_duration(bindings.duration.value, "--capture-duration"));
+  }
+  if (was_set(bindings.memory_counters_interval)) {
+    capture.memory_counters_interval.set(
+        parse_cli_duration(bindings.memory_counters_interval.value, "--memory-counters-interval"));
+  }
+  if (was_set(bindings.memory_map_interval)) {
+    capture.memory_map_interval.set(
+        parse_cli_duration(bindings.memory_map_interval.value, "--memory-map-interval"));
   }
   if (was_set(bindings.trace_path)) {
     trace.path.set(parse_cli_path(bindings.trace_path.value, "--trace", current_directory));

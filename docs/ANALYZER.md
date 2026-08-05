@@ -4,8 +4,8 @@
 ## 1. 范围
 
 `analyze_event_stream` 使用正式 TraceReader、RecordCursor 和 V1 record decoder，按 trace 顺序
-回调 FileHeader、CaptureScope、Event、Loss、CaptureStatistics 和 EndOfTrace。它一次只保留一个
-受 reader 上限约束的 chunk，不把整个 trace 或全部事件加载到内存。
+回调 FileHeader、CaptureScope、Event、Loss、MemoryCounters、MemoryMap、CaptureStatistics 和
+EndOfTrace。它一次只保留一个受 reader 上限约束的 chunk，不把整个 trace 或全部事件加载到内存。
 
 每个 chunk 在触发任何 Event/Loss 回调前先完成 record framing、解码和 chunk 内语义校验。
 因此损坏 chunk 不会产生部分输出；已经完成并回调的前序 chunk 在尾部截断时仍然有效。
@@ -22,7 +22,9 @@ events 流当前强制执行：
   event 数都与已解码 Event 完全相同。
 - EndOfTrace 只出现一次，其 final sequence/ticks 不早于所有已知 Event/Loss 范围，并且其后
   不允许出现已知 chunk。
-- metadata、statistics 和 end chunk 不得声明 event sequence range。
+- metadata、statistics、memory 和 end chunk 不得声明 event sequence range。
+- memory 记录（minor 2 起）的 ticks 不得小于 monotonic origin 且不得回退；memory chunk 不携带
+  event sequence，也不参与 EndOfTrace 的边界校验。
 
 单 record 默认上限为 1 MiB，chunk 解压和存储上限继承 TraceReaderOptions。格式、CRC、压缩和
 长度错误由底层 reader/decoder 拒绝；跨 record/chunk 的语义错误抛出 TraceAnalysisError。
@@ -124,7 +126,9 @@ API 名称按 ApiDefinition canonical name 做 UTF-8 精确、区分大小写匹
 ConsoleWriter 支持 events 的逐事件流式输出和 outstanding 的最终候选输出。两种模式统一显示
 trace/capture 元数据、固定宽度地址、精确 size、相对纳秒与原始 ticks、API、payload、调用栈、
 summary 和完整性 warning。`analyze_events_to_console` 与 `analyze_outstanding_to_console` 把
-analyzer callback 直接接到 writer；events 不缓存全部结果。
+analyzer callback 直接接到 writer；events 不缓存全部结果。memory 模式由
+`analyze_memory_to_console` 输出快照时间序列与峰值汇总（见 [CONSOLE_OUTPUT.md](CONSOLE_OUTPUT.md)
+第 5.1 节）。
 
 API/module/stack 定义尚不可用时分别回退为 api ID、原始 stack ID 和明确的 definition unavailable；
 ConsoleMetadataResolver 可注入 module+offset、symbol+offset 和绝对地址组成的多行 frame。可选 ANSI
@@ -132,21 +136,24 @@ ConsoleMetadataResolver 可注入 module+offset、symbol+offset 和绝对地址�
 
 ## 8. JSON 输出
 
-JsonWriter 生成 `noleax.analysis` schema version 2。events 模式把匹配 Event 和全部 Loss 直接从
-analyzer callback 流式写入数组；outstanding 模式输出窗口和最终存活 generation。根对象统一包含
+JsonWriter 生成 `noleax.analysis` schema version 3。events 模式把匹配 Event 和全部 Loss 直接从
+analyzer callback 流式写入数组；outstanding 模式输出窗口和最终存活 generation；memory 模式输出
+窗口与按采样 tick 合并的 `snapshots` 数组（计数器和/或 map，map 含完整区域明细）。根对象统一包含
 metadata、实际 filters、summary 和 completeness，地址/handle/flags/错误码使用十六进制字符串，
 64 位 size、ID、sequence 和 ticks 使用无损 JSON integer。
 
 EventPresentationResolver 为 console 和 JSON 共享 API/module、stack status 与解析帧。trace 内仍以
-stack_id 去重；JSON 保留 ID 并为自包含消费展开可用帧。所有文本严格验证 UTF-8，v2 根对象和九类
-payload 由 [JSON_OUTPUT.md](JSON_OUTPUT.md) 与
-[noleax-analysis-v2.schema.json](schema/noleax-analysis-v2.schema.json) 固定；旧版结构继续由
-[noleax-analysis-v1.schema.json](schema/noleax-analysis-v1.schema.json) 固定。
+stack_id 去重；JSON 保留 ID 并为自包含消费展开可用帧。所有文本严格验证 UTF-8，v3 根对象、九类
+payload 和 memory 快照结构由 [JSON_OUTPUT.md](JSON_OUTPUT.md) 与
+[noleax-analysis-v3.schema.json](schema/noleax-analysis-v3.schema.json) 固定；旧版结构继续由
+[noleax-analysis-v1.schema.json](schema/noleax-analysis-v1.schema.json) 和
+[noleax-analysis-v2.schema.json](schema/noleax-analysis-v2.schema.json) 固定。
 
 ## 9. CSV 输出
 
 CsvWriter 为 events 和 outstanding 提供两套 schema version 2 固定列。events 逐行写匹配 Event 和
-全部 Loss，outstanding 每个最终 generation 一行；两种模式都以 summary 行结束。CSV 固定 UTF-8、
+全部 Loss，outstanding 每个最终 generation 一行；两种模式都以 summary 行结束。memory 模式是独立的
+扁平时间序列表（每个采样 tick 一行计数器/聚合列，不含区域明细与 summary 行）。CSV 固定 UTF-8、
 逗号和 CRLF，按 RFC 4180 引用包含逗号、双引号或换行的字段，并无损保留 64 位整数。
 
 调用栈在单字段中使用可逆的五元组子格式，仍保留 stack ID、capture status、绝对地址和可用符号。

@@ -23,6 +23,7 @@
 #include "noleax/analyzer/event_stream.hpp"
 #include "noleax/analyzer/filter.hpp"
 #include "noleax/analyzer/json.hpp"
+#include "noleax/analyzer/memory.hpp"
 #include "noleax/analyzer/outstanding.hpp"
 #include "noleax/analyzer/stacks.hpp"
 #include "noleax/analyzer/symbol_listing.hpp"
@@ -479,6 +480,38 @@ struct AnalysisResult {
 [[nodiscard]] AnalysisResult analyze_one(const noleax::config::Configuration& configuration,
                                          const std::filesystem::path& input_path,
                                          std::ostream& output, bool writing_stdout) {
+  if (configuration.analysis.mode.value == noleax::config::AnalysisMode::kMemory) {
+    // Memory snapshots carry no stacks, so the TraceMetadata scan is unnecessary.
+    std::ifstream input{input_path, std::ios::binary};
+    if (!input) {
+      throw ApplicationError{
+          1, "cannot open input trace '" + noleax::config::path_to_utf8(input_path) + "'"};
+    }
+    noleax::analyzer::MemoryWindow window;
+    window.from = make_window_bound(configuration.analysis.from.value);
+    window.to = make_optional_window_bound(configuration.analysis.to.value);
+    try {
+      noleax::analyzer::MemoryAnalysisResult result;
+      switch (configuration.analysis.format.value) {
+        case noleax::config::OutputFormat::kConsole:
+          result = noleax::analyzer::analyze_memory_to_console(
+              input, output, window, {console_color_enabled(configuration, writing_stdout)});
+          break;
+        case noleax::config::OutputFormat::kJson:
+          result = noleax::analyzer::analyze_memory_to_json(input, output, window);
+          break;
+        case noleax::config::OutputFormat::kCsv:
+          result = noleax::analyzer::analyze_memory_to_csv(input, output, window);
+          break;
+      }
+      return {result.trace.completeness};
+    } catch (const std::exception& error) {
+      throw ApplicationError{4, "cannot analyze input trace '" +
+                                    noleax::config::path_to_utf8(input_path) +
+                                    "': " + error.what()};
+    }
+  }
+
   std::ifstream metadata_input{input_path, std::ios::binary};
   if (!metadata_input) {
     throw ApplicationError{
@@ -795,6 +828,10 @@ class ConsoleControlGuard final {
   capture.start.maximum_trace_size = configuration.trace.max_file_size.value;
   capture.start.flush_interval_ns =
       static_cast<std::uint64_t>(configuration.trace.flush_interval.value.count());
+  capture.start.memory_counters_interval_ns =
+      static_cast<std::uint64_t>(configuration.capture.memory_counters_interval.value.count());
+  capture.start.memory_map_interval_ns =
+      static_cast<std::uint64_t>(configuration.capture.memory_map_interval.value.count());
   capture.start.compression_level = configuration.trace.compression_level.value;
   capture.start.trace_path_utf8 = noleax::config::path_to_utf8(trace_path);
   capture.start.unload_on_stop = configuration.injection.unload_on_stop.value;
@@ -892,6 +929,10 @@ void validate_capture_support(const noleax::config::Configuration& configuration
   if (configuration.capture.duration.value.has_value()) {
     output << "duration = \"" << configuration.capture.duration.value->count() << "ns\"\n";
   }
+  output << "memory_counters_interval = \""
+         << configuration.capture.memory_counters_interval.value.count() << "ns\"\n"
+         << "memory_map_interval = \"" << configuration.capture.memory_map_interval.value.count()
+         << "ns\"\n";
   output << "\n[trace]\n"
          << "path = \"" << std::string{trace_utf8.begin(), trace_utf8.end()} << "\"\n"
          << "buffer_size = \"" << configuration.trace.buffer_size.value << "B\"\n"

@@ -268,6 +268,29 @@ void write_address(JsonEmitter& json, noleax::trace::Address address,
   return "unknown";
 }
 
+[[nodiscard]] const char* memory_region_state_name(
+    noleax::trace::MemoryRegionState state) noexcept {
+  switch (state) {
+    case noleax::trace::MemoryRegionState::kCommit:
+      return "commit";
+    case noleax::trace::MemoryRegionState::kReserve:
+      return "reserve";
+  }
+  return "unknown";
+}
+
+[[nodiscard]] const char* memory_region_type_name(noleax::trace::MemoryRegionType type) noexcept {
+  switch (type) {
+    case noleax::trace::MemoryRegionType::kImage:
+      return "image";
+    case noleax::trace::MemoryRegionType::kMapped:
+      return "mapped";
+    case noleax::trace::MemoryRegionType::kPrivate:
+      return "private";
+  }
+  return "unknown";
+}
+
 [[nodiscard]] const char* stack_status_name(StackCaptureStatus status) noexcept {
   switch (status) {
     case StackCaptureStatus::kComplete:
@@ -891,6 +914,102 @@ void JsonWriter::write_leak_stacks(const LeaksStacksResult& result, const Analys
   ensure_output();
 }
 
+void JsonWriter::write_memory(const MemoryAnalysisResult& result) {
+  require_state(State::kReady, "write memory report");
+  header_ = result.trace.file_header;
+  capture_scope_ = result.trace.capture_scope;
+  write_document_prefix("memory", header_, capture_scope_, AnalysisFilter{});
+  JsonEmitter json{output_};
+  json.raw(",\"window\":{\"from_ns\":");
+  if (result.window.from.time.has_value()) {
+    json.signed_number(result.window.from.time->count());
+  } else {
+    json.null();
+  }
+  json.raw(",\"to_ns\":");
+  if (result.window.to.has_value() && result.window.to->time.has_value()) {
+    json.signed_number(result.window.to->time->count());
+  } else {
+    json.null();
+  }
+  json.raw("},\"snapshots\":[");
+
+  std::uint64_t counters_count = 0U;
+  std::uint64_t map_count = 0U;
+  bool first = true;
+  for (const MemorySnapshot& snapshot : result.snapshots) {
+    if (!first) {
+      json.raw(",");
+    }
+    first = false;
+    json.raw("{\"monotonic_ticks\":");
+    json.unsigned_number(snapshot.monotonic_ticks);
+    json.raw(",\"relative_time_ns\":");
+    json.signed_number(trace_time_floor(snapshot.monotonic_ticks, header_).count());
+    if (snapshot.counters.has_value()) {
+      ++counters_count;
+      json.raw(",\"counters\":{\"working_set_bytes\":");
+      json.unsigned_number(snapshot.counters->working_set_bytes);
+      json.raw(",\"peak_working_set_bytes\":");
+      json.unsigned_number(snapshot.counters->peak_working_set_bytes);
+      json.raw(",\"private_bytes\":");
+      json.unsigned_number(snapshot.counters->private_bytes);
+      json.raw(",\"commit_bytes\":");
+      json.unsigned_number(snapshot.counters->commit_bytes);
+      json.raw("}");
+    }
+    if (snapshot.map.has_value()) {
+      ++map_count;
+      const auto& map = *snapshot.map;
+      json.raw(",\"map\":{\"committed_bytes\":");
+      json.unsigned_number(map.committed_bytes);
+      json.raw(",\"reserved_bytes\":");
+      json.unsigned_number(map.reserved_bytes);
+      json.raw(",\"free_bytes\":");
+      json.unsigned_number(map.free_bytes);
+      json.raw(",\"largest_free_bytes\":");
+      json.unsigned_number(map.largest_free_bytes);
+      json.raw(",\"region_count\":");
+      json.unsigned_number(static_cast<std::uint64_t>(map.regions.size()));
+      json.raw(",\"truncated\":");
+      json.boolean(map.truncated);
+      json.raw(",\"regions\":[");
+      bool first_region = true;
+      for (const auto& region : map.regions) {
+        if (!first_region) {
+          json.raw(",");
+        }
+        first_region = false;
+        json.raw("{\"base\":");
+        write_address(json, region.base, header_);
+        json.raw(",\"size\":");
+        json.unsigned_number(region.size);
+        json.raw(",\"state\":");
+        json.string(memory_region_state_name(region.state));
+        json.raw(",\"type\":");
+        json.string(memory_region_type_name(region.type));
+        json.raw(",\"protect\":");
+        write_hex(json, region.protect);
+        json.raw("}");
+      }
+      json.raw("]}");
+    }
+    json.raw("}");
+  }
+
+  json.raw("],\"summary\":{\"snapshots\":");
+  json.unsigned_number(static_cast<std::uint64_t>(result.snapshots.size()));
+  json.raw(",\"counter_snapshots\":");
+  json.unsigned_number(counters_count);
+  json.raw(",\"map_snapshots\":");
+  json.unsigned_number(map_count);
+  json.raw(",");
+  write_summary(result.trace);
+  json.raw("}}\n");
+  state_ = State::kFinished;
+  ensure_output();
+}
+
 void JsonWriter::write_document_prefix(const char* mode, const noleax::trace::FileHeader& header,
                                        const noleax::trace::CaptureScope& scope,
                                        const AnalysisFilter& filter) {
@@ -1288,6 +1407,15 @@ LeaksStacksResult analyze_leak_stacks_to_json(
   auto result = analyze_leak_stacks(input, window, sort, filter, filter_resolver, stream_options);
   JsonWriter writer{output};
   writer.write_leak_stacks(result, filter, presentation_resolver);
+  return result;
+}
+
+MemoryAnalysisResult analyze_memory_to_json(std::istream& input, std::ostream& output,
+                                            MemoryWindow window,
+                                            EventStreamOptions stream_options) {
+  auto result = analyze_memory(input, window, stream_options);
+  JsonWriter writer{output};
+  writer.write_memory(result);
   return result;
 }
 
