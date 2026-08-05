@@ -58,35 +58,56 @@ jobs:
           & git -C $env:VCPKG_ROOT -c advice.detachedHead=false checkout --force --quiet $baseline
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
+          # The image's preinstalled vcpkg.exe can be newer than the pinned baseline registry
+          # and refuse its vcpkg-tools.json ("document schema version 1 is not supported").
+          # Rebuild vcpkg.exe from the checked-out sources so tool and registry always match.
+          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
           .\scripts\Enter-NoleaxDevShell.ps1
 
-          # Resolve a concrete ninja.exe path and pin CMAKE_MAKE_PROGRAM. A bare
-          # "Get-Command ninja works" probe is not enough: runner images may expose ninja only
-          # as a shell alias/function (invocable in pwsh but invisible to CMake's exe search),
-          # and a choco install does not refresh the current session's PATH.
-          $ninjaPath = $null
+          # Resolve a concrete ninja.exe path and pin CMAKE_MAKE_PROGRAM. Runner images have
+          # shipped ninja as a shell alias (invocable in pwsh but invisible to CMake's exe
+          # search) and as a dangling chocolatey shim, so every candidate must prove it runs
+          # before it is trusted; a choco install does not refresh this session's PATH.
+          function Test-NinjaPath([string]$candidate) {
+            if ([string]::IsNullOrWhiteSpace($candidate)) { return $false }
+            if (-not (Test-Path -LiteralPath $candidate)) { return $false }
+            & $candidate --version 2>$null | Out-Null
+            return ($LASTEXITCODE -eq 0)
+          }
+          $chocoRoot = $env:ChocolateyInstall
+          if ([string]::IsNullOrWhiteSpace($chocoRoot)) { $chocoRoot = 'C:\ProgramData\Chocolatey' }
+          $ninjaCandidates = @()
           $ninjaCommand = Get-Command ninja -ErrorAction SilentlyContinue
           if ($null -ne $ninjaCommand) {
             if ($ninjaCommand.CommandType -eq 'Alias') {
-              $ninjaPath = $ninjaCommand.Definition
+              $ninjaCandidates += $ninjaCommand.Definition
             } elseif ($ninjaCommand.Path) {
-              $ninjaPath = $ninjaCommand.Path
+              $ninjaCandidates += $ninjaCommand.Path
             }
           }
-          if (-not $ninjaPath -or -not (Test-Path -LiteralPath "$ninjaPath")) {
-            $ninjaPath = $null
-          }
-          if (-not $ninjaPath) {
-            $vsNinja = Join-Path $env:VSINSTALLDIR 'Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe'
-            if (Test-Path -LiteralPath $vsNinja) {
-              $ninjaPath = $vsNinja
+          $ninjaCandidates += (Join-Path $env:VSINSTALLDIR 'Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe')
+          $ninjaCandidates += (Join-Path $chocoRoot 'lib\ninja\tools\ninja.exe')
+          $ninjaCandidates += (Join-Path $chocoRoot 'bin\ninja.exe')
+          $ninjaPath = $null
+          foreach ($candidate in $ninjaCandidates) {
+            if (Test-NinjaPath $candidate) {
+              $ninjaPath = $candidate
+              break
             }
           }
           if (-not $ninjaPath) {
             choco install ninja --no-progress -y
             if ($LASTEXITCODE -ne 0) { exit 1 }
-            $ninjaPath = "$env:ChocolateyInstall\bin\ninja.exe"
-            if (-not (Test-Path -LiteralPath $ninjaPath)) { exit 1 }
+            foreach ($candidate in @((Join-Path $chocoRoot 'lib\ninja\tools\ninja.exe'),
+                                     (Join-Path $chocoRoot 'bin\ninja.exe'))) {
+              if (Test-NinjaPath $candidate) {
+                $ninjaPath = $candidate
+                break
+              }
+            }
+            if (-not $ninjaPath) { exit 1 }
           }
           Write-Host "Ninja: $ninjaPath"
 
