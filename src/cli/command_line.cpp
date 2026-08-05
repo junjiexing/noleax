@@ -57,6 +57,7 @@ struct CaptureBindings {
   TextOption trace_path;
   TextOption duration;
   BooleanOption live;
+  ListOption custom_hooks;
 };
 
 struct RunBindings {
@@ -180,6 +181,11 @@ void add_capture_options(CLI::App& app, CaptureBindings& bindings) {
                   "Trace compression level");
   add_text_option(app, bindings.trace_path, "--trace", "Trace output path");
   add_text_option(app, bindings.duration, "--capture-duration", "Maximum capture duration");
+  add_list_option(app, bindings.custom_hooks, "--custom-hook",
+                  "Custom allocator hook: \"module.dll:alloc=fn,free=fn2[,realloc=fn3]"
+                  "[,size_arg=1][,ptr_arg=0][,result_arg=0][,kind=calloc][,count_arg=0]"
+                  "[,free_size_arg=1][,forced=true][,wait_module=10s][,alloc_rva=0x1234]"
+                  "[,alloc_pdb=mod!sym]\" (repeatable)");
 }
 
 [[noreturn]] void conversion_error(std::string_view option, const std::exception& error) {
@@ -228,6 +234,144 @@ template <typename Enum>
   } catch (const config::ValueParseError& error) {
     conversion_error(option, error);
   }
+}
+
+[[noreturn]] void custom_hook_error(std::string_view detail) {
+  throw config::ConfigError{"command line option '--custom-hook': " + std::string{detail}};
+}
+
+[[nodiscard]] std::uint8_t parse_custom_hook_slot(std::string_view value, std::string_view key) {
+  try {
+    const std::uint64_t slot = config::parse_unsigned_integer(value, 7U, "argument slot");
+    return static_cast<std::uint8_t>(slot);
+  } catch (const config::ValueParseError& error) {
+    custom_hook_error(std::string{key} + ": " + error.what());
+  }
+}
+
+void assign_custom_hook_role(config::CustomHookRole& role, std::string_view key,
+                             std::string_view value) {
+  if (key == "alloc" || key == "realloc" || key == "free") {
+    if (role.export_name.has_value()) {
+      custom_hook_error("duplicate key '" + std::string{key} + "'");
+    }
+    role.export_name = std::string{value};
+    return;
+  }
+  const std::string pdb_suffix{"_pdb"};
+  const std::string rva_suffix{"_rva"};
+  if (key.size() > pdb_suffix.size() &&
+      key.compare(key.size() - pdb_suffix.size(), pdb_suffix.size(), pdb_suffix) == 0) {
+    if (role.pdb_symbol.has_value()) {
+      custom_hook_error("duplicate key '" + std::string{key} + "'");
+    }
+    role.pdb_symbol = std::string{value};
+    return;
+  }
+  if (key.size() > rva_suffix.size() &&
+      key.compare(key.size() - rva_suffix.size(), rva_suffix.size(), rva_suffix) == 0) {
+    if (role.rva.has_value()) {
+      custom_hook_error("duplicate key '" + std::string{key} + "'");
+    }
+    try {
+      role.rva = config::parse_rva(value);
+    } catch (const config::ValueParseError& error) {
+      custom_hook_error(std::string{key} + ": " + error.what());
+    }
+    return;
+  }
+  custom_hook_error("unknown key '" + std::string{key} + "'");
+}
+
+[[nodiscard]] config::CustomHookRole& custom_hook_role_for(config::CustomHook& hook,
+                                                           std::string_view key) {
+  if (key.starts_with("alloc")) {
+    return hook.alloc;
+  }
+  if (key.starts_with("realloc")) {
+    return hook.realloc;
+  }
+  if (key.starts_with("free")) {
+    return hook.free;
+  }
+  custom_hook_error("unknown key '" + std::string{key} + "'");
+}
+
+// Parses "module.dll:alloc=fn,free=fn2[,realloc=fn3][,size_arg=1][,ptr_arg=0][,result_arg=0]
+// [,kind=calloc][,count_arg=0][,free_size_arg=1][,forced=true][,wait_module=10s]
+// [,alloc_rva=0x1234][,alloc_pdb=mod!sym]".
+[[nodiscard]] config::CustomHook parse_custom_hook_spec(std::string_view spec) {
+  const std::size_t colon = spec.find(':');
+  if (colon == std::string_view::npos || colon == 0U || colon + 1U == spec.size()) {
+    custom_hook_error("expected \"module.dll:key=value,...\"");
+  }
+  config::CustomHook hook;
+  hook.module = std::string{spec.substr(0U, colon)};
+  bool seen_size_arg = false;
+  bool seen_ptr_arg = false;
+  bool seen_result_arg = false;
+  bool seen_kind = false;
+  bool seen_count_arg = false;
+  bool seen_free_size_arg = false;
+  bool seen_forced = false;
+  bool seen_wait_module = false;
+  std::size_t offset = colon + 1U;
+  while (offset <= spec.size()) {
+    const std::size_t comma = spec.find(',', offset);
+    const std::string_view token =
+        spec.substr(offset, comma == std::string_view::npos ? comma : comma - offset);
+    offset = comma == std::string_view::npos ? spec.size() + 1U : comma + 1U;
+    const std::size_t equals = token.find('=');
+    if (equals == std::string_view::npos || equals == 0U || equals + 1U == token.size()) {
+      custom_hook_error("expected key=value in '" + std::string{token} + "'");
+    }
+    const std::string_view key = token.substr(0U, equals);
+    const std::string_view value = token.substr(equals + 1U);
+    if (key == "size_arg" && !seen_size_arg) {
+      hook.size_arg = parse_custom_hook_slot(value, key);
+      seen_size_arg = true;
+    } else if (key == "ptr_arg" && !seen_ptr_arg) {
+      hook.ptr_arg = parse_custom_hook_slot(value, key);
+      seen_ptr_arg = true;
+    } else if (key == "result_arg" && !seen_result_arg) {
+      hook.result_arg = parse_custom_hook_slot(value, key);
+      seen_result_arg = true;
+    } else if (key == "kind" && !seen_kind) {
+      try {
+        hook.kind = config::parse_enum_value<config::CustomHookKind>(value);
+      } catch (const config::ValueParseError& error) {
+        custom_hook_error(std::string{key} + ": " + error.what());
+      }
+      seen_kind = true;
+    } else if (key == "count_arg" && !seen_count_arg) {
+      hook.count_arg = parse_custom_hook_slot(value, key);
+      seen_count_arg = true;
+    } else if (key == "free_size_arg" && !seen_free_size_arg) {
+      hook.free_size_arg = parse_custom_hook_slot(value, key);
+      seen_free_size_arg = true;
+    } else if (key == "forced" && !seen_forced) {
+      try {
+        hook.forced = config::parse_boolean(value);
+      } catch (const config::ValueParseError& error) {
+        custom_hook_error(std::string{key} + ": " + error.what());
+      }
+      seen_forced = true;
+    } else if (key == "wait_module" && !seen_wait_module) {
+      try {
+        hook.wait_module = config::parse_duration(value);
+      } catch (const config::ValueParseError& error) {
+        custom_hook_error(std::string{key} + ": " + error.what());
+      }
+      seen_wait_module = true;
+    } else if (key == "size_arg" || key == "ptr_arg" || key == "result_arg" || key == "kind" ||
+               key == "count_arg" || key == "free_size_arg" || key == "forced" ||
+               key == "wait_module") {
+      custom_hook_error("duplicate key '" + std::string{key} + "'");
+    } else {
+      assign_custom_hook_role(custom_hook_role_for(hook, key), key, value);
+    }
+  }
+  return hook;
 }
 
 [[nodiscard]] std::int64_t parse_cli_signed(std::string_view value, std::int64_t minimum,
@@ -302,9 +446,18 @@ void apply_injection_bindings(const InjectionBindings& bindings,
 
 void apply_capture_bindings(const CaptureBindings& bindings, config::CaptureOverrides& capture,
                             config::TraceOverrides& trace,
+                            config::SettingOverride<std::vector<config::CustomHook>>& custom_hooks,
                             const std::filesystem::path& current_directory) {
   if (const auto value = boolean_value(bindings.live)) {
     capture.live.set(*value);
+  }
+  if (was_set(bindings.custom_hooks)) {
+    std::vector<config::CustomHook> hooks;
+    hooks.reserve(bindings.custom_hooks.values.size());
+    for (const auto& spec : bindings.custom_hooks.values) {
+      hooks.push_back(parse_custom_hook_spec(spec));
+    }
+    custom_hooks.set(std::move(hooks));
   }
   if (was_set(bindings.hook_profile)) {
     capture.hook_profile.set(
@@ -367,7 +520,8 @@ void apply_run_bindings(const RunBindings& bindings, config::ConfigurationOverri
         {bindings.target_and_args.begin() + 1, bindings.target_and_args.end()});
   }
   apply_injection_bindings(bindings.injection, overrides.injection, current_directory);
-  apply_capture_bindings(bindings.capture, overrides.capture, overrides.trace, current_directory);
+  apply_capture_bindings(bindings.capture, overrides.capture, overrides.trace,
+                         overrides.custom_hooks, current_directory);
 }
 
 void apply_attach_bindings(const AttachBindings& bindings,
@@ -380,7 +534,8 @@ void apply_attach_bindings(const AttachBindings& bindings,
     overrides.target.pid.set(static_cast<std::uint32_t>(pid));
   }
   apply_injection_bindings(bindings.injection, overrides.injection, current_directory);
-  apply_capture_bindings(bindings.capture, overrides.capture, overrides.trace, current_directory);
+  apply_capture_bindings(bindings.capture, overrides.capture, overrides.trace,
+                         overrides.custom_hooks, current_directory);
   if (const auto value = boolean_value(bindings.unload_on_stop)) {
     overrides.injection.unload_on_stop.set(*value);
   }

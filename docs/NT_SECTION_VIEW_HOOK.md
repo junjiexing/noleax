@@ -18,7 +18,7 @@ in-flight 生命周期，只有两个 target 都 revert 且 callback quiescent �
 
 ## 2. 热路径与 raw event
 
-统一 `RtlHeapEvent` 扩展为固定 664 bytes，新增：
+统一 `RtlHeapEvent` 扩展为固定 672 bytes，新增：
 
 - raw section handle；
 - 调用前 section offset；

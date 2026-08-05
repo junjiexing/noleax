@@ -136,6 +136,168 @@ void write_enum(PayloadWriter& writer, Enum value) {
   return value >= Architecture::kUnknown && value <= Architecture::kArm64;
 }
 
+[[nodiscard]] bool valid_custom_hook_locator(CustomHookLocator value) noexcept {
+  return value == CustomHookLocator::kNone || value == CustomHookLocator::kExport ||
+         value == CustomHookLocator::kRva;
+}
+
+[[nodiscard]] bool valid_argument_slot(std::uint8_t value) noexcept { return value <= 7U; }
+
+void validate_custom_hook_role(const CustomHookRoleSpec& role, bool required) {
+  if (!valid_custom_hook_locator(role.locator)) {
+    throw ProtocolError{"custom hook role locator is not supported"};
+  }
+  switch (role.locator) {
+    case CustomHookLocator::kNone:
+      if (required || !role.export_name.empty() || role.rva != 0U) {
+        throw ProtocolError{"custom hook role is missing or inconsistent"};
+      }
+      return;
+    case CustomHookLocator::kExport:
+      if (role.export_name.empty() || role.rva != 0U) {
+        throw ProtocolError{"custom hook export role is inconsistent"};
+      }
+      return;
+    case CustomHookLocator::kRva:
+      if (role.rva == 0U || !role.export_name.empty()) {
+        throw ProtocolError{"custom hook RVA role is inconsistent"};
+      }
+      return;
+  }
+  throw ProtocolError{"custom hook role locator is not supported"};
+}
+
+void validate_custom_hooks(const std::vector<CustomHookSpec>& hooks) {
+  if (hooks.size() > kMaximumCustomHooks) {
+    throw ProtocolError{"start capture request declares too many custom hooks"};
+  }
+  for (const CustomHookSpec& hook : hooks) {
+    validate_custom_hook_role(hook.alloc, true);
+    validate_custom_hook_role(hook.realloc, false);
+    validate_custom_hook_role(hook.free, true);
+    if (hook.module.empty() || hook.label.empty()) {
+      throw ProtocolError{"custom hook module and label must not be empty"};
+    }
+    if (!valid_argument_slot(hook.size_arg) || !valid_argument_slot(hook.ptr_arg) ||
+        (hook.result_arg.has_value() && !valid_argument_slot(*hook.result_arg)) ||
+        (hook.count_arg.has_value() && !valid_argument_slot(*hook.count_arg)) ||
+        (hook.free_size_arg.has_value() && !valid_argument_slot(*hook.free_size_arg))) {
+      throw ProtocolError{"custom hook argument slot is out of range"};
+    }
+    if (hook.calloc != hook.count_arg.has_value()) {
+      throw ProtocolError{"custom hook calloc mapping requires count_arg and vice versa"};
+    }
+  }
+}
+
+void write_custom_hook_role(PayloadWriter& writer, const CustomHookRoleSpec& role) {
+  write_enum(writer, role.locator);
+  writer.integer(std::uint8_t{0U});
+  writer.integer(std::uint16_t{0U});
+  writer.integer(std::uint32_t{0U});
+  writer.integer(role.rva);
+  writer.string(role.export_name);
+}
+
+[[nodiscard]] CustomHookRoleSpec read_custom_hook_role(PayloadReader& reader) {
+  CustomHookRoleSpec role;
+  role.locator = read_enum<CustomHookLocator>(reader);
+  const std::uint8_t reserved8 = reader.integer<std::uint8_t>();
+  const std::uint16_t reserved16 = reader.integer<std::uint16_t>();
+  const std::uint32_t reserved32 = reader.integer<std::uint32_t>();
+  role.rva = reader.integer<std::uint64_t>();
+  role.export_name = reader.string();
+  if (reserved8 != 0U || reserved16 != 0U || reserved32 != 0U) {
+    throw ProtocolError{"custom hook role reserved fields must be zero"};
+  }
+  return role;
+}
+
+void write_custom_hooks(PayloadWriter& writer, const std::vector<CustomHookSpec>& hooks) {
+  writer.integer(static_cast<std::uint32_t>(hooks.size()));
+  for (const CustomHookSpec& hook : hooks) {
+    writer.integer(hook.size_arg);
+    writer.integer(hook.ptr_arg);
+    writer.integer(static_cast<std::uint8_t>(hook.result_arg.value_or(0xFFU)));
+    writer.integer(static_cast<std::uint8_t>(hook.count_arg.value_or(0xFFU)));
+    writer.integer(static_cast<std::uint8_t>(hook.free_size_arg.value_or(0xFFU)));
+    writer.integer(static_cast<std::uint8_t>(hook.calloc ? 1U : 0U));
+    writer.integer(static_cast<std::uint8_t>(hook.forced ? 1U : 0U));
+    writer.integer(std::uint8_t{0U});
+    writer.integer(hook.wait_module_ms);
+    write_custom_hook_role(writer, hook.alloc);
+    write_custom_hook_role(writer, hook.realloc);
+    write_custom_hook_role(writer, hook.free);
+    writer.string(hook.module);
+    writer.string(hook.label);
+    writer.integer(static_cast<std::uint8_t>(hook.image_identity.has_value() ? 1U : 0U));
+    writer.integer(std::uint8_t{0U});
+    writer.integer(std::uint16_t{0U});
+    writer.integer(hook.image_identity.has_value() ? hook.image_identity->timestamp : 0U);
+    writer.integer(hook.image_identity.has_value() ? hook.image_identity->checksum : 0U);
+    writer.integer(hook.image_identity.has_value() ? hook.image_identity->image_size : 0U);
+  }
+}
+
+[[nodiscard]] std::uint8_t read_argument_slot(PayloadReader& reader) {
+  const std::uint8_t value = reader.integer<std::uint8_t>();
+  if (value != 0xFFU && !valid_argument_slot(value)) {
+    throw ProtocolError{"custom hook argument slot is out of range"};
+  }
+  return value;
+}
+
+void read_custom_hooks(PayloadReader& reader, StartCaptureRequest& request) {
+  const std::uint32_t count = reader.integer<std::uint32_t>();
+  if (count > kMaximumCustomHooks) {
+    throw ProtocolError{"start capture request declares too many custom hooks"};
+  }
+  request.custom_hooks.reserve(count);
+  for (std::uint32_t index = 0U; index < count; ++index) {
+    CustomHookSpec hook;
+    hook.size_arg = read_argument_slot(reader);
+    hook.ptr_arg = read_argument_slot(reader);
+    const std::uint8_t result_arg = read_argument_slot(reader);
+    const std::uint8_t count_arg = read_argument_slot(reader);
+    const std::uint8_t free_size_arg = read_argument_slot(reader);
+    if (result_arg != 0xFFU) {
+      hook.result_arg = result_arg;
+    }
+    if (count_arg != 0xFFU) {
+      hook.count_arg = count_arg;
+    }
+    if (free_size_arg != 0xFFU) {
+      hook.free_size_arg = free_size_arg;
+    }
+    hook.calloc = reader.integer<std::uint8_t>() != 0U;
+    hook.forced = reader.integer<std::uint8_t>() != 0U;
+    const std::uint8_t reserved = reader.integer<std::uint8_t>();
+    hook.wait_module_ms = reader.integer<std::uint64_t>();
+    hook.alloc = read_custom_hook_role(reader);
+    hook.realloc = read_custom_hook_role(reader);
+    hook.free = read_custom_hook_role(reader);
+    hook.module = reader.string();
+    hook.label = reader.string();
+    const std::uint8_t identity_present = reader.integer<std::uint8_t>();
+    const std::uint8_t identity_reserved8 = reader.integer<std::uint8_t>();
+    const std::uint16_t identity_reserved16 = reader.integer<std::uint16_t>();
+    const std::uint32_t identity_timestamp = reader.integer<std::uint32_t>();
+    const std::uint32_t identity_checksum = reader.integer<std::uint32_t>();
+    const std::uint32_t identity_image_size = reader.integer<std::uint32_t>();
+    if (reserved != 0U || identity_reserved8 != 0U || identity_reserved16 != 0U ||
+        identity_present > 1U) {
+      throw ProtocolError{"custom hook reserved fields must be zero"};
+    }
+    if (identity_present != 0U) {
+      hook.image_identity =
+          CustomHookImageIdentity{identity_timestamp, identity_checksum, identity_image_size};
+    } else if (identity_timestamp != 0U || identity_checksum != 0U || identity_image_size != 0U) {
+      throw ProtocolError{"absent custom hook image identity must be zero"};
+    }
+    request.custom_hooks.push_back(std::move(hook));
+  }
+}
+
 void append_frame_header(PayloadWriter& writer, const Message& message) {
   writer.bytes(kProtocolMagic);
   writer.integer(kProtocolMajor);
@@ -271,6 +433,7 @@ std::vector<std::byte> encode_start_capture(const StartCaptureRequest& request) 
       request.flush_interval_ns == 0U || request.trace_path_utf8.empty()) {
     throw ProtocolError{"start capture request contains invalid fields"};
   }
+  validate_custom_hooks(request.custom_hooks);
   PayloadWriter writer;
   write_enum(writer, request.capture_kind);
   write_enum(writer, request.hook_profile);
@@ -286,6 +449,7 @@ std::vector<std::byte> encode_start_capture(const StartCaptureRequest& request) 
   writer.integer(std::uint32_t{0U});
   writer.string(request.trace_path_utf8);
   writer.integer(static_cast<std::uint8_t>(request.unload_on_stop ? 1U : 0U));
+  write_custom_hooks(writer, request.custom_hooks);
   return std::move(writer).finish();
 }
 
@@ -306,6 +470,7 @@ StartCaptureRequest decode_start_capture(std::span<const std::byte> payload) {
   const std::uint32_t reserved32 = reader.integer<std::uint32_t>();
   request.trace_path_utf8 = reader.string();
   request.unload_on_stop = reader.integer<std::uint8_t>() != 0U;
+  read_custom_hooks(reader, request);
   reader.finish();
   if (reserved8 != 0U || reserved16 != 0U || reserved32 != 0U ||
       !valid_capture_kind(request.capture_kind) || !valid_hook_profile(request.hook_profile) ||
@@ -314,6 +479,7 @@ StartCaptureRequest decode_start_capture(std::span<const std::byte> payload) {
       request.flush_interval_ns == 0U || request.trace_path_utf8.empty()) {
     throw ProtocolError{"start capture request contains invalid fields"};
   }
+  validate_custom_hooks(request.custom_hooks);
   return request;
 }
 

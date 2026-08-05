@@ -784,7 +784,7 @@ void JsonWriter::write_event_stacks(const EventsStacksResult& result, const Anal
     json.raw(",\"stack_id\":");
     write_identifier(json, group.stack_id);
     json.raw(",\"apis\":[");
-    const auto names = group_api_names(group.api_ids);
+    const auto names = group_api_names(group.api_ids, result.trace.custom_hooks);
     for (std::size_t index = 0U; index < names.size(); ++index) {
       if (index != 0U) {
         json.raw(",");
@@ -865,7 +865,7 @@ void JsonWriter::write_leak_stacks(const LeaksStacksResult& result, const Analys
     json.raw(",\"stack_id\":");
     write_identifier(json, group.stack_id);
     json.raw(",\"apis\":[");
-    const auto names = group_api_names(group.api_ids);
+    const auto names = group_api_names(group.api_ids, outstanding.trace.custom_hooks);
     for (std::size_t index = 0U; index < names.size(); ++index) {
       if (index != 0U) {
         json.raw(",");

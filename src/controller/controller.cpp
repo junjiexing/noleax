@@ -670,4 +670,13 @@ bool CaptureSession::launched_target() const noexcept { return implementation_->
 
 bool CaptureSession::stopped() const noexcept { return implementation_->stopped(); }
 
+std::optional<std::filesystem::path> find_remote_module_path(std::uint32_t process_id,
+                                                             std::wstring_view module_name) {
+  const auto module = injection::find_remote_module(process_id, module_name);
+  if (!module.has_value()) {
+    return std::nullopt;
+  }
+  return std::filesystem::path{module->path};
+}
+
 }  // namespace noleax::controller::windows

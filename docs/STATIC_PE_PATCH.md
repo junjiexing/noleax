@@ -143,6 +143,16 @@ jmp     rax
 `flush_interval`、`compression`、`compression_level`），缺省值与 CLI 默认一致；`trace.path`
 省略时写到可执行文件同目录的 `<exe 主名>.nlx`。相对 `trace.path` 相对配置文件目录解析。
 
+### custom hook 的烘焙合同
+
+patch 的配置文件（`--config`）声明 `[[custom_hooks]]` 时，`noleax patch` 会在输出副本旁写出
+已解析的 `noleax-agent.toml`：PDB 符号（`alloc_pdb` 等）在 patch 时经 DbgHelp 解析为 RVA
+并记录模块映像 identity（timestamp/checksum/image size），导出名原样保留。patched 副本运行时
+agent 只消费 RVA 与导出名，并在安装前校验记录的映像 identity 与实际加载的模块一致，不一致即
+报错而不是错位 hook。运行期 TOML 中出现未解析的 `_pdb` 符号（手写或环境变量指向的配置）时
+agent 启动直接报错，提示经 `noleax patch` 烘焙或改用导出符号/RVA，不静默忽略。完整语义见
+[CUSTOM_HOOKS.md](CUSTOM_HOOKS.md)。
+
 ### 退出收尾
 
 - 正常退出（main 返回、`exit()`、`ExitProcess`）:standalone 模式额外 hook

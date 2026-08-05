@@ -101,4 +101,10 @@ class AgentProcessHandle final {
                                                       const CaptureOptions& capture,
                                                       const std::filesystem::path& agent_config);
 
+// Returns the on-disk image path of a module loaded in a live process, or nullopt when the
+// module is not loaded. Custom hook PDB symbols are resolved against this file so the baked
+// RVA matches the target's own module.
+[[nodiscard]] std::optional<std::filesystem::path> find_remote_module_path(
+    std::uint32_t process_id, std::wstring_view module_name);
+
 }  // namespace noleax::controller::windows

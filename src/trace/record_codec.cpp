@@ -24,6 +24,7 @@ namespace {
 
 inline constexpr std::uint16_t kRecordVersion = 1;
 inline constexpr std::size_t kEventHeaderPayloadSize = 56U;
+inline constexpr std::size_t kCustomHookDefinitionFixedPayloadSize = 16U;
 inline constexpr std::size_t kModuleLoadFixedPayloadSize = 80U;
 inline constexpr std::size_t kModuleUnloadPayloadSize = 16U;
 inline constexpr std::size_t kStackDefinitionFixedPayloadSize = 16U;
@@ -624,6 +625,61 @@ std::optional<CaptureScope> decode_capture_scope_record(const RecordView& record
     throw RecordCodecError{"invalid CaptureScope record: " + std::string{error.what()}};
   }
   return scope;
+}
+
+void append_custom_hook_definition_record(std::vector<std::byte>& chunk_payload,
+                                          const CustomHookDefinition& definition,
+                                          std::uint32_t maximum_record_size) {
+  validate_custom_hook_definition(definition);
+  if (definition.module_name.size() > std::numeric_limits<std::uint32_t>::max() ||
+      definition.label.size() > std::numeric_limits<std::uint32_t>::max() ||
+      maximum_record_size < kRecordHeaderSize + kCustomHookDefinitionFixedPayloadSize ||
+      definition.module_name.size() + definition.label.size() >
+          maximum_record_size - kRecordHeaderSize - kCustomHookDefinitionFixedPayloadSize) {
+    throw RecordCodecError{"custom hook definition exceeds the configured record size limit"};
+  }
+
+  std::vector<std::byte> payload;
+  payload.reserve(kCustomHookDefinitionFixedPayloadSize + definition.module_name.size() +
+                  definition.label.size());
+  append_u32(payload, definition.api_id);
+  append_u32(payload, static_cast<std::uint32_t>(definition.module_name.size()));
+  append_u32(payload, static_cast<std::uint32_t>(definition.label.size()));
+  append_u32(payload, 0U);
+  append_string_bytes(payload, definition.module_name);
+  append_string_bytes(payload, definition.label);
+  append_record(chunk_payload,
+                static_cast<std::uint16_t>(MetadataRecordType::kCustomHookDefinition),
+                kRecordVersion, payload, maximum_record_size);
+}
+
+std::optional<CustomHookDefinition> decode_custom_hook_definition_record(const RecordView& record) {
+  if (record.type != static_cast<std::uint16_t>(MetadataRecordType::kCustomHookDefinition) ||
+      record.version != kRecordVersion) {
+    return std::nullopt;
+  }
+  if (record.payload.size() < kCustomHookDefinitionFixedPayloadSize) {
+    throw RecordCodecError{"custom hook definition payload is truncated"};
+  }
+  PayloadReader reader{record.payload};
+  CustomHookDefinition definition;
+  definition.api_id = reader.read_u32();
+  const std::uint32_t module_name_size = reader.read_u32();
+  const std::uint32_t label_size = reader.read_u32();
+  reader.expect_zeros(4U);
+  if (static_cast<std::uint64_t>(module_name_size) + label_size !=
+      record.payload.size() - kCustomHookDefinitionFixedPayloadSize) {
+    throw RecordCodecError{"custom hook definition string sizes do not match the record payload"};
+  }
+  definition.module_name = reader.read_string(module_name_size);
+  definition.label = reader.read_string(label_size);
+  reader.expect_done();
+  try {
+    validate_custom_hook_definition(definition);
+  } catch (const CustomHookValidationError& error) {
+    throw RecordCodecError{"invalid CustomHookDefinition record: " + std::string{error.what()}};
+  }
+  return definition;
 }
 
 void append_module_load_record(std::vector<std::byte>& chunk_payload, const ModuleLoad& load,

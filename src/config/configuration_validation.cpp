@@ -1,9 +1,11 @@
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "noleax/config/config_io.hpp"
 #include "noleax/config/configuration.hpp"
@@ -205,6 +207,75 @@ void validate_window_bound(const std::optional<WindowBound>& bound, std::string_
   }
 }
 
+void validate_custom_hook_role(const CustomHookRole& role, std::string_view key, bool required) {
+  const std::uint32_t locators = (role.export_name.has_value() ? 1U : 0U) +
+                                 (role.pdb_symbol.has_value() ? 1U : 0U) +
+                                 (role.rva.has_value() ? 1U : 0U);
+  if (locators > 1U) {
+    fail(key, "accepts exactly one of an export name, a _pdb symbol, or an _rva");
+  }
+  if (required && locators == 0U) {
+    fail(key, "is required");
+  }
+  if (role.export_name.has_value() && role.export_name->empty()) {
+    fail(key, "export name must not be empty");
+  }
+  if (role.pdb_symbol.has_value() && role.pdb_symbol->empty()) {
+    fail(key, "PDB symbol must not be empty");
+  }
+}
+
+[[nodiscard]] std::string lowercase(std::string_view value) {
+  std::string result;
+  result.reserve(value.size());
+  for (const char character : value) {
+    result.push_back(character >= 'A' && character <= 'Z' ? static_cast<char>(character - 'A' + 'a')
+                                                          : character);
+  }
+  return result;
+}
+
+void validate_custom_hooks(const Configuration& configuration) {
+  const auto& hooks = configuration.custom_hooks.value;
+  if (hooks.size() > kMaximumCustomHooks) {
+    fail("custom_hooks", "declares too many hook points");
+  }
+  std::vector<std::string> seen_modules;
+  seen_modules.reserve(hooks.size());
+  for (const CustomHook& hook : hooks) {
+    if (hook.module.empty() || hook.module.find('\0') != std::string::npos) {
+      fail("custom_hooks.module", "must not be empty or contain NUL");
+    }
+    validate_custom_hook_role(hook.alloc, "custom_hooks.alloc", true);
+    validate_custom_hook_role(hook.realloc, "custom_hooks.realloc", false);
+    validate_custom_hook_role(hook.free, "custom_hooks.free", true);
+    if (hook.size_arg > 7U || hook.ptr_arg > 7U) {
+      fail("custom_hooks.size_arg", "argument slots must be between 0 and 7");
+    }
+    if ((hook.result_arg.has_value() && *hook.result_arg > 7U) ||
+        (hook.count_arg.has_value() && *hook.count_arg > 7U) ||
+        (hook.free_size_arg.has_value() && *hook.free_size_arg > 7U)) {
+      fail("custom_hooks.result_arg", "argument slots must be between 0 and 7");
+    }
+    if ((hook.kind == CustomHookKind::kCalloc) != hook.count_arg.has_value()) {
+      fail("custom_hooks.count_arg", "requires kind = \"calloc\" and vice versa");
+    }
+    if (hook.wait_module < std::chrono::nanoseconds::zero()) {
+      fail("custom_hooks.wait_module", "must not be negative");
+    }
+    if ((hook.alloc.pdb_symbol.has_value() || hook.realloc.pdb_symbol.has_value() ||
+         hook.free.pdb_symbol.has_value()) &&
+        configuration.symbols.mode.value == SymbolMode::kOff) {
+      fail("custom_hooks.alloc_pdb", "requires symbols.mode other than \"off\"");
+    }
+    const std::string lowered = lowercase(hook.module);
+    if (std::find(seen_modules.begin(), seen_modules.end(), lowered) != seen_modules.end()) {
+      fail("custom_hooks.module", "declares module '" + hook.module + "' more than once");
+    }
+    seen_modules.push_back(lowered);
+  }
+}
+
 // Orders only bounds of the same kind (time against time, sequence against sequence); different
 // kinds have no defined order and pass.
 [[nodiscard]] bool window_bounds_out_of_order(const WindowBound& lower, const WindowBound& upper) {
@@ -276,9 +347,12 @@ void validate_run(const Configuration& configuration, const Configuration& defau
   require_default(configuration.injection.unload_on_stop, defaults.injection.unload_on_stop,
                   "injection.unload_on_stop", Operation::kRun);
   validate_common_capture(configuration);
+  validate_custom_hooks(configuration);
   require_default_analysis(configuration, defaults, Operation::kRun);
   require_default_filters(configuration, defaults, Operation::kRun);
-  require_default_symbols(configuration, defaults, Operation::kRun);
+  if (configuration.custom_hooks.value.empty()) {
+    require_default_symbols(configuration, defaults, Operation::kRun);
+  }
   require_default_patch(configuration, defaults, Operation::kRun);
 }
 
@@ -297,9 +371,12 @@ void validate_attach(const Configuration& configuration, const Configuration& de
     fail("injection.method", "attach supports remote-thread and thread-hijack");
   }
   validate_common_capture(configuration);
+  validate_custom_hooks(configuration);
   require_default_analysis(configuration, defaults, Operation::kAttach);
   require_default_filters(configuration, defaults, Operation::kAttach);
-  require_default_symbols(configuration, defaults, Operation::kAttach);
+  if (configuration.custom_hooks.value.empty()) {
+    require_default_symbols(configuration, defaults, Operation::kAttach);
+  }
   require_default_patch(configuration, defaults, Operation::kAttach);
 }
 
@@ -310,7 +387,10 @@ void validate_patch(const Configuration& configuration, const Configuration& def
   require_default_trace(configuration, defaults, Operation::kPatch);
   require_default_analysis(configuration, defaults, Operation::kPatch);
   require_default_filters(configuration, defaults, Operation::kPatch);
-  require_default_symbols(configuration, defaults, Operation::kPatch);
+  if (configuration.custom_hooks.value.empty()) {
+    require_default_symbols(configuration, defaults, Operation::kPatch);
+  }
+  validate_custom_hooks(configuration);
 
   require_existing_path(configuration.patch.input.value, "patch.input");
   if (!configuration.patch.output.value.has_value()) {
@@ -335,6 +415,8 @@ void validate_analyze(const Configuration& configuration, const Configuration& d
   require_default_capture(configuration, defaults, Operation::kAnalyze);
   require_default_trace(configuration, defaults, Operation::kAnalyze);
   require_default_patch(configuration, defaults, Operation::kAnalyze);
+  require_default(configuration.custom_hooks, defaults.custom_hooks, "custom_hooks",
+                  Operation::kAnalyze);
 
   if (configuration.analysis.inputs.value.empty()) {
     fail("analysis.inputs", "at least one trace path is required");
@@ -415,6 +497,8 @@ void validate_doctor(const Configuration& configuration, const Configuration& de
   require_default_filters(configuration, defaults, Operation::kDoctor);
   require_default_symbols(configuration, defaults, Operation::kDoctor);
   require_default_patch(configuration, defaults, Operation::kDoctor);
+  require_default(configuration.custom_hooks, defaults.custom_hooks, "custom_hooks",
+                  Operation::kDoctor);
 }
 
 }  // namespace

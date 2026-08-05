@@ -327,6 +327,40 @@ class OfflineSymbolizer::Impl {
     return frame;
   }
 
+  [[nodiscard]] std::optional<std::uint64_t> resolve_symbol(noleax::trace::ModuleId module_id,
+                                                            std::string_view symbol_name) const {
+    std::shared_lock modules_lock{modules_mutex_};
+    const Entry& entry = find_module(module_id);
+#ifdef _WIN32
+    if (!entry.dbghelp_loaded || symbol_name.empty()) {
+      return std::nullopt;
+    }
+    const std::wstring wide_name = widen_symbol_text(symbol_name);
+    constexpr std::size_t maximum_name_length = 4096U;
+    alignas(SYMBOL_INFOW)
+        std::array<std::byte, sizeof(SYMBOL_INFOW) + maximum_name_length * sizeof(wchar_t)>
+            storage{};
+    auto* symbol = reinterpret_cast<SYMBOL_INFOW*>(storage.data());
+    symbol->SizeOfStruct = sizeof(SYMBOL_INFOW);
+    symbol->MaxNameLen = static_cast<ULONG>(maximum_name_length);
+
+    std::scoped_lock lock{dbghelp_mutex()};
+    DbgHelpOptionsGuard options_guard;
+    if (SymFromNameW(process_, wide_name.c_str(), symbol) == FALSE) {
+      return std::nullopt;
+    }
+    if (symbol->Address < entry.dbghelp_base ||
+        symbol->Address - entry.dbghelp_base >= entry.module.image_size) {
+      return std::nullopt;
+    }
+    return symbol->Address - entry.dbghelp_base;
+#else
+    static_cast<void>(entry);
+    static_cast<void>(symbol_name);
+    return std::nullopt;
+#endif
+  }
+
  private:
   struct Entry {
     SymbolModule module;
@@ -545,6 +579,11 @@ SymbolModuleResult OfflineSymbolizer::module_result(noleax::trace::ModuleId modu
 ResolvedStackFrame OfflineSymbolizer::resolve_frame(noleax::trace::ModuleId module_id,
                                                     noleax::trace::Address absolute_address) const {
   return impl_->resolve_frame(module_id, absolute_address);
+}
+
+std::optional<std::uint64_t> OfflineSymbolizer::resolve_symbol(noleax::trace::ModuleId module_id,
+                                                               std::string_view symbol_name) const {
+  return impl_->resolve_symbol(module_id, symbol_name);
 }
 
 }  // namespace noleax::analyzer

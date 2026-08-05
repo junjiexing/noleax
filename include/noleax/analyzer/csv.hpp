@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <iosfwd>
+#include <span>
 #include <stdexcept>
 
 #include "noleax/analyzer/filter.hpp"
@@ -9,6 +10,7 @@
 #include "noleax/analyzer/presentation.hpp"
 #include "noleax/analyzer/stacks.hpp"
 #include "noleax/trace/completeness.hpp"
+#include "noleax/trace/custom_hook.hpp"
 #include "noleax/trace/event.hpp"
 #include "noleax/trace/wire_format.hpp"
 
@@ -72,6 +74,7 @@ class CsvWriter {
   std::uint64_t written_loss_count_{0};
   noleax::trace::FileHeader header_;
   noleax::trace::CaptureScope capture_scope_;
+  std::span<const noleax::trace::CustomHookDefinition> custom_hooks_;
 };
 
 [[nodiscard]] FilteredEventsResult analyze_events_to_csv(

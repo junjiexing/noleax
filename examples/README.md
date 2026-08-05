@@ -3,6 +3,7 @@
 这些文件展示同一功能的 TOML 写法：
 
 - `run-nt-heap.toml`：启动 x64 目标，只捕获 NT Heap，30 秒后停止捕获。
+- `run-custom-hooks.toml`：同上，另把第三方 allocator 的导出函数声明为 custom hook 点。
 - `analyze-events.toml`：把成功的 alloc/realloc/free 事件输出为 JSON。
 - `analyze-outstanding.toml`：查找 `[0s,900ms)` 创建且 trace 结束时仍存活的 1 KiB 到 1 MiB 对象
   （leaks 模式）。

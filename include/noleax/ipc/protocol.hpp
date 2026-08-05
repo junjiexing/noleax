@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -17,6 +18,8 @@ inline constexpr std::uint16_t kProtocolMinor = 0U;
 inline constexpr std::uint16_t kFrameHeaderSize = 32U;
 inline constexpr std::uint32_t kMaximumPayloadSize = 64U * 1024U;
 inline constexpr std::uint32_t kMaximumStringSize = 32U * 1024U;
+// The agent binds every custom hook point to one replacement thunk from a fixed pool.
+inline constexpr std::uint32_t kMaximumCustomHooks = 32U;
 
 enum class MessageType : std::uint16_t {  // NOLINT(performance-enum-size)
   kAgentHello = 1U,
@@ -94,6 +97,54 @@ struct AgentHello {
   bool operator==(const AgentHello&) const = default;
 };
 
+enum class CustomHookLocator : std::uint8_t {
+  kNone = 0U,
+  kExport = 1U,
+  kRva = 2U,
+};
+
+// One function role of a custom hook point: nothing, an export-table symbol the agent resolves
+// inside the target, or a pre-resolved RVA (PDB symbols are baked to RVAs by the controller).
+struct CustomHookRoleSpec {
+  CustomHookLocator locator{CustomHookLocator::kNone};
+  std::string export_name;
+  std::uint64_t rva{0U};
+
+  bool operator==(const CustomHookRoleSpec&) const = default;
+};
+
+// PE image identity recorded when PDB symbols are baked to RVAs ahead of time; the agent
+// verifies it against the loaded module before installing an RVA-located hook.
+struct CustomHookImageIdentity {
+  std::uint32_t timestamp{0U};
+  std::uint32_t checksum{0U};
+  std::uint32_t image_size{0U};
+
+  bool operator==(const CustomHookImageIdentity&) const = default;
+};
+
+// One custom hook point: a module plus its alloc/realloc/free roles and the argument mapping
+// of the generic replacements. The point's api_id is kCustomHookApiIdBase + its index in
+// StartCaptureRequest::custom_hooks.
+struct CustomHookSpec {
+  std::string module;
+  CustomHookRoleSpec alloc;
+  CustomHookRoleSpec realloc;
+  CustomHookRoleSpec free;
+  std::uint8_t size_arg{0U};
+  std::uint8_t ptr_arg{0U};
+  std::optional<std::uint8_t> result_arg;
+  std::optional<std::uint8_t> count_arg;
+  std::optional<std::uint8_t> free_size_arg;
+  bool calloc{false};
+  bool forced{false};
+  std::uint64_t wait_module_ms{0U};
+  std::string label;
+  std::optional<CustomHookImageIdentity> image_identity;
+
+  bool operator==(const CustomHookSpec&) const = default;
+};
+
 struct StartCaptureRequest {
   CaptureKind capture_kind{CaptureKind::kAttach};
   HookProfile hook_profile{HookProfile::kWindowsNative};
@@ -107,6 +158,7 @@ struct StartCaptureRequest {
   std::string trace_path_utf8;
   // Unload the agent module from the target after the capture finalizes (attach).
   bool unload_on_stop{false};
+  std::vector<CustomHookSpec> custom_hooks;
 
   bool operator==(const StartCaptureRequest&) const = default;
 };

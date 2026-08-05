@@ -29,7 +29,7 @@
 ## 2. 共享队列与跨 API 顺序
 
 独立 heap-only 或 VM-only 模式各使用一个预分配 queue。`windows-native` 产品 profile 让五个
-NT Heap hook 与五个 NT memory 物理入口共用同一个 queue。统一的 664-byte `RtlHeapEvent` 通过
+NT Heap hook 与五个 NT memory 物理入口共用同一个 queue。统一的 672-byte `RtlHeapEvent` 通过
 operation 区分九种逻辑 API，并包含所需参数、raw result、异常状态和定长栈。成功 reservation 时分配
 唯一 sequence，因此完整 native profile 中不同线程、不同 API 的生命周期顺序不依赖可能倒退或相同的
 QPC tick。

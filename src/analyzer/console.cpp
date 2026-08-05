@@ -497,7 +497,7 @@ void ConsoleWriter::write_event_stacks(const EventsStacksResult& result,
     output_ << "#" << rank << " calls=" << group.calls << " alloc=" << group.alloc_calls << "/"
             << group.alloc_bytes << "B free=" << group.free_calls << "/" << group.free_bytes
             << "B net=" << group.net_bytes() << "B";
-    const auto names = group_api_names(group.api_ids);
+    const auto names = group_api_names(group.api_ids, result.trace.custom_hooks);
     if (!names.empty()) {
       output_ << " apis=";
       for (std::size_t index = 0U; index < names.size(); ++index) {
@@ -550,7 +550,7 @@ void ConsoleWriter::write_leak_stacks(const LeaksStacksResult& result,
     total_calls += group.calls;
     total_bytes += group.bytes;
     output_ << "#" << rank << " calls=" << group.calls << " bytes=" << group.bytes << "B";
-    const auto names = group_api_names(group.api_ids);
+    const auto names = group_api_names(group.api_ids, outstanding.trace.custom_hooks);
     if (!names.empty()) {
       output_ << " apis=";
       for (std::size_t index = 0U; index < names.size(); ++index) {

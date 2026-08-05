@@ -39,7 +39,7 @@ outermost 的 `successful + failed == recordable`；SEH 异常同时计入 faile
 
 ## 3. 统一事件与共享队列
 
-统一 664-byte `RtlHeapEvent` 保留以下 free 字段：
+统一 672-byte `RtlHeapEvent` 保留以下 free 字段：
 
 - 全局 queue sequence、QPC tick、thread ID；
 - heap handle、address、flags 和 original raw BOOLEAN result；

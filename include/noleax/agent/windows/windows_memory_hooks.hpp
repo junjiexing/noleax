@@ -4,11 +4,14 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <vector>
 
 #include "noleax/agent/hook_backend.hpp"
+#include "noleax/agent/windows/custom_symbol_hooks.hpp"
 #include "noleax/agent/windows/hook_registry.hpp"
 #include "noleax/agent/windows/nt_memory_hooks.hpp"
 #include "noleax/agent/windows/rtl_heap_hooks.hpp"
+#include "noleax/ipc/protocol.hpp"
 
 namespace noleax::agent::windows {
 
@@ -17,16 +20,20 @@ struct WindowsMemoryHookOptions {
   std::size_t event_queue_capacity{RtlHeapHooks::kDefaultEventQueueCapacity};
   std::uint16_t maximum_stack_depth{RtlHeapHooks::kDefaultMaximumStackDepth};
   std::uint64_t minimum_capture_size{0U};
+  std::vector<noleax::ipc::CustomHookSpec> custom_hooks;
 };
 
 struct WindowsMemoryHookInstallResult {
   std::optional<RtlHeapHookInstallResult> nt_heap;
   std::optional<NtMemoryHookInstallResult> virtual_memory;
+  // Present when custom hooks were declared; custom installation failures throw instead.
+  std::optional<bool> custom_hooks;
 
   [[nodiscard]] bool installed() const noexcept {
     return (!nt_heap.has_value() || nt_heap->installed()) &&
            (!virtual_memory.has_value() || virtual_memory->installed()) &&
-           (nt_heap.has_value() || virtual_memory.has_value());
+           (!custom_hooks.has_value() || *custom_hooks) &&
+           (nt_heap.has_value() || virtual_memory.has_value() || custom_hooks.has_value());
   }
 };
 
@@ -57,11 +64,14 @@ class WindowsMemoryHooks final {
   [[nodiscard]] const RtlHeapHooks* nt_heap_hooks() const noexcept;
   [[nodiscard]] NtMemoryHooks* virtual_memory_hooks() noexcept;
   [[nodiscard]] const NtMemoryHooks* virtual_memory_hooks() const noexcept;
+  [[nodiscard]] CustomSymbolHooks* custom_hooks() noexcept;
+  [[nodiscard]] const CustomSymbolHooks* custom_hooks() const noexcept;
 
  private:
   std::unique_ptr<RtlHeapEventQueue> event_queue_;
   std::unique_ptr<RtlHeapHooks> nt_heap_hooks_;
   std::unique_ptr<NtMemoryHooks> virtual_memory_hooks_;
+  std::unique_ptr<CustomSymbolHooks> custom_hooks_;
   WindowsMemoryHookOptions options_;
 };
 

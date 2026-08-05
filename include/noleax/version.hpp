@@ -8,7 +8,7 @@ namespace noleax {
 inline constexpr std::uint32_t kVersionMajor = 0;
 inline constexpr std::uint32_t kVersionMinor = 2;
 inline constexpr std::uint32_t kVersionPatch = 0;
-inline constexpr std::uint32_t kAgentAbiVersion = 2;
+inline constexpr std::uint32_t kAgentAbiVersion = 3;
 
 [[nodiscard]] std::string_view version_string() noexcept;
 

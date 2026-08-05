@@ -62,7 +62,7 @@ leaf 规则。
 ## 4. 事件与失败边界
 
 allocate event 加入栈后为 576 bytes；随后统一为 608 bytes，并为容纳 NT VM target、
-mapping 与 section 字段扩展为 664-byte `RtlHeapEvent`。默认 queue 为 16,384 个 slot，含 slot sequence 预分配
+mapping 与 section 字段扩展为 672-byte `RtlHeapEvent`。默认 queue 为 16,384 个 slot，含 slot sequence 预分配
 约 10.1 MiB；测试 harness 使用 256 个 slot
 稳定制造 overflow。
 

@@ -16,6 +16,10 @@ namespace noleax::config {
 
 inline constexpr std::uint32_t kConfigSchemaVersion = 1;
 
+// A capture can declare at most this many custom hook points; the agent binds every point to
+// one replacement thunk from a fixed pool (mirrors noleax::ipc::kMaximumCustomHooks).
+inline constexpr std::size_t kMaximumCustomHooks = 32U;
+
 enum class ValueSource : std::uint8_t {
   kDefault,
   kConfig,
@@ -100,6 +104,58 @@ enum class SymbolMode : std::uint8_t {
 enum class PatchMethod : std::uint8_t {
   kEntrypointSection,
 };
+
+enum class CustomHookKind : std::uint8_t {
+  kAlloc,
+  kCalloc,
+};
+
+// One function role of a custom hook declaration. At most one locator is set; a role with no
+// locator is undeclared (valid only for realloc).
+struct CustomHookRole {
+  std::optional<std::string> export_name;
+  std::optional<std::string> pdb_symbol;
+  std::optional<std::uint64_t> rva;
+
+  [[nodiscard]] bool declared() const noexcept {
+    return export_name.has_value() || pdb_symbol.has_value() || rva.has_value();
+  }
+
+  bool operator==(const CustomHookRole&) const = default;
+};
+
+// PE image identity recorded when PDB symbols are baked to RVAs ahead of time (`noleax patch`
+// or the agent session configuration); the agent verifies it against the loaded module.
+struct CustomHookImageIdentity {
+  std::uint32_t timestamp{0U};
+  std::uint32_t checksum{0U};
+  std::uint32_t image_size{0U};
+
+  bool operator==(const CustomHookImageIdentity&) const = default;
+};
+
+// One `[[custom_hooks]]` declaration: a module and its alloc/realloc/free function roles.
+struct CustomHook {
+  std::string module;
+  CustomHookRole alloc;
+  CustomHookRole realloc;
+  CustomHookRole free;
+  std::uint8_t size_arg{0U};
+  std::uint8_t ptr_arg{0U};
+  std::optional<std::uint8_t> result_arg;
+  CustomHookKind kind{CustomHookKind::kAlloc};
+  std::optional<std::uint8_t> count_arg;
+  std::optional<std::uint8_t> free_size_arg;
+  bool forced{false};
+  std::chrono::nanoseconds wait_module{0};
+  std::optional<CustomHookImageIdentity> image_identity;
+
+  bool operator==(const CustomHook&) const = default;
+};
+
+// The label recorded in the trace's CustomHookDefinition record: the alloc role's symbol name,
+// or "module+0x<rva>" when the alloc role is located by RVA.
+[[nodiscard]] std::string custom_hook_label(const CustomHook& hook);
 
 enum class EventType : std::uint8_t {
   kHeapCreate,
@@ -266,6 +322,15 @@ struct EnumTraits<PatchMethod> {
 };
 
 template <>
+struct EnumTraits<CustomHookKind> {
+  inline static constexpr std::string_view kind = "custom hook kind";
+  inline static constexpr auto values = std::array{
+      NamedEnumValue{std::string_view{"alloc"}, CustomHookKind::kAlloc},
+      NamedEnumValue{std::string_view{"calloc"}, CustomHookKind::kCalloc},
+  };
+};
+
+template <>
 struct EnumTraits<EventType> {
   inline static constexpr std::string_view kind = "event type";
   inline static constexpr auto values = std::array{
@@ -410,6 +475,7 @@ struct Configuration {
   SymbolSettings symbols;
   PatchSettings patch;
   DiagnosticSettings diagnostics;
+  Setting<std::vector<CustomHook>> custom_hooks;
 };
 
 struct TargetOverrides {
@@ -503,6 +569,7 @@ struct ConfigurationOverrides {
   SymbolOverrides symbols;
   PatchOverrides patch;
   DiagnosticOverrides diagnostics;
+  SettingOverride<std::vector<CustomHook>> custom_hooks;
 };
 
 [[nodiscard]] std::string_view value_source_name(ValueSource source) noexcept;

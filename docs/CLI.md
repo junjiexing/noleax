@@ -128,6 +128,23 @@ trace 完整性驱动（preexisting 盲点使结果为 2）。`--live` 恢复管
 | --flush-interval DURATION | trace.flush_interval | 250ms |
 | --compression CODEC | trace.compression | lz4 |
 | --compression-level N | trace.compression_level | codec 默认 |
+| --custom-hook SPEC（可重复） | custom_hooks | 空 |
+
+`--custom-hook` 把第三方 allocator 的分配函数声明为 hook 点，纳入与内置 API 相同的事件、
+泄露聚合与展示体系，仅 `run` 与 `attach` 有效：
+
+```
+noleax run --custom-hook "myalloc.dll:alloc=my_malloc,free=my_free" -- app.exe
+noleax attach --pid 1234 --custom-hook "myalloc.dll:alloc_pdb=myalloc!internal_alloc,free_rva=0x1a210,wait_module=10s"
+```
+
+SPEC 形如 `module:key=value,...`。alloc 与 free 必填、realloc 可选，每个角色三选一定位：
+导出符号名（agent 在目标进程内解析）、`<role>_pdb`（controller 侧 DbgHelp 解析为 RVA）、
+`<role>_rva`（直接 RVA，十六进制或十进制）。其余键：`size_arg`/`ptr_arg`（0–7，默认 0）、
+`result_arg`（结果经 out-param 返回时）、`kind=calloc` 配 `count_arg`、`free_size_arg`、
+`forced=true`（checked relocation 拒绝后允许 forced）、`wait_module`（模块未加载时的等待
+上限，0 为立即失败）。同一模块只能声明一次，一次捕获最多 32 个 hook 点。完整语义见
+[CUSTOM_HOOKS.md](CUSTOM_HOOKS.md) 与 [CONFIG.md](CONFIG.md)。
 
 V1 profile：
 

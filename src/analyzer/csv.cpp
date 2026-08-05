@@ -1292,7 +1292,7 @@ void CsvWriter::write_event_stacks_row(const EventsStacksGroup& group, std::uint
   set(row, EventStacksColumn::kFreeCalls, decimal(group.free_calls));
   set(row, EventStacksColumn::kFreeBytes, decimal(group.free_bytes));
   set(row, EventStacksColumn::kNetBytes, decimal(group.net_bytes()));
-  const auto names = group_api_names(group.api_ids);
+  const auto names = group_api_names(group.api_ids, custom_hooks_);
   std::string api_names;
   for (std::size_t index = 0U; index < names.size(); ++index) {
     if (index != 0U) {
@@ -1370,6 +1370,7 @@ void CsvWriter::write_event_stacks(const EventsStacksResult& result,
   require_state(State::kReady, "write event stacks report");
   header_ = result.trace.file_header;
   capture_scope_ = result.trace.capture_scope;
+  custom_hooks_ = result.trace.custom_hooks;
   CsvEmitter{output_}.row(kEventStacksHeader);
   std::uint64_t rank = 0U;
   for (const auto& group : result.groups) {
@@ -1390,7 +1391,7 @@ void CsvWriter::write_leak_stacks_row(const LeaksStacksGroup& group, std::uint64
   set(row, LeakStacksColumn::kRank, decimal(rank));
   set(row, LeakStacksColumn::kCalls, decimal(group.calls));
   set(row, LeakStacksColumn::kBytes, decimal(group.bytes));
-  const auto names = group_api_names(group.api_ids);
+  const auto names = group_api_names(group.api_ids, custom_hooks_);
   std::string api_names;
   for (std::size_t index = 0U; index < names.size(); ++index) {
     if (index != 0U) {
@@ -1470,6 +1471,7 @@ void CsvWriter::write_leak_stacks(const LeaksStacksResult& result,
   require_state(State::kReady, "write leak stacks report");
   header_ = result.outstanding.trace.file_header;
   capture_scope_ = result.outstanding.trace.capture_scope;
+  custom_hooks_ = result.outstanding.trace.custom_hooks;
   CsvEmitter{output_}.row(kLeakStacksHeader);
   std::uint64_t rank = 0U;
   for (const auto& group : result.groups) {

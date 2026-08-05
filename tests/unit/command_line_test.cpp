@@ -315,3 +315,77 @@ TEST_CASE("analyze CLI maps symbol modes", "[cli][config]") {
   const auto required = parse({"analyze", "--symbols", "required", "one.nlx"}, current_directory);
   CHECK(required.overrides.symbols.mode.value == noleax::config::SymbolMode::kRequired);
 }
+
+TEST_CASE("run and attach CLI parse --custom-hook declarations", "[cli][config][custom-hook]") {
+  using namespace std::chrono_literals;
+  const auto current_directory = std::filesystem::current_path();
+
+  const auto parsed = parse(
+      {"run", "--custom-hook", "myalloc.dll:alloc=my_malloc,free=my_free", "--custom-hook",
+       "jealloc.dll:alloc_pdb=jealloc!je_malloc,free_rva=0x1a210,realloc=je_realloc,size_arg=1,"
+       "ptr_arg=2,result_arg=0,kind=calloc,count_arg=3,free_size_arg=4,forced=true,"
+       "wait_module=10s",
+       "app.exe"},
+      current_directory);
+  REQUIRE(parsed.overrides.custom_hooks.specified);
+  REQUIRE(parsed.overrides.custom_hooks.value.size() == 2U);
+
+  const auto& first = parsed.overrides.custom_hooks.value.at(0U);
+  CHECK(first.module == "myalloc.dll");
+  CHECK(first.alloc.export_name == "my_malloc");
+  CHECK(first.free.export_name == "my_free");
+  CHECK_FALSE(first.realloc.declared());
+  CHECK(first.size_arg == 0U);
+  CHECK(first.wait_module == 0ns);
+
+  const auto& second = parsed.overrides.custom_hooks.value.at(1U);
+  CHECK(second.module == "jealloc.dll");
+  CHECK(second.alloc.pdb_symbol == "jealloc!je_malloc");
+  CHECK(second.free.rva == 0x1a210U);
+  CHECK(second.realloc.export_name == "je_realloc");
+  CHECK(second.size_arg == 1U);
+  CHECK(second.ptr_arg == 2U);
+  CHECK(second.result_arg == 0U);
+  CHECK(second.kind == noleax::config::CustomHookKind::kCalloc);
+  CHECK(second.count_arg == 3U);
+  CHECK(second.free_size_arg == 4U);
+  CHECK(second.forced);
+  CHECK(second.wait_module == 10s);
+
+  const auto attached =
+      parse({"attach", "--pid", "42", "--custom-hook", "m.dll:alloc=a,free=f"}, current_directory);
+  REQUIRE(attached.overrides.custom_hooks.specified);
+  CHECK(attached.overrides.custom_hooks.value.size() == 1U);
+}
+
+TEST_CASE("custom-hook CLI rejects malformed specs and other subcommands",
+          "[cli][config][custom-hook]") {
+  const auto current_directory = std::filesystem::current_path();
+
+  CHECK_THROWS_AS(parse({"run", "--custom-hook", "myalloc.dll", "app.exe"}, current_directory),
+                  noleax::config::ConfigError);
+  CHECK_THROWS_AS(parse({"run", "--custom-hook", ":alloc=a,free=f", "app.exe"}, current_directory),
+                  noleax::config::ConfigError);
+  CHECK_THROWS_AS(parse({"run", "--custom-hook", "m.dll:alloc", "app.exe"}, current_directory),
+                  noleax::config::ConfigError);
+  CHECK_THROWS_AS(
+      parse({"run", "--custom-hook", "m.dll:alloc=a,alloc=b,free=f", "app.exe"}, current_directory),
+      noleax::config::ConfigError);
+  CHECK_THROWS_AS(parse({"run", "--custom-hook", "m.dll:alloc=a,free=f,size_arg=8", "app.exe"},
+                        current_directory),
+                  noleax::config::ConfigError);
+  CHECK_THROWS_AS(
+      parse({"run", "--custom-hook", "m.dll:alloc=a,free=f,bogus=1", "app.exe"}, current_directory),
+      noleax::config::ConfigError);
+  CHECK_THROWS_AS(parse({"run", "--custom-hook", "m.dll:alloc=a,free=f,wait_module=5x", "app.exe"},
+                        current_directory),
+                  noleax::config::ConfigError);
+  CHECK_THROWS_AS(parse({"run", "--custom-hook", "m.dll:alloc=a,free=f,alloc_rva=0xzz", "app.exe"},
+                        current_directory),
+                  noleax::config::ConfigError);
+
+  // The option is not registered on patch/analyze/doctor.
+  CHECK_THROWS_AS(
+      parse({"analyze", "--custom-hook", "m.dll:alloc=a,free=f", "x.nlx"}, current_directory),
+      noleax::cli::CommandLineExit);
+}

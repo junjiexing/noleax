@@ -9,7 +9,7 @@ namespace noleax::agent::windows {
 
 WindowsMemoryHooks::WindowsMemoryHooks(HookBackend& backend, WindowsMemoryHookOptions options)
     : event_queue_{std::make_unique<RtlHeapEventQueue>(options.event_queue_capacity)},
-      options_{options} {
+      options_{std::move(options)} {
   if (options_.event_queue_capacity == 0U) {
     throw std::invalid_argument{"Windows memory hook queue capacity must be nonzero"};
   }
@@ -24,7 +24,12 @@ WindowsMemoryHooks::WindowsMemoryHooks(HookBackend& backend, WindowsMemoryHookOp
     virtual_memory_hooks_ = std::make_unique<NtMemoryHooks>(
         backend, *event_queue_, options_.maximum_stack_depth, options_.minimum_capture_size);
   }
-  if (nt_heap_hooks_ == nullptr && virtual_memory_hooks_ == nullptr) {
+  if (!options_.custom_hooks.empty()) {
+    custom_hooks_ = std::make_unique<CustomSymbolHooks>(
+        backend, *event_queue_, std::move(options_.custom_hooks), options_.maximum_stack_depth,
+        options_.minimum_capture_size);
+  }
+  if (nt_heap_hooks_ == nullptr && virtual_memory_hooks_ == nullptr && custom_hooks_ == nullptr) {
     throw std::invalid_argument{"Windows memory hook profile selects no APIs"};
   }
 }
@@ -41,14 +46,16 @@ WindowsMemoryHooks::~WindowsMemoryHooks() {
 WindowsMemoryHookInstallResult WindowsMemoryHooks::install() {
   const InternalThreadScope internal_thread;
   if ((nt_heap_hooks_ != nullptr && nt_heap_hooks_->is_installed()) ||
-      (virtual_memory_hooks_ != nullptr && virtual_memory_hooks_->is_installed())) {
+      (virtual_memory_hooks_ != nullptr && virtual_memory_hooks_->is_installed()) ||
+      (custom_hooks_ != nullptr && custom_hooks_->is_installed())) {
     throw std::logic_error{"Windows memory hook profile is already installed"};
   }
   // reset_quiescent requires that no producer or consumer is using the queue; a hook
   // stuck in teardown-pending can still publish into it, so refuse to reset then.
   const bool teardown_pending =
       (nt_heap_hooks_ != nullptr && nt_heap_hooks_->has_pending_teardown()) ||
-      (virtual_memory_hooks_ != nullptr && virtual_memory_hooks_->has_pending_teardown());
+      (virtual_memory_hooks_ != nullptr && virtual_memory_hooks_->has_pending_teardown()) ||
+      (custom_hooks_ != nullptr && custom_hooks_->has_pending_teardown());
   if (!teardown_pending) {
     event_queue_->reset_quiescent();
   }
@@ -79,6 +86,25 @@ WindowsMemoryHookInstallResult WindowsMemoryHooks::install() {
         static_cast<void>(nt_heap_hooks_->stop_recording(0U));
         static_cast<void>(nt_heap_hooks_->uninstall());
       }
+      return result;
+    }
+  }
+  if (custom_hooks_ != nullptr) {
+    try {
+      custom_hooks_->install();
+      result.custom_hooks = true;
+    } catch (...) {
+      static_cast<void>(custom_hooks_->stop_recording(0U));
+      static_cast<void>(custom_hooks_->uninstall());
+      if (virtual_memory_hooks_ != nullptr) {
+        static_cast<void>(virtual_memory_hooks_->stop_recording(0U));
+        static_cast<void>(virtual_memory_hooks_->uninstall());
+      }
+      if (nt_heap_hooks_ != nullptr) {
+        static_cast<void>(nt_heap_hooks_->stop_recording(0U));
+        static_cast<void>(nt_heap_hooks_->uninstall());
+      }
+      throw;
     }
   }
   return result;
@@ -92,10 +118,14 @@ bool WindowsMemoryHooks::stop_recording(std::uint32_t max_attempts) noexcept {
   if (virtual_memory_hooks_ != nullptr) {
     static_cast<void>(virtual_memory_hooks_->stop_recording(0U));
   }
+  if (custom_hooks_ != nullptr) {
+    static_cast<void>(custom_hooks_->stop_recording(0U));
+  }
   const bool heap_done = nt_heap_hooks_ == nullptr || nt_heap_hooks_->stop_recording(max_attempts);
   const bool virtual_memory_done =
       virtual_memory_hooks_ == nullptr || virtual_memory_hooks_->stop_recording(max_attempts);
-  return heap_done && virtual_memory_done;
+  const bool custom_done = custom_hooks_ == nullptr || custom_hooks_->stop_recording(max_attempts);
+  return heap_done && virtual_memory_done && custom_done;
 }
 
 bool WindowsMemoryHooks::uninstall(std::uint32_t flush_attempts) noexcept {
@@ -105,26 +135,32 @@ bool WindowsMemoryHooks::uninstall(std::uint32_t flush_attempts) noexcept {
   }
   // Revert every physical target before asking either family to flush the shared backend. A
   // family-local flush cannot complete while the other family still owns installed targets.
+  if (custom_hooks_ != nullptr) {
+    static_cast<void>(custom_hooks_->uninstall(0U));
+  }
   if (virtual_memory_hooks_ != nullptr) {
     static_cast<void>(virtual_memory_hooks_->uninstall(0U));
   }
   if (nt_heap_hooks_ != nullptr) {
     static_cast<void>(nt_heap_hooks_->uninstall(0U));
   }
+  const bool custom_done = custom_hooks_ == nullptr || custom_hooks_->uninstall(flush_attempts);
   const bool virtual_memory_done =
       virtual_memory_hooks_ == nullptr || virtual_memory_hooks_->uninstall(flush_attempts);
   const bool heap_done = nt_heap_hooks_ == nullptr || nt_heap_hooks_->uninstall(flush_attempts);
-  return virtual_memory_done && heap_done;
+  return custom_done && virtual_memory_done && heap_done;
 }
 
 bool WindowsMemoryHooks::is_installed() const noexcept {
   return (nt_heap_hooks_ == nullptr || nt_heap_hooks_->is_installed()) &&
-         (virtual_memory_hooks_ == nullptr || virtual_memory_hooks_->is_installed());
+         (virtual_memory_hooks_ == nullptr || virtual_memory_hooks_->is_installed()) &&
+         (custom_hooks_ == nullptr || custom_hooks_->is_installed());
 }
 
 bool WindowsMemoryHooks::is_recording() const noexcept {
   return (nt_heap_hooks_ != nullptr && nt_heap_hooks_->is_recording()) ||
-         (virtual_memory_hooks_ != nullptr && virtual_memory_hooks_->is_recording());
+         (virtual_memory_hooks_ != nullptr && virtual_memory_hooks_->is_recording()) ||
+         (custom_hooks_ != nullptr && custom_hooks_->is_recording());
 }
 
 std::uint64_t WindowsMemoryHooks::recording_in_flight_count() const noexcept {
@@ -132,9 +168,15 @@ std::uint64_t WindowsMemoryHooks::recording_in_flight_count() const noexcept {
       nt_heap_hooks_ == nullptr ? 0U : nt_heap_hooks_->recording_in_flight_count();
   const std::uint64_t virtual_memory =
       virtual_memory_hooks_ == nullptr ? 0U : virtual_memory_hooks_->recording_in_flight_count();
-  return virtual_memory > std::numeric_limits<std::uint64_t>::max() - total
+  if (virtual_memory > std::numeric_limits<std::uint64_t>::max() - total) {
+    return std::numeric_limits<std::uint64_t>::max();
+  }
+  total += virtual_memory;
+  const std::uint64_t custom =
+      custom_hooks_ == nullptr ? 0U : custom_hooks_->recording_in_flight_count();
+  return custom > std::numeric_limits<std::uint64_t>::max() - total
              ? std::numeric_limits<std::uint64_t>::max()
-             : total + virtual_memory;
+             : total + custom;
 }
 
 WindowsHookProfile WindowsMemoryHooks::profile() const noexcept { return options_.profile; }
@@ -159,6 +201,12 @@ NtMemoryHooks* WindowsMemoryHooks::virtual_memory_hooks() noexcept {
 
 const NtMemoryHooks* WindowsMemoryHooks::virtual_memory_hooks() const noexcept {
   return virtual_memory_hooks_.get();
+}
+
+CustomSymbolHooks* WindowsMemoryHooks::custom_hooks() noexcept { return custom_hooks_.get(); }
+
+const CustomSymbolHooks* WindowsMemoryHooks::custom_hooks() const noexcept {
+  return custom_hooks_.get();
 }
 
 }  // namespace noleax::agent::windows

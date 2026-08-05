@@ -1,3 +1,5 @@
+#include <array>
+#include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -169,6 +171,67 @@ void append_table(std::string& output, std::string_view name) {
   output.push_back('[');
   output.append(name);
   output.append("]\n");
+}
+
+[[nodiscard]] std::string format_rva(std::uint64_t rva) {
+  std::string result{"0x"};
+  std::array<char, 16> digits{};
+  const auto converted = std::to_chars(digits.data(), digits.data() + digits.size(), rva, 16);
+  result.append(digits.data(), converted.ptr);
+  return result;
+}
+
+void append_custom_hook_role(std::string& output, std::string_view role_name,
+                             const CustomHookRole& role, ValueSource source) {
+  if (role.export_name.has_value()) {
+    append_setting(output, role_name, quote_toml(*role.export_name), source);
+  }
+  if (role.pdb_symbol.has_value()) {
+    append_setting(output, std::string{role_name} + "_pdb", quote_toml(*role.pdb_symbol), source);
+  }
+  if (role.rva.has_value()) {
+    append_setting(output, std::string{role_name} + "_rva", quote_toml(format_rva(*role.rva)),
+                   source);
+  }
+}
+
+void append_custom_hook(std::string& output, const CustomHook& hook, ValueSource source) {
+  output.append("\n[[custom_hooks]] # source: ");
+  output.append(value_source_name(source));
+  output.push_back('\n');
+  append_setting(output, "module", quote_toml(hook.module), source);
+  append_custom_hook_role(output, "alloc", hook.alloc, source);
+  append_custom_hook_role(output, "realloc", hook.realloc, source);
+  append_custom_hook_role(output, "free", hook.free, source);
+  if (hook.size_arg != 0U) {
+    append_setting(output, "size_arg", std::to_string(hook.size_arg), source);
+  }
+  if (hook.ptr_arg != 0U) {
+    append_setting(output, "ptr_arg", std::to_string(hook.ptr_arg), source);
+  }
+  if (hook.result_arg.has_value()) {
+    append_setting(output, "result_arg", std::to_string(*hook.result_arg), source);
+  }
+  if (hook.kind != CustomHookKind::kAlloc) {
+    append_setting(output, "kind", quote_toml(enum_value_name(hook.kind)), source);
+  }
+  if (hook.count_arg.has_value()) {
+    append_setting(output, "count_arg", std::to_string(*hook.count_arg), source);
+  }
+  if (hook.free_size_arg.has_value()) {
+    append_setting(output, "free_size_arg", std::to_string(*hook.free_size_arg), source);
+  }
+  if (hook.forced) {
+    append_setting(output, "forced", "true", source);
+  }
+  if (hook.wait_module != std::chrono::nanoseconds::zero()) {
+    append_setting(output, "wait_module", quote_toml(format_duration(hook.wait_module)), source);
+  }
+  if (hook.image_identity.has_value()) {
+    append_setting(output, "image_timestamp", format_rva(hook.image_identity->timestamp), source);
+    append_setting(output, "image_checksum", format_rva(hook.image_identity->checksum), source);
+    append_setting(output, "image_size", std::to_string(hook.image_identity->image_size), source);
+  }
 }
 
 [[nodiscard]] std::string format_optional_size(const std::optional<std::uint64_t>& value) {
@@ -348,6 +411,10 @@ std::string serialize_effective_config(const Configuration& configuration) {
   append_setting(output, "color",
                  quote_toml(enum_value_name(configuration.diagnostics.color.value)),
                  configuration.diagnostics.color.source);
+
+  for (const CustomHook& hook : configuration.custom_hooks.value) {
+    append_custom_hook(output, hook, configuration.custom_hooks.source);
+  }
   return output;
 }
 

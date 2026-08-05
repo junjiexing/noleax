@@ -186,6 +186,7 @@ class CaptureRuntime final {
     hook_options.event_queue_capacity = queue_capacity(request.buffer_size);
     hook_options.maximum_stack_depth = request.maximum_stack_depth;
     hook_options.minimum_capture_size = request.minimum_capture_size;
+    hook_options.custom_hooks = request.custom_hooks;
     hooks_ = std::make_unique<WindowsMemoryHooks>(*backend_, hook_options);
 
     RtlAllocateHeapTraceWriterOptions writer_options;
@@ -208,6 +209,13 @@ class CaptureRuntime final {
     }
     writer_->begin_capture();
     state_ = noleax::ipc::AgentState::kCapturing;
+  }
+
+  // Signaled once the capture records and every exit path is armed. Callers set this only
+  // after start() returns and their own teardown wiring is in place: the bootstrap stub and
+  // the injectors release the target's main thread on this flag, so an earlier store would
+  // let a fast target finish before finalize could run.
+  static void signal_capture_ready() noexcept {
     capture_ready.store(true, std::memory_order_release);
   }
 
@@ -392,6 +400,11 @@ class CaptureRuntime final {
         add_saturating(status.dropped_events, statistics.dropped_events);
       }
     }
+    if (const auto* custom = hooks_->custom_hooks(); custom != nullptr) {
+      add_saturating(status.observed_calls, custom->recordable_call_count());
+      add_saturating(status.filtered_calls, custom->filtered_call_count());
+      add_saturating(status.dropped_events, custom->dropped_event_count());
+    }
     if (status.observed_calls >= status.filtered_calls &&
         status.observed_calls - status.filtered_calls >= status.dropped_events) {
       status.written_events = status.observed_calls - status.filtered_calls - status.dropped_events;
@@ -506,7 +519,18 @@ DWORD WINAPI agent_worker(void* parameter) noexcept {
     const HookGuardRuntimeLease hook_guard_runtime;
     const noleax::agent::ReplacementGateCoordinatorScope finalize_coordinator;
     runtime = std::make_unique<CaptureRuntime>(bootstrap->session_token);
-    runtime->start(noleax::ipc::decode_start_capture(start_message.payload));
+    try {
+      runtime->start(noleax::ipc::decode_start_capture(start_message.payload));
+    } catch (const std::exception& error) {
+      // Report start failures (for example a custom hook that cannot be installed) as an
+      // agent error so the controller surfaces the precise reason instead of a closed pipe.
+      const noleax::ipc::ErrorResponse response{1U, 0U, error.what()};
+      channel.send({noleax::ipc::MessageType::kError, start_message.request_id,
+                    noleax::ipc::encode_error_response(response)},
+                   timeout);
+      throw;
+    }
+    CaptureRuntime::signal_capture_ready();
     send_status(channel, noleax::ipc::MessageType::kCaptureReady, start_message.request_id,
                 *runtime, timeout);
 
@@ -648,6 +672,57 @@ void standalone_report(const std::string& message) noexcept {
   throw std::invalid_argument{"unsupported compression codec"};
 }
 
+[[nodiscard]] noleax::ipc::CustomHookRoleSpec standalone_custom_hook_role(
+    const noleax::config::CustomHookRole& role, const std::string& module, const char* role_name) {
+  noleax::ipc::CustomHookRoleSpec spec;
+  if (role.pdb_symbol.has_value()) {
+    throw std::runtime_error{
+        "custom hook " + std::string{role_name} + " of module '" + module +
+        "' uses the unresolved PDB symbol '" + *role.pdb_symbol +
+        "'; resolve it with 'noleax patch' (which bakes RVAs into noleax-agent.toml) or use an "
+        "export name/RVA instead"};
+  }
+  if (role.export_name.has_value()) {
+    spec.locator = noleax::ipc::CustomHookLocator::kExport;
+    spec.export_name = *role.export_name;
+  } else if (role.rva.has_value()) {
+    spec.locator = noleax::ipc::CustomHookLocator::kRva;
+    spec.rva = *role.rva;
+  }
+  return spec;
+}
+
+[[nodiscard]] std::vector<noleax::ipc::CustomHookSpec> standalone_custom_hooks(
+    const noleax::config::Configuration& configuration) {
+  std::vector<noleax::ipc::CustomHookSpec> hooks;
+  hooks.reserve(configuration.custom_hooks.value.size());
+  for (const auto& hook : configuration.custom_hooks.value) {
+    noleax::ipc::CustomHookSpec spec;
+    spec.module = hook.module;
+    spec.alloc = standalone_custom_hook_role(hook.alloc, hook.module, "alloc");
+    spec.realloc = standalone_custom_hook_role(hook.realloc, hook.module, "realloc");
+    spec.free = standalone_custom_hook_role(hook.free, hook.module, "free");
+    spec.size_arg = hook.size_arg;
+    spec.ptr_arg = hook.ptr_arg;
+    spec.result_arg = hook.result_arg;
+    spec.count_arg = hook.count_arg;
+    spec.free_size_arg = hook.free_size_arg;
+    spec.calloc = hook.kind == noleax::config::CustomHookKind::kCalloc;
+    spec.forced = hook.forced;
+    // Round up so a sub-millisecond wait still polls once (the wait itself is 100 ms-granular).
+    spec.wait_module_ms =
+        static_cast<std::uint64_t>((hook.wait_module.count() + 999'999) / 1'000'000);
+    spec.label = noleax::config::custom_hook_label(hook);
+    if (hook.image_identity.has_value()) {
+      spec.image_identity = noleax::ipc::CustomHookImageIdentity{hook.image_identity->timestamp,
+                                                                 hook.image_identity->checksum,
+                                                                 hook.image_identity->image_size};
+    }
+    hooks.push_back(std::move(spec));
+  }
+  return hooks;
+}
+
 [[nodiscard]] noleax::ipc::StartCaptureRequest standalone_capture_request(
     const noleax::config::Configuration& configuration, const std::filesystem::path& executable) {
   noleax::ipc::StartCaptureRequest request;
@@ -667,6 +742,7 @@ void standalone_report(const std::string& message) noexcept {
       executable.parent_path() / (executable.stem().wstring() + L".nlx"));
   request.trace_path_utf8 = noleax::config::path_to_utf8(trace_path);
   request.unload_on_stop = configuration.injection.unload_on_stop.value;
+  request.custom_hooks = standalone_custom_hooks(configuration);
   return request;
 }
 
@@ -725,6 +801,9 @@ DWORD WINAPI standalone_worker(void* parameter) noexcept {
     runtime->start(standalone_capture_request(configuration, executable_path()));
     standalone_runtime.store(runtime.get(), std::memory_order_release);
     install_exit_process_hook(runtime->backend());
+    // Release the stub only after the exit hook and the detach fallback are armed: a fast
+    // target can otherwise finish before either finalize path exists.
+    CaptureRuntime::signal_capture_ready();
     if (ready_event != nullptr) {
       static_cast<void>(SetEvent(ready_event));
     }

@@ -99,6 +99,11 @@ class OfflineSymbolizer {
   [[nodiscard]] SymbolModuleResult module_result(noleax::trace::ModuleId module_id) const;
   [[nodiscard]] ResolvedStackFrame resolve_frame(noleax::trace::ModuleId module_id,
                                                  noleax::trace::Address absolute_address) const;
+  // Resolves an export or PDB symbol name to its RVA inside a registered module. Returns
+  // nullopt when the module has no usable symbols loaded, the name is not found, or the hit
+  // lies outside the module (for example a same-named symbol from another module).
+  [[nodiscard]] std::optional<std::uint64_t> resolve_symbol(noleax::trace::ModuleId module_id,
+                                                            std::string_view symbol_name) const;
 
  private:
   class Impl;
