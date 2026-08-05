@@ -9,7 +9,7 @@ on:
 
 jobs:
   format:
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
 
@@ -24,7 +24,7 @@ jobs:
           .\scripts\Check-Format.ps1
 
   windows-x64:
-    runs-on: windows-latest
+    runs-on: windows-2022
     strategy:
       fail-fast: false
       matrix:
@@ -154,7 +154,7 @@ jobs:
           retention-days: 30
 
   release:
-    runs-on: windows-latest
+    runs-on: windows-2022
     needs: [format, windows-x64]
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     permissions:
