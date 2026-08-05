@@ -60,21 +60,39 @@ jobs:
 
           .\scripts\Enter-NoleaxDevShell.ps1
 
-          # The VS dev shell only exposes Ninja when the VS CMake component is installed;
-          # install Ninja explicitly when it is not runnable.
-          $ninjaWorks = $false
-          if ($null -ne (Get-Command ninja -ErrorAction SilentlyContinue)) {
-            & ninja --version 2>$null | Out-Null
-            $ninjaWorks = ($LASTEXITCODE -eq 0)
+          # Resolve a concrete ninja.exe path and pin CMAKE_MAKE_PROGRAM. A bare
+          # "Get-Command ninja works" probe is not enough: runner images may expose ninja only
+          # as a shell alias/function (invocable in pwsh but invisible to CMake's exe search),
+          # and a choco install does not refresh the current session's PATH.
+          $ninjaPath = $null
+          $ninjaCommand = Get-Command ninja -ErrorAction SilentlyContinue
+          if ($null -ne $ninjaCommand) {
+            if ($ninjaCommand.CommandType -eq 'Alias') {
+              $ninjaPath = $ninjaCommand.Definition
+            } elseif ($ninjaCommand.Path) {
+              $ninjaPath = $ninjaCommand.Path
+            }
           }
-          if (-not $ninjaWorks) {
+          if (-not $ninjaPath -or -not (Test-Path -LiteralPath "$ninjaPath")) {
+            $ninjaPath = $null
+          }
+          if (-not $ninjaPath) {
+            $vsNinja = Join-Path $env:VSINSTALLDIR 'Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe'
+            if (Test-Path -LiteralPath $vsNinja) {
+              $ninjaPath = $vsNinja
+            }
+          }
+          if (-not $ninjaPath) {
             choco install ninja --no-progress -y
             if ($LASTEXITCODE -ne 0) { exit 1 }
+            $ninjaPath = "$env:ChocolateyInstall\bin\ninja.exe"
+            if (-not (Test-Path -LiteralPath $ninjaPath)) { exit 1 }
           }
+          Write-Host "Ninja: $ninjaPath"
 
           $PSNativeCommandUseErrorActionPreference = $true
 
-          $configureArguments = @()
+          $configureArguments = @("-DCMAKE_MAKE_PROGRAM=`"$ninjaPath`"")
           if ($env:ENABLE_CLANG_TIDY -eq "true") {
             $llvmCandidates = @(
               "C:\Program Files\LLVM\bin",
