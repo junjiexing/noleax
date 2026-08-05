@@ -135,8 +135,10 @@ controller 侧 DbgHelp 沿 `[symbols]` 规则解析为 RVA）、`<role>_rva`（�
 参数位 0–3 为 rcx/rdx/r8/r9，4–7 为栈槽。`forced = true` 在 checked relocation 拒绝时允许
 forced relocation；`wait_module` 是安装时模块未加载的等待上限（默认 `"0s"` 立即失败）。
 `patch` 下声明的 PDB 符号在 patch 时解析并随映像 identity 烘焙进输出副本旁的
-`noleax-agent.toml`。同一模块只能声明一次，一次捕获最多 32 个 hook 点。完整语义见
-[CUSTOM_HOOKS.md](CUSTOM_HOOKS.md)。
+`noleax-agent.toml`：烘焙产物中每段额外出现 `image_timestamp` / `image_checksum` /
+`image_size` 三个工具生成键（三键必须同现，手写配置请勿使用），agent 安装 hook 前据此
+校验实际加载的模块与解析时一致。同一模块只能声明一次，一次捕获最多 32 个 hook 点。
+完整语义见 [CUSTOM_HOOKS.md](CUSTOM_HOOKS.md)。
 
 当前 Windows x64 对尚未实现但已为后续阶段预留的组合返回 5：`trace.on_full` 仅支持 `stop`、
 `trace.max_files` 仅支持 1，`injection.unload_on_stop` 仅 attach 支持，analysis
@@ -233,8 +235,8 @@ CLI subcommand存在时覆盖 operation。若 CLI 和配置均缺失，显示顶
 通用：
 
 - max_stack_depth 范围为 1 到 256。
-- buffer_size 必须能容纳至少一个最大事件。
-- max_file_size 必须大于文件头、metadata 和一个最大块。
+- buffer_size 至少为 4 KiB。
+- max_file_size 必须大于 buffer_size，且两者之差至少 4 KiB（容纳文件头、metadata 与块开销）。
 - max_files 至少为 1。
 - on_full=rotate 时 max_files 至少为 2。
 - compression=none 或 lz4 时 compression_level 必须为 0。
@@ -264,7 +266,9 @@ patch：
 - patch.input 和 patch.output 必须设置且不同。
 - output 默认不得已存在。
 - capture 和 trace 设置不得非默认。
-- 上述规则只验证保留 schema；V1 不执行 patch，并在校验通过后返回 5。
+- 校验通过后执行 patch；不支持的镜像类别（非 x64、DLL/驱动/EFI、managed、packed、
+  签名未获 allow_break_signature）返回 5，完整边界见
+  [STATIC_PE_PATCH.md](STATIC_PE_PATCH.md)。
 
 analyze：
 

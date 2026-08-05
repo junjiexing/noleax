@@ -304,7 +304,8 @@ max_file_size = "256MiB"
 compression = "lz4"
 ~~~
 
-可直接修改的完整示例位于 [examples](examples)：run、events 分析和 outstanding 分析三份配置。
+可直接修改的完整示例位于 [examples](examples)：run（NT Heap 与 custom hooks 两份）、events
+分析和 outstanding 分析四份配置。
 
 ### 退出码
 
