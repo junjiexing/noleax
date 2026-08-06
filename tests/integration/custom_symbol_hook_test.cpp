@@ -519,24 +519,32 @@ void scenario_missing_module(const ScenarioContext& context) {
   auto hook = fixture_hook("noleax-missing-zzz.dll", "my_malloc", "my_malloc");
   const auto trace_path = context.workdir / "missing-module.nlx";
   const auto capture = make_capture(context.agent, trace_path, {hook});
-  std::string error_message;
-  try {
-    auto session =
-        noleax::controller::windows::CaptureSession::attach(target.process_id(), capture);
-    error_message =
-        "attach unexpectedly succeeded (pid " + std::to_string(session.process_id()) + ")";
-  } catch (const std::exception& error) {
-    error_message = error.what();
-  }
-  NLX_REQUIRE(error_message.find("noleax-missing-zzz.dll") != std::string::npos, 50,
-              "missing-module error does not name the module: " + error_message);
-  // The failed install must not damage the target: it still runs its sequence to completion
-  // and exits cleanly when asked.
+  // A custom hook point that cannot be installed degrades: the attach succeeds, the capture
+  // runs with the remaining hooks, and the failure is recorded in the trace itself.
+  auto session = noleax::controller::windows::CaptureSession::attach(target.process_id(), capture);
   target.go();
   check_sequence_succeeded(target.wait_done());
+  const auto final = session.stop();
+  NLX_REQUIRE(final.state == noleax::ipc::AgentState::kFinalized, 55,
+              "missing-module capture did not finalize");
+
   const auto events = collect_events(trace_path);
   NLX_REQUIRE(events.allocations.empty() && events.reallocations.empty() && events.frees.empty(),
-              51, "a failed install unexpectedly recorded custom events");
+              55, "a failed install unexpectedly recorded custom events");
+  NLX_REQUIRE(events.stream.end_of_trace.has_value() && events.stream.end_of_trace->normal_stop, 55,
+              "missing-module trace did not end normally");
+  NLX_REQUIRE(
+      events.stream.completeness.has(noleax::trace::CompletenessIssue::kCustomHookInstallFailed),
+      55, "missing-module trace does not report custom_hook_install_failed");
+  NLX_REQUIRE(events.stream.custom_hook_failures.size() == 1U, 55,
+              "missing-module trace does not record exactly one CustomHookFailure");
+  const auto& failure = events.stream.custom_hook_failures.front();
+  NLX_REQUIRE(failure.module == "noleax-missing-zzz.dll", 55,
+              "CustomHookFailure does not name the module: " + failure.module);
+  NLX_REQUIRE(failure.reason == noleax::trace::CustomHookFailureReason::kModuleNotLoaded, 55,
+              "CustomHookFailure reason is not module_not_loaded");
+  NLX_REQUIRE(failure.role == noleax::trace::CustomHookFailureRole::kPoint, 55,
+              "CustomHookFailure role is not the point-level failure");
   std::printf("scenario=missing-module ok\n");
 }
 
@@ -546,18 +554,68 @@ void scenario_missing_export(const ScenarioContext& context) {
   auto hook = fixture_hook("noleax-custom-alloc-a.dll", "no_such_export", "no_such_export");
   const auto trace_path = context.workdir / "missing-export.nlx";
   const auto capture = make_capture(context.agent, trace_path, {hook});
-  std::string error_message;
-  try {
-    auto session =
-        noleax::controller::windows::CaptureSession::attach(target.process_id(), capture);
-    error_message =
-        "attach unexpectedly succeeded (pid " + std::to_string(session.process_id()) + ")";
-  } catch (const std::exception& error) {
-    error_message = error.what();
-  }
-  NLX_REQUIRE(error_message.find("no_such_export") != std::string::npos, 52,
-              "missing-export error does not name the export: " + error_message);
+  auto session = noleax::controller::windows::CaptureSession::attach(target.process_id(), capture);
+  target.go();
+  check_sequence_succeeded(target.wait_done());
+  const auto final = session.stop();
+  NLX_REQUIRE(final.state == noleax::ipc::AgentState::kFinalized, 56,
+              "missing-export capture did not finalize");
+
+  const auto events = collect_events(trace_path);
+  NLX_REQUIRE(events.allocations.empty() && events.reallocations.empty() && events.frees.empty(),
+              56, "a failed install unexpectedly recorded custom events");
+  NLX_REQUIRE(
+      events.stream.completeness.has(noleax::trace::CompletenessIssue::kCustomHookInstallFailed),
+      56, "missing-export trace does not report custom_hook_install_failed");
+  NLX_REQUIRE(events.stream.custom_hook_failures.size() == 1U, 56,
+              "missing-export trace does not record exactly one CustomHookFailure");
+  const auto& failure = events.stream.custom_hook_failures.front();
+  NLX_REQUIRE(failure.module == "noleax-custom-alloc-a.dll", 56,
+              "CustomHookFailure does not name the module: " + failure.module);
+  NLX_REQUIRE(failure.reason == noleax::trace::CustomHookFailureReason::kExportNotFound, 56,
+              "CustomHookFailure reason is not export_not_found");
+  NLX_REQUIRE(failure.role == noleax::trace::CustomHookFailureRole::kAlloc, 56,
+              "CustomHookFailure role is not the alloc role");
+  NLX_REQUIRE(failure.detail.find("no_such_export") != std::string::npos, 56,
+              "CustomHookFailure detail does not name the export: " + failure.detail);
   std::printf("scenario=missing-export ok\n");
+}
+
+void scenario_mixed(const ScenarioContext& context) {
+  TargetProcess target{context, "mixed"};
+  target.wait_ready();
+  auto broken = fixture_hook("noleax-missing-zzz.dll", "my_malloc", "broken_malloc");
+  auto good = fixture_hook("noleax-custom-alloc-a.dll", "my_malloc", "my_malloc");
+  const auto trace_path = context.workdir / "mixed.nlx";
+  const auto capture = make_capture(context.agent, trace_path, {broken, good});
+  auto session = noleax::controller::windows::CaptureSession::attach(target.process_id(), capture);
+  target.go();
+  check_sequence_succeeded(target.wait_done());
+  const auto final = session.stop();
+  NLX_REQUIRE(final.state == noleax::ipc::AgentState::kFinalized, 57,
+              "mixed capture did not finalize");
+
+  const auto events = collect_events(trace_path);
+  NLX_REQUIRE(events.definitions.size() == 2U, 57, "expected two CustomHookDefinitions");
+  // The healthy point keeps recording even though the sibling point never installed.
+  NLX_REQUIRE(events.allocations.size() == 3U, 57, "mixed capture lost the healthy hook events");
+  NLX_REQUIRE(has_allocation_size(events.allocations, 0x1111U), 57, "missing 0x1111 alloc");
+  NLX_REQUIRE(has_allocation_size(events.allocations, 0x5555U), 57, "missing leaked 0x5555 alloc");
+  for (const auto& event : events.allocations) {
+    NLX_REQUIRE(event.header.api_id == noleax::trace::kCustomHookApiIdBase + 1U, 57,
+                "healthy hook api_id mismatch");
+  }
+  NLX_REQUIRE(
+      events.stream.completeness.has(noleax::trace::CompletenessIssue::kCustomHookInstallFailed),
+      57, "mixed trace does not report custom_hook_install_failed");
+  NLX_REQUIRE(events.stream.custom_hook_failures.size() == 1U, 57,
+              "mixed trace does not record exactly one CustomHookFailure");
+  const auto& failure = events.stream.custom_hook_failures.front();
+  NLX_REQUIRE(failure.module == "noleax-missing-zzz.dll", 57,
+              "mixed CustomHookFailure does not name the broken module: " + failure.module);
+  NLX_REQUIRE(failure.reason == noleax::trace::CustomHookFailureReason::kModuleNotLoaded, 57,
+              "mixed CustomHookFailure reason is not module_not_loaded");
+  std::printf("scenario=mixed ok\n");
 }
 
 void scenario_unload_on_stop(const ScenarioContext& context) {
@@ -834,12 +892,13 @@ int run(int argc, char* argv[]) {
   scenario_wait_module(context);
   scenario_missing_module(context);
   scenario_missing_export(context);
+  scenario_mixed(context);
   scenario_unload_on_stop(context);
   scenario_patch_standalone(context);
 
   std::printf(
       "status=ok export=1 forced=1 rva=1 pdb=1 mappings=1 min-size=1 wait-module=1 "
-      "missing-module=1 missing-export=1 unload=1 patch-standalone=1\n");
+      "missing-module=1 missing-export=1 mixed=1 unload=1 patch-standalone=1\n");
   return 0;
 }
 

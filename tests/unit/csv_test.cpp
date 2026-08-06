@@ -576,3 +576,24 @@ TEST_CASE("event stacks CSV pipeline lists group api names", "[analyzer][csv]") 
   CHECK(table.at(0U, "api_names") == "RtlAllocateHeap");
   CHECK(table.at(1U, "record_type") == "summary");
 }
+
+TEST_CASE("events CSV names the custom hook install failure issue", "[analyzer][csv]") {
+  noleax::testing::SyntheticTraceBuilder builder{file_header(), capture_scope()};
+  builder.add_custom_hook_failure(noleax::trace::CustomHookFailure{
+      "noleax-missing.dll", noleax::trace::CustomHookFailureRole::kPoint,
+      noleax::trace::CustomHookFailureReason::kModuleNotLoaded, "module is not loaded"});
+  builder.finish_normally(0);
+
+  const auto encoded = builder.build();
+  std::istringstream input{encoded, std::ios::binary};
+  std::ostringstream output;
+  static_cast<void>(noleax::analyzer::analyze_events_to_csv(
+      input, output, noleax::analyzer::AnalysisFilter{}, {}));
+
+  const auto table = noleax::testing::parse_csv(output.str());
+  REQUIRE(table.rows.size() == 1U);
+  CHECK(table.at(0U, "record_type") == "summary");
+  CHECK(table.at(0U, "completeness_overall") == "incomplete");
+  CHECK(table.at(0U, "completeness_issues").find("custom_hook_install_failed") !=
+        std::string::npos);
+}

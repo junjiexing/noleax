@@ -42,9 +42,11 @@ queue 的总 dropped counter 只用于队列级诊断。被 queue 拒绝的事�
 
 1. 构造 `HookBackend` 和 `WindowsMemoryHooks`；后者按 registry 选择 profile，并拥有全部所选 hook
    共用的 queue。
-2. 在 hook 安装前用 profile 构造 `RtlHeapTraceWriter`；它校验 queue、写 CaptureScope metadata，并
-   启动带 `InternalThreadScope` 的 worker。
-3. 调用 `WindowsMemoryHooks::install()`，再调用 writer `begin_capture()`。
+2. 在 hook 安装前用 profile 构造 `RtlHeapTraceWriter`；它校验 queue，并启动带
+   `InternalThreadScope` 的 worker。
+3. 调用 `WindowsMemoryHooks::install()`；custom hook 点安装失败时把返回的失败列表交给 writer
+   `note_custom_hook_failures()`（写入 metadata chunk 的 CustomHookFailure 记录并置
+   completeness bit 10），再调用 writer `begin_capture()`（CaptureScope metadata 在此写出）。
 4. 目标线程产生事件，worker 按共享 sequence 并发 drain。
 5. 调用 `stop_recording()`，一次性把所选 replacement 切到 original 路由，并等待 record 路由的
    in-flight 归零；此后目标线程可继续运行，但不再访问 queue。
@@ -54,7 +56,8 @@ queue 的总 dropped counter 只用于队列级诊断。被 queue 拒绝的事�
 8. 最后 shutdown `HookBackend` 并关闭输出流。
 
 组合 writer 会拒绝独立 queue、已安装的任一 hook 或未初始化 guard runtime。`begin_capture()` 要求
-所选 hook 均已安装；`finish()` 接受“已逻辑停录且 record in-flight 为零”或“已完全卸载”两种状态，
+所选 hook 均已安装（已通过 `note_custom_hook_failures()` 记录降级失败的 custom hook 除外）；
+`finish()` 接受“已逻辑停录且 record in-flight 为零”或“已完全卸载”两种状态，
 但拒绝仍在记录或 teardown-pending 的 hook。完整 teardown 原理见
 [HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)。
 

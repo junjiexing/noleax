@@ -1,5 +1,6 @@
 #include "noleax/analyzer/json.hpp"
 
+#include <algorithm>
 #include <array>
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
@@ -149,7 +150,7 @@ namespace {
 
 [[nodiscard]] const noleax::testing::JsonValue& analysis_schema() {
   static const noleax::testing::JsonValue schema =
-      load_analysis_schema("noleax-analysis-v3.schema.json");
+      load_analysis_schema("noleax-analysis-v4.schema.json");
   return schema;
 }
 
@@ -187,8 +188,8 @@ namespace {
 }  // namespace
 
 TEST_CASE("analysis JSON schema version is stable", "[analyzer][json]") {
-  CHECK(noleax::analyzer::kAnalysisJsonSchemaVersion == 3U);
-  CHECK(analysis_schema().at("properties").at("schema_version").at("const").unsigned_value() == 3U);
+  CHECK(noleax::analyzer::kAnalysisJsonSchemaVersion == 4U);
+  CHECK(analysis_schema().at("properties").at("schema_version").at("const").unsigned_value() == 4U);
 
   const auto& v2 = analysis_v2_schema();
   CHECK(v2.at("properties").at("schema_version").at("const").unsigned_value() == 2U);
@@ -617,4 +618,33 @@ TEST_CASE("event stacks JSON pipeline lists group api names", "[analyzer][json]"
   const auto& apis = groups[0].at("apis").array_items();
   REQUIRE(apis.size() == 1U);
   CHECK(apis[0].scalar() == "RtlAllocateHeap");
+}
+
+TEST_CASE("events JSON reports custom hook install failures", "[analyzer][json]") {
+  auto result = event_result(file_header(), 0U);
+  result.trace.completeness.add(noleax::trace::CompletenessIssue::kCustomHookInstallFailed);
+  result.trace.custom_hook_failures.push_back(noleax::trace::CustomHookFailure{
+      "noleax-missing.dll", noleax::trace::CustomHookFailureRole::kPoint,
+      noleax::trace::CustomHookFailureReason::kModuleNotLoaded,
+      "custom hook module 'noleax-missing.dll' is not loaded"});
+
+  std::ostringstream output;
+  noleax::analyzer::JsonWriter writer{output};
+  writer.begin_events(file_header(), capture_scope(), noleax::analyzer::AnalysisFilter{});
+  writer.finish_events(result);
+  const auto document = parse_and_validate(output.str());
+
+  const auto& summary = document.at("summary");
+  const auto& issues = summary.at("completeness").at("issues").array_items();
+  CHECK(std::any_of(issues.begin(), issues.end(), [](const noleax::testing::JsonValue& issue) {
+    return issue.scalar() == "custom_hook_install_failed";
+  }));
+  CHECK(summary.at("completeness").at("unknown_issue_bits").scalar() == "0x0");
+  const auto& failures = summary.at("custom_hook_failures").array_items();
+  REQUIRE(failures.size() == 1U);
+  CHECK(failures.front().at("module").scalar() == "noleax-missing.dll");
+  CHECK(failures.front().at("role").scalar() == "point");
+  CHECK(failures.front().at("reason").scalar() == "module_not_loaded");
+  CHECK(failures.front().at("detail").scalar() ==
+        "custom hook module 'noleax-missing.dll' is not loaded");
 }

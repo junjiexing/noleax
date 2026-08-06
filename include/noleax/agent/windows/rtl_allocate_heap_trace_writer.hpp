@@ -6,6 +6,7 @@
 #include <iosfwd>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "noleax/agent/windows/hook_registry.hpp"
 #include "noleax/agent/windows/nt_memory_hooks.hpp"
@@ -16,6 +17,7 @@
 #include "noleax/agent/windows/rtl_reallocate_heap_hook.hpp"
 #include "noleax/agent/windows/windows_memory_hooks.hpp"
 #include "noleax/trace/completeness.hpp"
+#include "noleax/trace/custom_hook.hpp"
 #include "noleax/trace/trace_reader.hpp"
 #include "noleax/trace/trace_writer.hpp"
 
@@ -90,6 +92,9 @@ class RtlAllocateHeapTraceWriter final {
   RtlAllocateHeapTraceWriter& operator=(RtlAllocateHeapTraceWriter&&) = delete;
 
   void begin_capture();
+  // Records custom hook points that failed to install so they land in the metadata chunk and
+  // in the trace completeness mask. Call after hook installation, before begin_capture().
+  void note_custom_hook_failures(std::vector<noleax::trace::CustomHookFailure> failures);
   [[nodiscard]] RtlAllocateHeapTraceWriterResult finish();
   // Finalizes the trace when the background worker can no longer run (for example
   // during DLL_PROCESS_DETACH, where ExitProcess has already killed it). Runs the

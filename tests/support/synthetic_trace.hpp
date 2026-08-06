@@ -41,6 +41,7 @@ class SyntheticTraceBuilder {
   SyntheticTraceBuilder& add_stack(const noleax::trace::StackDefinition& stack);
   SyntheticTraceBuilder& add_custom_hook_definition(
       const noleax::trace::CustomHookDefinition& definition);
+  SyntheticTraceBuilder& add_custom_hook_failure(const noleax::trace::CustomHookFailure& failure);
   SyntheticTraceBuilder& add_loss(const noleax::trace::LossRecord& loss);
   SyntheticTraceBuilder& add_memory_counters(const noleax::trace::MemoryCounters& counters);
   SyntheticTraceBuilder& add_memory_map(const noleax::trace::MemoryMap& map);
@@ -61,6 +62,7 @@ class SyntheticTraceBuilder {
   std::vector<noleax::trace::ModuleRecord> module_records_;
   std::vector<noleax::trace::StackDefinition> stack_definitions_;
   std::vector<noleax::trace::CustomHookDefinition> custom_hook_definitions_;
+  std::vector<noleax::trace::CustomHookFailure> custom_hook_failures_;
   std::vector<MemoryRecord> memory_records_;
   std::optional<noleax::trace::CaptureStatistics> statistics_;
   std::optional<noleax::trace::EndOfTrace> end_;

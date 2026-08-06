@@ -47,6 +47,7 @@ noleax-0.4.0-windows-x64/
       noleax-analysis-v1.schema.json
       noleax-analysis-v2.schema.json
       noleax-analysis-v3.schema.json
+      noleax-analysis-v4.schema.json
       noleax-symbols-v1.schema.json
   examples/
   licenses/

@@ -26,13 +26,14 @@ struct WindowsMemoryHookOptions {
 struct WindowsMemoryHookInstallResult {
   std::optional<RtlHeapHookInstallResult> nt_heap;
   std::optional<NtMemoryHookInstallResult> virtual_memory;
-  // Present when custom hooks were declared; custom installation failures throw instead.
-  std::optional<bool> custom_hooks;
+  // Present when custom hooks were declared. Custom installation is per hook point
+  // all-or-nothing: failed points are rolled back and listed here while the remaining
+  // points (and the built-in families) keep recording.
+  std::optional<std::vector<noleax::trace::CustomHookFailure>> custom_hooks;
 
   [[nodiscard]] bool installed() const noexcept {
     return (!nt_heap.has_value() || nt_heap->installed()) &&
            (!virtual_memory.has_value() || virtual_memory->installed()) &&
-           (!custom_hooks.has_value() || *custom_hooks) &&
            (nt_heap.has_value() || virtual_memory.has_value() || custom_hooks.has_value());
   }
 };

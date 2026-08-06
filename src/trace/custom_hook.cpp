@@ -25,4 +25,9 @@ void validate_custom_hook_definition(const CustomHookDefinition& definition) {
   validate_string(definition.label, "custom hook label");
 }
 
+void validate_custom_hook_failure(const CustomHookFailure& failure) {
+  validate_string(failure.module, "custom hook failure module");
+  validate_string(failure.detail, "custom hook failure detail");
+}
+
 }  // namespace noleax::trace

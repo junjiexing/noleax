@@ -34,7 +34,7 @@ V1 固定头为 68 bytes，位于文件起始位置：
 | 0 | magic | byte[8] | ASCII `NLXTRACE` |
 | 8 | header_size | uint16 | 68 |
 | 10 | format_major | uint16 | 1 |
-| 12 | format_minor | uint16 | 2 |
+| 12 | format_minor | uint16 | 3 |
 | 14 | byte_order | uint8 | little=1、big=2；V1 writer 写 1 |
 | 15 | pointer_width | uint8 | 4 或 8 |
 | 16 | platform | uint16 | unknown=0、windows=1、linux=2、macos=3 |
@@ -106,7 +106,7 @@ record_version=1：
 
 | chunk | record_type |
 |---|---|
-| metadata | CaptureScope=1、CustomHookDefinition=2（minor 1 起） |
+| metadata | CaptureScope=1、CustomHookDefinition=2（minor 1 起）、CustomHookFailure=3（minor 3 起） |
 | stack | StackDefinition=1 |
 | event | HeapCreate=1、HeapDestroy=2、Allocate=3、Reallocate=4、Free=5 |
 | event | VmAllocate=6、VmFree=7、Map=8、Unmap=9、Loss=10 |
@@ -147,6 +147,17 @@ label 是符号名或 `module+0x<rva>`。该记录在对应 hook 点的首个事
 CaptureScope 位于同一 metadata chunk。老 minor reader 将其按未知 record 跳过;新 reader 用
 它把 custom api_id 解析为真实名称。custom hook 点的 allocation_id 按
 `(api_id << 40) | counter` 合成,counter 每点从 1 递增,不与内建 allocation id 冲突。
+
+format minor 3 增加 CustomHookFailure(record_type=3):custom hook 安装按 hook point
+降级——某个 point 的任一角色装不上时只回滚该 point,失败明细写进 metadata chunk(紧接
+CustomHookDefinition 之后),捕获以其余 hook 继续,并在 EndOfTrace 的 aggregate completeness
+里设置 custom_hook_install_failed(bit 10)。payload:module_size uint32、detail_size uint32、
+role uint8、reason uint8、reserved byte[6](0),随后是 module 和 detail 的 UTF-8 bytes
+(不带 NUL)。role:alloc=0、realloc=1、free=2、point=255(整个 point 未装上,如模块未加载)。
+reason:module_not_loaded=1(wait_module 超时也归此)、export_not_found=2、forwarded_export=3、
+invalid_rva=4、wrong_signature=5、image_identity_mismatch=6、backend_unavailable=7、
+other=255。detail 是人读消息。老 minor reader 将该记录按未知 record 跳过;新 reader 在遇到
+记录时自行设置 bit 10,因此即使 EndOfTrace 缺失该 issue 也不会丢。
 
 ### 7.1 ProcessInfo
 
@@ -493,6 +504,7 @@ presence bit 0/1/2 分别表示 count/sequence/tick 是否存在；缺省字段�
 | 7 | abnormal_stop | 否 | 否 | - |
 | 8 | stack_data_loss | 是 | 否 | - |
 | 9 | partially_understood_format | 否 | 否 | partial |
+| 10 | custom_hook_install_failed | 否 | 否 | - |
 
 表中的“是/否”表示该维度是否仍完整。未知的未来 bit 保留，并按 overall/lifecycle/stack
 incomplete、understanding partial 处理。只有 mask=0 时默认退出码为 0；任何 issue 均返回 2。

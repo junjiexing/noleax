@@ -276,6 +276,8 @@ constexpr std::array kIssueDescriptions{
     IssueDescription{noleax::trace::CompletenessIssue::kStackDataLoss, "stack_data_loss"},
     IssueDescription{noleax::trace::CompletenessIssue::kPartiallyUnderstoodFormat,
                      "partially_understood_format"},
+    IssueDescription{noleax::trace::CompletenessIssue::kCustomHookInstallFailed,
+                     "custom_hook_install_failed"},
 };
 
 [[nodiscard]] constexpr std::uint32_t known_issue_mask() noexcept {

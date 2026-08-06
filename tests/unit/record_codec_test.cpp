@@ -741,3 +741,101 @@ TEST_CASE("memory record decoders reject malformed payloads", "[trace][record-co
     CHECK(encoded.empty());
   }
 }
+
+TEST_CASE("custom hook failure record has stable layout and round trips", "[trace][record-codec]") {
+  using namespace noleax::trace;
+  const CustomHookFailure expected{"noleax-missing.dll", CustomHookFailureRole::kFree,
+                                   CustomHookFailureReason::kWrongSignature,
+                                   "install failed: wrong_signature"};
+  std::vector<std::byte> encoded;
+  append_custom_hook_failure_record(encoded, expected);
+
+  RecordCursor cursor{encoded};
+  const auto record = cursor.next();
+  REQUIRE(record.has_value());
+  CHECK(record->type == static_cast<std::uint16_t>(MetadataRecordType::kCustomHookFailure));
+  CHECK(record->version == 1U);
+  CHECK(read_u32(encoded, 8U) == expected.module.size());
+  CHECK(read_u32(encoded, 12U) == expected.detail.size());
+  CHECK(std::to_integer<std::uint8_t>(encoded[16]) ==
+        static_cast<std::uint8_t>(CustomHookFailureRole::kFree));
+  CHECK(std::to_integer<std::uint8_t>(encoded[17]) ==
+        static_cast<std::uint8_t>(CustomHookFailureReason::kWrongSignature));
+  CHECK(read_u32(encoded, 20U) == 0U);
+
+  const auto decoded = decode_custom_hook_failure_record(*record);
+  REQUIRE(decoded.has_value());
+  CHECK(*decoded == expected);
+  CHECK(cursor.done());
+
+  // Unknown record types and versions are skipped, never decoded.
+  const std::array<std::byte, 1> payload{std::byte{0}};
+  CHECK_FALSE(decode_custom_hook_failure_record(RecordView{0xFFFFU, 1U, payload}).has_value());
+  CHECK_FALSE(decode_custom_hook_failure_record(
+                  RecordView{static_cast<std::uint16_t>(MetadataRecordType::kCustomHookFailure), 2U,
+                             payload})
+                  .has_value());
+}
+
+TEST_CASE("custom hook failure codec rejects malformed records", "[trace][record-codec]") {
+  using namespace noleax::trace;
+  const CustomHookFailure failure{"noleax-missing.dll", CustomHookFailureRole::kPoint,
+                                  CustomHookFailureReason::kModuleNotLoaded, "module not loaded"};
+
+  SECTION("truncated payload") {
+    const std::array<std::byte, 7> payload{};
+    CHECK_THROWS_AS(decode_custom_hook_failure_record(RecordView{3U, 1U, payload}),
+                    RecordCodecError);
+  }
+
+  SECTION("string sizes do not match the payload") {
+    std::vector<std::byte> encoded;
+    append_custom_hook_failure_record(encoded, failure);
+    write_u32(encoded, 8U, 999U);
+    RecordCursor cursor{encoded};
+    CHECK_THROWS_AS(decode_custom_hook_failure_record(*cursor.next()), RecordCodecError);
+  }
+
+  SECTION("reserved bytes must be zero") {
+    std::vector<std::byte> encoded;
+    append_custom_hook_failure_record(encoded, failure);
+    encoded[18] = std::byte{1U};
+    RecordCursor cursor{encoded};
+    CHECK_THROWS_AS(decode_custom_hook_failure_record(*cursor.next()), RecordCodecError);
+  }
+
+  SECTION("unknown role") {
+    std::vector<std::byte> encoded;
+    append_custom_hook_failure_record(encoded, failure);
+    encoded[16] = std::byte{0x7FU};
+    RecordCursor cursor{encoded};
+    CHECK_THROWS_AS(decode_custom_hook_failure_record(*cursor.next()), RecordCodecError);
+  }
+
+  SECTION("unknown reason") {
+    std::vector<std::byte> encoded;
+    append_custom_hook_failure_record(encoded, failure);
+    encoded[17] = std::byte{0x7FU};
+    RecordCursor cursor{encoded};
+    CHECK_THROWS_AS(decode_custom_hook_failure_record(*cursor.next()), RecordCodecError);
+  }
+
+  SECTION("empty module or detail is not encodable") {
+    std::vector<std::byte> encoded;
+    CHECK_THROWS_AS(append_custom_hook_failure_record(
+                        encoded, CustomHookFailure{"", CustomHookFailureRole::kPoint,
+                                                   CustomHookFailureReason::kOther, "detail"}),
+                    CustomHookValidationError);
+    CHECK_THROWS_AS(append_custom_hook_failure_record(
+                        encoded, CustomHookFailure{"module.dll", CustomHookFailureRole::kPoint,
+                                                   CustomHookFailureReason::kOther, ""}),
+                    CustomHookValidationError);
+    CHECK(encoded.empty());
+  }
+
+  SECTION("record exceeds the configured record size limit") {
+    std::vector<std::byte> encoded;
+    CHECK_THROWS_AS(append_custom_hook_failure_record(encoded, failure, 40U), RecordCodecError);
+    CHECK(encoded.empty());
+  }
+}

@@ -196,6 +196,7 @@ class EventStreamDecoder {
     noleax::trace::RecordCursor cursor{payload, maximum_record_size_};
     std::optional<noleax::trace::CaptureScope> decoded_scope;
     std::vector<noleax::trace::CustomHookDefinition> decoded_custom_hooks;
+    std::vector<noleax::trace::CustomHookFailure> decoded_custom_hook_failures;
     bool skipped_unknown = false;
     while (const auto record = cursor.next()) {
       auto scope = noleax::trace::decode_capture_scope_record(*record);
@@ -213,6 +214,11 @@ class EventStreamDecoder {
         }
         custom_hook_api_ids_.insert(custom_hook->api_id);
         decoded_custom_hooks.push_back(std::move(*custom_hook));
+        continue;
+      }
+      auto custom_hook_failure = noleax::trace::decode_custom_hook_failure_record(*record);
+      if (custom_hook_failure.has_value()) {
+        decoded_custom_hook_failures.push_back(std::move(*custom_hook_failure));
         continue;
       }
       skipped_unknown = true;
@@ -233,6 +239,13 @@ class EventStreamDecoder {
       result_.custom_hooks.push_back(definition);
       if (callbacks_.on_custom_hook_definition) {
         callbacks_.on_custom_hook_definition(definition);
+      }
+    }
+    for (const auto& failure : decoded_custom_hook_failures) {
+      mark_custom_hook_install_failed();
+      result_.custom_hook_failures.push_back(failure);
+      if (callbacks_.on_custom_hook_failure) {
+        callbacks_.on_custom_hook_failure(failure);
       }
     }
   }
@@ -652,6 +665,14 @@ class EventStreamDecoder {
     }
   }
 
+  void mark_custom_hook_install_failed() {
+    if (completeness_.has_value()) {
+      completeness_->mark_custom_hook_install_failed();
+    } else {
+      pending_custom_hook_failure_ = true;
+    }
+  }
+
   void apply_pending_completeness() {
     if (pending_unknown_record_) {
       completeness_->mark_unknown_record_skipped();
@@ -661,6 +682,9 @@ class EventStreamDecoder {
     }
     if (pending_truncated_) {
       completeness_->mark_trace_truncated();
+    }
+    if (pending_custom_hook_failure_) {
+      completeness_->mark_custom_hook_install_failed();
     }
   }
 
@@ -686,6 +710,7 @@ class EventStreamDecoder {
   bool pending_unknown_record_{false};
   bool pending_partial_format_{false};
   bool pending_truncated_{false};
+  bool pending_custom_hook_failure_{false};
 };
 
 }  // namespace

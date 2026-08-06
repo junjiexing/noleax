@@ -64,6 +64,10 @@ events 文件的 `record_type` 为：
 时为 requested size；VM free 为 region size；map 为 view size；没有独立 size 的事件留空。具体 payload
 原始 size 仍保留在对应专用列。
 
+`completeness_issues` 以分号连接 issue 名（snake_case），custom hook 安装失败记为
+`custom_hook_install_failed`。CSV 不展开失败明细；逐条 module/role/reason/detail 见 JSON 的
+`summary.custom_hook_failures` 与 console 的 `custom-hook-failures:` 段。
+
 ## 4. leaks 表
 
 leaks（原 outstanding）文件的 `record_type` 为 `allocation` 或固定末行 `summary`。固定列顺序分组如下：

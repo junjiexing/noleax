@@ -354,7 +354,6 @@ class RtlAllocateHeapTraceWriter::Implementation final {
     module_payload_.reserve(options_.chunk_target_size);
     stack_payload_.reserve(options_.chunk_target_size);
     event_payload_.reserve(options_.chunk_target_size);
-    write_metadata();
     worker_ = std::thread{[this] { thread_main(); }};
     std::unique_lock lock{state_mutex_};
     state_changed_.wait(lock, [this] { return thread_ready_; });
@@ -381,7 +380,6 @@ class RtlAllocateHeapTraceWriter::Implementation final {
     module_payload_.reserve(options_.chunk_target_size);
     stack_payload_.reserve(options_.chunk_target_size);
     event_payload_.reserve(options_.chunk_target_size);
-    write_metadata();
     worker_ = std::thread{[this] { thread_main(); }};
     std::unique_lock lock{state_mutex_};
     state_changed_.wait(lock, [this] { return thread_ready_; });
@@ -421,7 +419,6 @@ class RtlAllocateHeapTraceWriter::Implementation final {
     module_payload_.reserve(options_.chunk_target_size);
     stack_payload_.reserve(options_.chunk_target_size);
     event_payload_.reserve(options_.chunk_target_size);
-    write_metadata();
     worker_ = std::thread{[this] { thread_main(); }};
     std::unique_lock lock{state_mutex_};
     state_changed_.wait(lock, [this] { return thread_ready_; });
@@ -448,11 +445,34 @@ class RtlAllocateHeapTraceWriter::Implementation final {
         (create_hook_ != nullptr && !create_hook_->is_installed()) ||
         (destroy_hook_ != nullptr && !destroy_hook_->is_installed()) ||
         (nt_memory_hooks_ != nullptr && !nt_memory_hooks_->is_installed()) ||
-        (custom_hooks_ != nullptr && !custom_hooks_->is_installed())) {
+        (custom_hooks_ != nullptr && custom_hook_failures_.empty() &&
+         !custom_hooks_->is_installed())) {
       throw std::logic_error{"all selected memory hooks must be installed before capture begins"};
     }
+    // The metadata chunk goes out only now: custom hook install failures are collected between
+    // writer construction and capture start, and they must be recorded next to the definitions.
+    write_metadata();
     capture_begun_ = true;
     state_changed_.notify_all();
+  }
+
+  // Records custom hook points that failed to install. The failures land in the metadata
+  // chunk (next to the CustomHookDefinition records) and mark the trace completeness issue;
+  // the capture itself continues with the hooks that did install. Call after hook
+  // installation, before begin_capture().
+  void note_custom_hook_failures(std::vector<noleax::trace::CustomHookFailure> failures) {
+    std::scoped_lock lock{state_mutex_};
+    if (capture_begun_) {
+      throw std::logic_error{"custom hook failures must be noted before capture begins"};
+    }
+    if (failures.empty()) {
+      return;
+    }
+    for (const auto& failure : failures) {
+      noleax::trace::validate_custom_hook_failure(failure);
+    }
+    completeness_.mark_custom_hook_install_failed();
+    custom_hook_failures_ = std::move(failures);
   }
 
   void request_stop() noexcept {
@@ -579,6 +599,10 @@ class RtlAllocateHeapTraceWriter::Implementation final {
   }
 
   void write_metadata() {
+    if (metadata_written_) {
+      return;
+    }
+    metadata_written_ = true;
     std::vector<std::byte> payload;
     noleax::trace::append_capture_scope_record(payload, options_.capture_scope,
                                                options_.maximum_record_size);
@@ -587,6 +611,10 @@ class RtlAllocateHeapTraceWriter::Implementation final {
         noleax::trace::append_custom_hook_definition_record(payload, definition,
                                                             options_.maximum_record_size);
       }
+    }
+    for (const auto& failure : custom_hook_failures_) {
+      noleax::trace::append_custom_hook_failure_record(payload, failure,
+                                                       options_.maximum_record_size);
     }
     noleax::trace::ChunkDescriptor descriptor;
     descriptor.type = noleax::trace::ChunkType::kMetadata;
@@ -1849,6 +1877,7 @@ class RtlAllocateHeapTraceWriter::Implementation final {
   }
 
   void finalize_empty_trace() {
+    write_metadata();
     writer_.release_file_reserve();
     noleax::trace::CaptureStatistics statistics;
     if (create_hook_ != nullptr) {
@@ -2243,6 +2272,7 @@ class RtlAllocateHeapTraceWriter::Implementation final {
   std::vector<std::byte> stack_payload_;
   std::vector<std::byte> event_payload_;
   std::vector<std::byte> memory_payload_;
+  std::vector<noleax::trace::CustomHookFailure> custom_hook_failures_;
   std::unordered_map<AllocationKey, noleax::trace::AllocationId, AllocationKeyHash>
       live_allocations_;
   std::unordered_map<std::uint32_t, std::uint64_t> custom_allocation_counters_;
@@ -2259,6 +2289,7 @@ class RtlAllocateHeapTraceWriter::Implementation final {
   std::atomic<bool> running_{true};
   bool thread_ready_{false};
   bool capture_begun_{false};
+  bool metadata_written_{false};
   bool file_limit_reached_{false};
   bool initial_modules_processed_{false};
   bool inline_finalize_done_{false};
@@ -2384,6 +2415,11 @@ RtlAllocateHeapTraceWriter::RtlAllocateHeapTraceWriter(WindowsMemoryHooks& hooks
 RtlAllocateHeapTraceWriter::~RtlAllocateHeapTraceWriter() = default;
 
 void RtlAllocateHeapTraceWriter::begin_capture() { implementation_->begin_capture(); }
+
+void RtlAllocateHeapTraceWriter::note_custom_hook_failures(
+    std::vector<noleax::trace::CustomHookFailure> failures) {
+  implementation_->note_custom_hook_failures(std::move(failures));
+}
 
 RtlAllocateHeapTraceWriterResult RtlAllocateHeapTraceWriter::finish() {
   return implementation_->finish();

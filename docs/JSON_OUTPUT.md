@@ -1,6 +1,6 @@
 # Noleax JSON 输出
 
-> schema：`docs/schema/noleax-analysis-v3.schema.json`
+> schema：`docs/schema/noleax-analysis-v4.schema.json`
 > 日期：2026-08-05
 
 ## 1. 目标与边界
@@ -18,21 +18,24 @@ events 输出可能包含已完成校验的前序记录，但不会包含闭合�
 
 每个文档固定包含：
 
-| 字段 | V3 含义 |
+| 字段 | V4 含义 |
 |---|---|
 | `schema` | 固定为 `noleax.analysis` |
-| `schema_version` | 固定为整数 `3` |
+| `schema_version` | 固定为整数 `4` |
 | `mode` | `events`、`leaks`、`stacks` 或 `memory` |
 | `metadata` | trace header 和 capture scope |
 | `filters` | 本次实际使用的全部过滤条件；未设置的范围为 `null`，空枚举为 `[]`（memory 模式恒为空） |
-| `summary` | trace、完整性、统计和对应 mode 的计数 |
+| `summary` | trace、完整性、统计、custom hook 失败明细和对应 mode 的计数 |
 
 events 文档另有 `events` 数组；leaks 文档另有 `window` 和 `allocations`；stacks 文档另有
-`dataset`、`window` 和 `groups`；memory 文档另有 `window` 和 `snapshots`。V3 schema 对根对象、
-所有已定义对象及九类 payload 禁止未知字段。V3 相对 V2 增加 `memory` mode（含
-`memory_window`/`memory_snapshot` 结构与对应 summary 计数字段）；这是结构和枚举变化，因此提升
-schema version。仓库保留只接受旧结构的 V1/V2 schema。后续新增字段、改变字段类型或新增枚举值也
-必须按消费者无法静默误解的兼容策略处理。
+`dataset`、`window` 和 `groups`；memory 文档另有 `window` 和 `snapshots`。V4 schema 对根对象、
+所有已定义对象及九类 payload 禁止未知字段。V4 相对 V3 增加 `summary.custom_hook_failures`
+数组（元素为 `module`、`role`、`reason`、`detail` 四字段的对象，无失败时为空数组）并在
+completeness issue 命名中新增 `custom_hook_install_failed`；这是结构和枚举变化，因此提升
+schema version。V3 相对 V2 增加 `memory` mode（含
+`memory_window`/`memory_snapshot` 结构与对应 summary 计数字段）。仓库保留只接受旧结构的
+V1/V2/V3 schema。后续新增字段、改变字段类型或新增枚举值也必须按消费者无法静默误解的兼容
+策略处理。
 
 ## 3. 基础编码规则
 
@@ -123,6 +126,12 @@ summary 的 mode 专属字段为 `snapshots`、`counter_snapshots` 和 `map_snap
 
 `completeness` 同时提供 mask、overall、lifecycle、stack detail、format understanding、已知 issue
 列表和未来未知 bit。issue 名称使用稳定 snake_case。任何不完整结果仍由上层映射为推荐退出码 2。
+
+`summary.custom_hook_failures` 列出 custom hook 安装失败明细：`module`（声明的模块名）、
+`role`（`alloc`/`realloc`/`free`，point 级失败为 `point`）、`reason`（`module_not_loaded`、
+`export_not_found`、`forwarded_export`、`invalid_rva`、`wrong_signature`、
+`image_identity_mismatch`、`backend_unavailable`、`other`）与人读 `detail`。对应的
+completeness issue 名为 `custom_hook_install_failed`。
 
 单元测试使用独立的小型 JSON parser 和 schema 验证器检查 events、Loss、outstanding、九类 payload、
 UTF-8/控制字符、64 位整数边界、调用栈展示、流式管线、writer 状态和输出流失败。正式 writer 不依赖
