@@ -133,6 +133,7 @@ function Assert-PackageLayout {
         'docs/symbols.md',
         'docs/static-pe-patch.md',
         'docs/hook-profiles.md',
+        'docs/custom-hooks.md',
         'docs/roadmap.md',
         'docs/schema/noleax-analysis-v1.schema.json',
         'docs/schema/noleax-analysis-v2.schema.json',

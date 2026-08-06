@@ -229,7 +229,7 @@ noleax patch --input INPUT --output OUTPUT [options]
 ## 8. analyze
 
 ~~~
-noleax analyze [options] trace...
+noleax analyze [options] trace
 ~~~
 
 trace operand 存在时整体覆盖 analysis.inputs。

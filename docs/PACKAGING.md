@@ -42,6 +42,7 @@ noleax-0.4.0-windows-x64/
     symbols.md
     static-pe-patch.md
     hook-profiles.md
+    custom-hooks.md
     roadmap.md
     schema/
       noleax-analysis-v1.schema.json

@@ -844,7 +844,7 @@ ParsedCommandLine parse_command_line(int argc, const char* const* argv,
                      "Bake standalone capture activation into the patched image");
 
   AnalyzeBindings analyze_bindings;
-  CLI::App* const analyze = app.add_subcommand("analyze", "Analyze one or more Noleax traces");
+  CLI::App* const analyze = app.add_subcommand("analyze", "Analyze a Noleax trace");
   add_text_option(*analyze, analyze_bindings.mode, "--mode", "Analysis mode");
   add_text_option(*analyze, analyze_bindings.format, "--format", "Output format");
   add_text_option(*analyze, analyze_bindings.output, "--output", "Output path");
