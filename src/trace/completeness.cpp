@@ -20,7 +20,8 @@ inline constexpr std::uint32_t kKnownIssueMask =
     static_cast<std::uint32_t>(CompletenessIssue::kMissingEndOfTrace) |
     static_cast<std::uint32_t>(CompletenessIssue::kAbnormalStop) |
     static_cast<std::uint32_t>(CompletenessIssue::kStackDataLoss) |
-    static_cast<std::uint32_t>(CompletenessIssue::kPartiallyUnderstoodFormat);
+    static_cast<std::uint32_t>(CompletenessIssue::kPartiallyUnderstoodFormat) |
+    static_cast<std::uint32_t>(CompletenessIssue::kCustomHookInstallFailed);
 
 inline constexpr std::uint32_t kLifecycleIssueMask =
     kKnownIssueMask & ~static_cast<std::uint32_t>(CompletenessIssue::kStackDataLoss);
@@ -33,7 +34,8 @@ inline constexpr std::uint32_t kStackDetailIssueMask =
     static_cast<std::uint32_t>(CompletenessIssue::kMissingEndOfTrace) |
     static_cast<std::uint32_t>(CompletenessIssue::kAbnormalStop) |
     static_cast<std::uint32_t>(CompletenessIssue::kStackDataLoss) |
-    static_cast<std::uint32_t>(CompletenessIssue::kPartiallyUnderstoodFormat);
+    static_cast<std::uint32_t>(CompletenessIssue::kPartiallyUnderstoodFormat) |
+    static_cast<std::uint32_t>(CompletenessIssue::kCustomHookInstallFailed);
 
 inline constexpr std::uint32_t kUnderstandingIssueMask =
     static_cast<std::uint32_t>(CompletenessIssue::kUnknownRecordSkipped) |
@@ -276,6 +278,10 @@ void CompletenessTracker::mark_unknown_record_skipped() {
 
 void CompletenessTracker::mark_partially_understood_format() {
   report_.add(CompletenessIssue::kPartiallyUnderstoodFormat);
+}
+
+void CompletenessTracker::mark_custom_hook_install_failed() {
+  report_.add(CompletenessIssue::kCustomHookInstallFailed);
 }
 
 bool CompletenessTracker::saw_end_of_trace() const noexcept { return saw_end_of_trace_; }

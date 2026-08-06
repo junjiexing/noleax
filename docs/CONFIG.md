@@ -140,6 +140,10 @@ forced relocation；`wait_module` 是安装时模块未加载的等待上限（�
 校验实际加载的模块与解析时一致。同一模块只能声明一次，一次捕获最多 32 个 hook 点。
 完整语义见 [CUSTOM_HOOKS.md](CUSTOM_HOOKS.md)。
 
+hook 点安装失败（模块未加载、导出不存在、签名不符等）不中止捕获：只回滚该 hook 点，
+其余 hook 点与内置 profile 继续，失败明细写入 trace 的 CustomHookFailure 记录并置
+completeness `custom_hook_install_failed`（退出码 2）。
+
 当前 Windows x64 对尚未实现但已为后续阶段预留的组合返回 5：`trace.on_full` 仅支持 `stop`、
 `trace.max_files` 仅支持 1，`injection.unload_on_stop` 仅 attach 支持，analysis
 每次仅支持一个 input。`injection.method` 在 run 下支持 `remote-thread`、`thread-hijack`、

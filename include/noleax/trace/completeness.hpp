@@ -89,6 +89,7 @@ enum class CompletenessIssue : std::uint32_t {  // NOLINT(performance-enum-size)
   kAbnormalStop = 1U << 7U,
   kStackDataLoss = 1U << 8U,
   kPartiallyUnderstoodFormat = 1U << 9U,
+  kCustomHookInstallFailed = 1U << 10U,
 };
 
 enum class CompletenessState : std::uint8_t {
@@ -162,6 +163,7 @@ class CompletenessTracker {
   void mark_writer_error();
   void mark_unknown_record_skipped();
   void mark_partially_understood_format();
+  void mark_custom_hook_install_failed();
 
   [[nodiscard]] bool saw_end_of_trace() const noexcept;
   [[nodiscard]] const CompletenessReport& report() const noexcept;

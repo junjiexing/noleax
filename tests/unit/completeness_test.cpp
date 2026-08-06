@@ -265,3 +265,22 @@ TEST_CASE("capture scope rejects contradictory process-start metadata", "[trace]
   CHECK_NOTHROW(validate_capture_scope(CaptureScope{false, true}));
   CHECK_THROWS_AS(validate_capture_scope(CaptureScope{true, true}), CompletenessValidationError);
 }
+
+TEST_CASE("custom hook install failure degrades lifecycle and stack detail only",
+          "[trace][completeness]") {
+  using namespace noleax::trace;
+  CompletenessTracker tracker{process_start_scope()};
+  tracker.mark_custom_hook_install_failed();
+  tracker.observe_end_of_trace(normal_end());
+
+  CHECK(tracker.report().has(CompletenessIssue::kCustomHookInstallFailed));
+  CHECK(tracker.report().overall_state() == CompletenessState::kIncomplete);
+  CHECK(tracker.report().lifecycle_state() == CompletenessState::kIncomplete);
+  CHECK(tracker.report().stack_detail_state() == CompletenessState::kIncomplete);
+  CHECK(tracker.report().understanding_state() == UnderstandingState::kFull);
+  CHECK(tracker.report().recommended_exit_code() == 2);
+
+  const auto roundtrip = CompletenessReport::from_mask(tracker.report().mask());
+  CHECK(roundtrip == tracker.report());
+  CHECK(roundtrip.has(CompletenessIssue::kCustomHookInstallFailed));
+}

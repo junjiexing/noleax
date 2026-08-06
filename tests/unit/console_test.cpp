@@ -331,6 +331,7 @@ TEST_CASE("console summary names every completeness issue including future bits"
       std::pair{Issue::kAbnormalStop, "abnormal-stop"},
       std::pair{Issue::kStackDataLoss, "stack-data-loss"},
       std::pair{Issue::kPartiallyUnderstoodFormat, "partially-understood-format"},
+      std::pair{Issue::kCustomHookInstallFailed, "custom-hook-install-failed"},
   };
 
   for (const auto& [issue, name] : cases) {
@@ -356,6 +357,28 @@ TEST_CASE("console summary names every completeness issue including future bits"
   writer.begin_events(file_header(), capture_scope());
   writer.finish_events(future);
   CHECK(output.str().find("unknown-issue-bits=0x80000000") != std::string::npos);
+}
+
+TEST_CASE("console summary lists custom hook install failures", "[analyzer][console]") {
+  noleax::analyzer::FilteredEventsResult result;
+  result.trace.file_header = file_header();
+  result.trace.capture_scope = capture_scope();
+  result.trace.completeness.add(noleax::trace::CompletenessIssue::kCustomHookInstallFailed);
+  result.trace.custom_hook_failures.push_back(noleax::trace::CustomHookFailure{
+      "noleax-missing.dll", noleax::trace::CustomHookFailureRole::kPoint,
+      noleax::trace::CustomHookFailureReason::kModuleNotLoaded,
+      "custom hook module 'noleax-missing.dll' is not loaded"});
+
+  std::ostringstream output;
+  noleax::analyzer::ConsoleWriter writer{output};
+  writer.begin_events(file_header(), capture_scope());
+  writer.finish_events(result);
+
+  CHECK(output.str().find("    - custom-hook-install-failed\n") != std::string::npos);
+  CHECK(output.str().find("  custom-hook-failures:\n") != std::string::npos);
+  CHECK(output.str().find("    - module=noleax-missing.dll role=point reason=module-not-loaded "
+                          "detail=custom hook module 'noleax-missing.dll' is not loaded\n") !=
+        std::string::npos);
 }
 
 TEST_CASE("console reports print sequence window bounds", "[analyzer][console][window]") {

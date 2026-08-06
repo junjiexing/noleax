@@ -26,6 +26,7 @@ struct EventStreamCallbacks {
   std::function<void(const noleax::trace::FileHeader&)> on_file_header;
   std::function<void(const noleax::trace::CaptureScope&)> on_capture_scope;
   std::function<void(const noleax::trace::CustomHookDefinition&)> on_custom_hook_definition;
+  std::function<void(const noleax::trace::CustomHookFailure&)> on_custom_hook_failure;
   std::function<void(const noleax::trace::ModuleLoad&)> on_module_load;
   std::function<void(const noleax::trace::ModuleUnload&)> on_module_unload;
   std::function<void(const noleax::trace::StackDefinition&)> on_stack_definition;
@@ -41,6 +42,7 @@ struct EventStreamResult {
   noleax::trace::FileHeader file_header;
   noleax::trace::CaptureScope capture_scope;
   std::vector<noleax::trace::CustomHookDefinition> custom_hooks;
+  std::vector<noleax::trace::CustomHookFailure> custom_hook_failures;
   std::optional<noleax::trace::CaptureStatistics> statistics;
   std::optional<noleax::trace::EndOfTrace> end_of_trace;
   noleax::trace::CompletenessReport completeness = noleax::trace::CompletenessReport::from_mask(0U);

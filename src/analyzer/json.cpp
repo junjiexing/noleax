@@ -370,7 +370,69 @@ constexpr std::array kIssueDescriptions{
     IssueDescription{noleax::trace::CompletenessIssue::kStackDataLoss, "stack_data_loss"},
     IssueDescription{noleax::trace::CompletenessIssue::kPartiallyUnderstoodFormat,
                      "partially_understood_format"},
+    IssueDescription{noleax::trace::CompletenessIssue::kCustomHookInstallFailed,
+                     "custom_hook_install_failed"},
 };
+
+[[nodiscard]] const char* custom_hook_failure_role_name(
+    noleax::trace::CustomHookFailureRole role) noexcept {
+  switch (role) {
+    case noleax::trace::CustomHookFailureRole::kAlloc:
+      return "alloc";
+    case noleax::trace::CustomHookFailureRole::kRealloc:
+      return "realloc";
+    case noleax::trace::CustomHookFailureRole::kFree:
+      return "free";
+    case noleax::trace::CustomHookFailureRole::kPoint:
+      return "point";
+  }
+  return "unknown";
+}
+
+[[nodiscard]] const char* custom_hook_failure_reason_name(
+    noleax::trace::CustomHookFailureReason reason) noexcept {
+  switch (reason) {
+    case noleax::trace::CustomHookFailureReason::kModuleNotLoaded:
+      return "module_not_loaded";
+    case noleax::trace::CustomHookFailureReason::kExportNotFound:
+      return "export_not_found";
+    case noleax::trace::CustomHookFailureReason::kForwardedExport:
+      return "forwarded_export";
+    case noleax::trace::CustomHookFailureReason::kInvalidRva:
+      return "invalid_rva";
+    case noleax::trace::CustomHookFailureReason::kWrongSignature:
+      return "wrong_signature";
+    case noleax::trace::CustomHookFailureReason::kImageIdentityMismatch:
+      return "image_identity_mismatch";
+    case noleax::trace::CustomHookFailureReason::kBackendUnavailable:
+      return "backend_unavailable";
+    case noleax::trace::CustomHookFailureReason::kOther:
+      return "other";
+  }
+  return "unknown";
+}
+
+void write_custom_hook_failures(JsonEmitter& json,
+                                const std::vector<noleax::trace::CustomHookFailure>& failures) {
+  json.raw("[");
+  bool first = true;
+  for (const auto& failure : failures) {
+    if (!first) {
+      json.raw(",");
+    }
+    first = false;
+    json.raw("{\"module\":");
+    json.string(failure.module);
+    json.raw(",\"role\":");
+    json.string(custom_hook_failure_role_name(failure.role));
+    json.raw(",\"reason\":");
+    json.string(custom_hook_failure_reason_name(failure.reason));
+    json.raw(",\"detail\":");
+    json.string(failure.detail);
+    json.raw("}");
+  }
+  json.raw("]");
+}
 
 [[nodiscard]] constexpr std::uint32_t known_issue_mask() noexcept {
   std::uint32_t result = 0U;
@@ -1298,6 +1360,8 @@ void JsonWriter::write_summary(const EventStreamResult& trace) {
   write_termination(json, trace.end_of_trace);
   json.raw(",\"completeness\":");
   write_completeness(trace.completeness);
+  json.raw(",\"custom_hook_failures\":");
+  write_custom_hook_failures(json, trace.custom_hook_failures);
 }
 
 void JsonWriter::write_completeness(const noleax::trace::CompletenessReport& completeness) {

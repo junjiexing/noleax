@@ -149,6 +149,13 @@ SPEC 形如 `module:key=value,...`。alloc 与 free 必填、realloc 可选，�
 上限，0 为立即失败）。同一模块只能声明一次，一次捕获最多 32 个 hook 点。完整语义见
 [CUSTOM_HOOKS.md](CUSTOM_HOOKS.md) 与 [CONFIG.md](CONFIG.md)。
 
+装不上会怎样：hook 点按模块粒度 all-or-nothing 降级——任一角色解析或安装失败只回滚该
+hook 点，其余 hook 点与内置 profile 照常安装，捕获继续进行。失败明细（module/role/reason/
+detail）写入 trace 的 metadata chunk（CustomHookFailure 记录），trace 完整性置
+`custom_hook_install_failed`（bit 10），run/attach 与 analyze 的退出码因此为 2。即使全部
+custom hook 都装不上，捕获也以仅剩内置事件的方式完成，不再有任何路径因 custom hook 失败
+而报错退出（内置 profile 自身的安装失败仍是硬失败）。
+
 V1 profile：
 
 | profile | API 组 |
@@ -222,7 +229,7 @@ noleax patch --input INPUT --output OUTPUT [options]
 ## 8. analyze
 
 ~~~
-noleax analyze [options] trace...
+noleax analyze [options] trace
 ~~~
 
 trace operand 存在时整体覆盖 analysis.inputs。
@@ -405,7 +412,7 @@ noleax doctor [--agent PATH] [--target PATH] [--pid PID] [--inject-method METHOD
 |---:|---|
 | 0 | 成功且结果完整 |
 | 1 | 参数、配置、输入或一般运行错误 |
-| 2 | 操作成功，但捕获或分析结果不完整 |
+| 2 | 操作成功，但捕获或分析结果不完整（含 custom hook 安装失败等 completeness issue） |
 | 3 | 注入、权限或远程初始化失败 |
 | 4 | trace 不支持或损坏到无法继续 |
 | 5 | 平台、架构、API 或方法组合不支持 |

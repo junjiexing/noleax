@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <memory>
 #include <stdexcept>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "noleax/agent/hook_backend.hpp"
@@ -17,6 +19,21 @@ namespace noleax::agent::windows {
 class CustomHookError final : public std::runtime_error {
  public:
   using std::runtime_error::runtime_error;
+
+  CustomHookError(std::string module, noleax::trace::CustomHookFailureRole role,
+                  noleax::trace::CustomHookFailureReason reason, const std::string& detail)
+      : std::runtime_error{detail}, module_{std::move(module)}, role_{role}, reason_{reason} {}
+
+  // Empty when the error is not tied to a specific module (callers fall back to the point's
+  // declared module).
+  [[nodiscard]] const std::string& module() const noexcept { return module_; }
+  [[nodiscard]] noleax::trace::CustomHookFailureRole role() const noexcept { return role_; }
+  [[nodiscard]] noleax::trace::CustomHookFailureReason reason() const noexcept { return reason_; }
+
+ private:
+  std::string module_;
+  noleax::trace::CustomHookFailureRole role_{noleax::trace::CustomHookFailureRole::kPoint};
+  noleax::trace::CustomHookFailureReason reason_{noleax::trace::CustomHookFailureReason::kOther};
 };
 
 struct CustomHookApiStatistics {
@@ -46,9 +63,11 @@ class CustomSymbolHooks final {
   CustomSymbolHooks(CustomSymbolHooks&&) = delete;
   CustomSymbolHooks& operator=(CustomSymbolHooks&&) = delete;
 
-  // Resolves every module (honoring wait_module) and role target, then installs all hooks.
-  // Throws CustomHookError with the precise reason and rolls back partial progress.
-  void install();
+  // Resolves every module (honoring wait_module) and role target, then installs the hooks.
+  // Installation is per hook point all-or-nothing: a point that fails to install is rolled
+  // back, recorded in the returned failure list, and the remaining points still install.
+  // Throws std::logic_error only for API misuse (for example a repeated install).
+  std::vector<noleax::trace::CustomHookFailure> install();
   [[nodiscard]] bool uninstall(
       std::uint32_t flush_attempts = HookBackend::kDefaultFlushAttempts) noexcept;
   [[nodiscard]] bool flush(

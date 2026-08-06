@@ -342,7 +342,47 @@ constexpr std::array kIssueDescriptions{
     IssueDescription{noleax::trace::CompletenessIssue::kStackDataLoss, "stack-data-loss"},
     IssueDescription{noleax::trace::CompletenessIssue::kPartiallyUnderstoodFormat,
                      "partially-understood-format"},
+    IssueDescription{noleax::trace::CompletenessIssue::kCustomHookInstallFailed,
+                     "custom-hook-install-failed"},
 };
+
+[[nodiscard]] const char* custom_hook_failure_role_name(
+    noleax::trace::CustomHookFailureRole role) noexcept {
+  switch (role) {
+    case noleax::trace::CustomHookFailureRole::kAlloc:
+      return "alloc";
+    case noleax::trace::CustomHookFailureRole::kRealloc:
+      return "realloc";
+    case noleax::trace::CustomHookFailureRole::kFree:
+      return "free";
+    case noleax::trace::CustomHookFailureRole::kPoint:
+      return "point";
+  }
+  return "unknown";
+}
+
+[[nodiscard]] const char* custom_hook_failure_reason_name(
+    noleax::trace::CustomHookFailureReason reason) noexcept {
+  switch (reason) {
+    case noleax::trace::CustomHookFailureReason::kModuleNotLoaded:
+      return "module-not-loaded";
+    case noleax::trace::CustomHookFailureReason::kExportNotFound:
+      return "export-not-found";
+    case noleax::trace::CustomHookFailureReason::kForwardedExport:
+      return "forwarded-export";
+    case noleax::trace::CustomHookFailureReason::kInvalidRva:
+      return "invalid-rva";
+    case noleax::trace::CustomHookFailureReason::kWrongSignature:
+      return "wrong-signature";
+    case noleax::trace::CustomHookFailureReason::kImageIdentityMismatch:
+      return "image-identity-mismatch";
+    case noleax::trace::CustomHookFailureReason::kBackendUnavailable:
+      return "backend-unavailable";
+    case noleax::trace::CustomHookFailureReason::kOther:
+      return "other";
+  }
+  return "unknown";
+}
 
 [[nodiscard]] constexpr std::uint32_t known_issue_mask() noexcept {
   std::uint32_t result = 0U;
@@ -864,6 +904,15 @@ void ConsoleWriter::write_common_summary(const EventStreamResult& trace) {
     output_ << "  termination: end-record-missing\n";
   }
   write_completeness(trace.completeness);
+  if (!trace.custom_hook_failures.empty()) {
+    output_ << "  custom-hook-failures:\n";
+    for (const auto& failure : trace.custom_hook_failures) {
+      output_ << "    - module=" << failure.module
+              << " role=" << custom_hook_failure_role_name(failure.role)
+              << " reason=" << custom_hook_failure_reason_name(failure.reason)
+              << " detail=" << failure.detail << '\n';
+    }
+  }
 }
 
 void ConsoleWriter::write_completeness(const noleax::trace::CompletenessReport& completeness) {

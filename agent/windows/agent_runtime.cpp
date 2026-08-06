@@ -218,6 +218,11 @@ class CaptureRuntime final {
     if (!installed.installed()) {
       throw std::runtime_error{"one or more selected memory hooks could not be installed"};
     }
+    // Custom hook points that failed to install degrade instead of aborting the capture:
+    // record them so the trace carries the failure details and the completeness issue.
+    if (installed.custom_hooks.has_value() && !installed.custom_hooks->empty()) {
+      writer_->note_custom_hook_failures(*installed.custom_hooks);
+    }
     writer_->begin_capture();
     state_ = noleax::ipc::AgentState::kCapturing;
   }
@@ -533,8 +538,10 @@ DWORD WINAPI agent_worker(void* parameter) noexcept {
     try {
       runtime->start(noleax::ipc::decode_start_capture(start_message.payload));
     } catch (const std::exception& error) {
-      // Report start failures (for example a custom hook that cannot be installed) as an
-      // agent error so the controller surfaces the precise reason instead of a closed pipe.
+      // Report start failures (for example a built-in hook family that cannot be installed)
+      // as an agent error so the controller surfaces the precise reason instead of a closed
+      // pipe. Custom hook install failures never reach this path: they degrade per point and
+      // are recorded in the trace itself.
       const noleax::ipc::ErrorResponse response{1U, 0U, error.what()};
       channel.send({noleax::ipc::MessageType::kError, start_message.request_id,
                     noleax::ipc::encode_error_response(response)},

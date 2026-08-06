@@ -20,6 +20,7 @@ namespace noleax::trace {
 enum class MetadataRecordType : std::uint16_t {  // NOLINT(performance-enum-size)
   kCaptureScope = 1,
   kCustomHookDefinition = 2,
+  kCustomHookFailure = 3,
 };
 
 enum class EventRecordType : std::uint16_t {  // NOLINT(performance-enum-size)
@@ -72,6 +73,12 @@ void append_custom_hook_definition_record(
     std::vector<std::byte>& chunk_payload, const CustomHookDefinition& definition,
     std::uint32_t maximum_record_size = kDefaultMaximumRecordSize);
 [[nodiscard]] std::optional<CustomHookDefinition> decode_custom_hook_definition_record(
+    const RecordView& record);
+
+void append_custom_hook_failure_record(
+    std::vector<std::byte>& chunk_payload, const CustomHookFailure& failure,
+    std::uint32_t maximum_record_size = kDefaultMaximumRecordSize);
+[[nodiscard]] std::optional<CustomHookFailure> decode_custom_hook_failure_record(
     const RecordView& record);
 
 void append_module_load_record(std::vector<std::byte>& chunk_payload, const ModuleLoad& load,

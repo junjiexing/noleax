@@ -86,8 +86,14 @@ summary 同时显示 overall、lifecycle、stack-detail 和 understanding 状态
 - abnormal-stop
 - stack-data-loss
 - partially-understood-format
+- custom-hook-install-failed
 
 未来 issue bit 以 `unknown-issue-bits=0x...` 保留。任何 issue 仍对应推荐退出码 2。
+
+custom hook 安装失败时，summary 在 warnings 之后追加 `custom-hook-failures:` 明细段，每个失败
+一行：`module=`、`role=`（alloc/realloc/free/point）、`reason=`（module-not-loaded、
+export-not-found、forwarded-export、invalid-rva、wrong-signature、image-identity-mismatch、
+backend-unavailable、other）与人读 `detail=`。
 
 ## 7. 颜色
 

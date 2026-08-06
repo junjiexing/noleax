@@ -424,7 +424,7 @@ int main(int argc, char* argv[]) {
     const auto& memory_snapshots = memory_document.at("snapshots").array_items();
     if (!analysis_completed(memory_json_run.exit_code) ||
         memory_document.at("mode").scalar() != "memory" ||
-        memory_document.at("schema_version").unsigned_value() != 3U ||
+        memory_document.at("schema_version").unsigned_value() != 4U ||
         memory_snapshots.size() < 3U) {
       throw std::runtime_error{"memory JSON analysis did not list the periodic counters"};
     }
@@ -690,8 +690,64 @@ int main(int argc, char* argv[]) {
       throw std::runtime_error{"unsupported attach injection method did not produce exit code 1"};
     }
 
+    // A custom hook that cannot be installed degrades: the capture continues with the
+    // built-in hooks, and the failure surfaces through the trace completeness (exit code 2).
+    const auto hook_trace = output_directory / "cli-custom-hook-failure.nlx";
+    const auto hook_marker = output_directory / "cli-custom-hook-failure.ready";
+    const auto hook_json = output_directory / "cli-custom-hook-failure.json";
+    const auto hook_console = output_directory / "cli-custom-hook-failure.txt";
+    for (const auto& path : {hook_trace, hook_marker, hook_json, hook_console}) {
+      remove_file(path);
+    }
+    const ChildResult hook_run =
+        run_child(noleax,
+                  {"run", "--agent", utf8_path(agent), "--trace", utf8_path(hook_trace),
+                   "--custom-hook", "nonexistent.dll:alloc=my_malloc,free=my_free", "--compression",
+                   "none", "--", utf8_path(target), utf8_path(hook_marker), "300", "launch"},
+                  run_log);
+    if (hook_run.exit_code != 2U || hook_run.log.find("capture finalized:") == std::string::npos ||
+        hook_run.log.find("target_exit_code=0") == std::string::npos) {
+      throw std::runtime_error{
+          "run with an uninstallable custom hook did not degrade to exit "
+          "code 2: " +
+          hook_run.log};
+    }
+    const ChildResult hook_analysis = run_child(
+        noleax,
+        {"analyze", "--format", "json", "--output", utf8_path(hook_json), utf8_path(hook_trace)},
+        run_log);
+    const auto hook_document = noleax::testing::parse_json(read_file(hook_json));
+    const auto& hook_completeness = hook_document.at("summary").at("completeness");
+    const auto& hook_issues = hook_completeness.at("issues").array_items();
+    const bool hook_issue_listed = std::any_of(
+        hook_issues.begin(), hook_issues.end(),
+        [](const auto& issue) { return issue.scalar() == "custom_hook_install_failed"; });
+    const auto& hook_failures =
+        hook_document.at("summary").at("custom_hook_failures").array_items();
+    if (hook_analysis.exit_code != 2U || !hook_issue_listed ||
+        hook_completeness.at("unknown_issue_bits").scalar() != "0x0" ||
+        hook_failures.size() != 1U ||
+        hook_failures.front().at("module").scalar() != "nonexistent.dll" ||
+        hook_failures.front().at("role").scalar() != "point" ||
+        hook_failures.front().at("reason").scalar() != "module_not_loaded") {
+      throw std::runtime_error{"custom hook failure did not surface in the JSON analysis: " +
+                               hook_analysis.log};
+    }
+    const ChildResult hook_console_run = run_child(noleax,
+                                                   {"analyze", "--format", "console", "--output",
+                                                    utf8_path(hook_console), utf8_path(hook_trace)},
+                                                   run_log);
+    const std::string hook_console_text = read_file(hook_console);
+    if (hook_console_run.exit_code != 2U ||
+        hook_console_text.find("custom-hook-install-failed") == std::string::npos ||
+        hook_console_text.find("module=nonexistent.dll") == std::string::npos) {
+      throw std::runtime_error{"custom hook failure did not surface in the console analysis: " +
+                               hook_console_run.log};
+    }
+
     std::cout << "status=ok run=1 attach=1 hijack=1 entrypoint=1 patch=1 static=1 agent=1 "
-                 "outstanding=1 console=1 json=1 csv=1 stacks=1 seqwindow=1 memory=1 errors=1\n";
+                 "outstanding=1 console=1 json=1 csv=1 stacks=1 seqwindow=1 memory=1 errors=1 "
+                 "customhook=1\n";
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "status=error message=" << error.what() << '\n';

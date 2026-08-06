@@ -32,6 +32,9 @@ agent worker 外的目标线程，最后才允许物理卸载 hook。
 标志、wait_module_ms、三个角色的定位（none/export/RVA + export 名或 RVA）、module 与 label
 字符串，以及可选的烘焙映像 identity（timestamp/checksum/image size）。该数组自 ABI 3 起存在；
 声明非法（缺 alloc/free、定位冲突、参数位越界、count 超限）在编解码两侧均被拒绝。
+安装期失败不再使 `StartCapture` 报错：custom hook 按 hook point 降级安装，失败点写入
+trace 的 CustomHookFailure 记录并置 `custom_hook_install_failed`，`CaptureReady` 照常返回；
+内置 profile 家族的安装失败仍以 `Error` 上报。
 
 ABI 4 在 `flush_interval_ns` 之后为 `StartCapture` 增加 `memory_counters_interval_ns` 与
 `memory_map_interval_ns` 两个 uint64 字段：agent 按各自间隔在 writer 线程采样内存计数器与

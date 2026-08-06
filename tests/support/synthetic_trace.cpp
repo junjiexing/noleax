@@ -164,6 +164,16 @@ SyntheticTraceBuilder& SyntheticTraceBuilder::add_custom_hook_definition(
   return *this;
 }
 
+SyntheticTraceBuilder& SyntheticTraceBuilder::add_custom_hook_failure(
+    const noleax::trace::CustomHookFailure& failure) {
+  if (end_.has_value()) {
+    throw SyntheticTraceError{"cannot add a custom hook failure after EndOfTrace"};
+  }
+  noleax::trace::validate_custom_hook_failure(failure);
+  custom_hook_failures_.push_back(failure);
+  return *this;
+}
+
 SyntheticTraceBuilder& SyntheticTraceBuilder::add_loss(const noleax::trace::LossRecord& loss) {
   if (end_.has_value()) {
     throw SyntheticTraceError{"cannot add Loss after EndOfTrace"};
@@ -270,6 +280,10 @@ std::string SyntheticTraceBuilder::build() const {
   for (const auto& definition : custom_hook_definitions_) {
     noleax::trace::append_custom_hook_definition_record(metadata_payload, definition,
                                                         options_.maximum_record_size);
+  }
+  for (const auto& failure : custom_hook_failures_) {
+    noleax::trace::append_custom_hook_failure_record(metadata_payload, failure,
+                                                     options_.maximum_record_size);
   }
   noleax::trace::ChunkDescriptor metadata_descriptor;
   metadata_descriptor.type = noleax::trace::ChunkType::kMetadata;

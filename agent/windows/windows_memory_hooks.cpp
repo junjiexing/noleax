@@ -90,22 +90,9 @@ WindowsMemoryHookInstallResult WindowsMemoryHooks::install() {
     }
   }
   if (custom_hooks_ != nullptr) {
-    try {
-      custom_hooks_->install();
-      result.custom_hooks = true;
-    } catch (...) {
-      static_cast<void>(custom_hooks_->stop_recording(0U));
-      static_cast<void>(custom_hooks_->uninstall());
-      if (virtual_memory_hooks_ != nullptr) {
-        static_cast<void>(virtual_memory_hooks_->stop_recording(0U));
-        static_cast<void>(virtual_memory_hooks_->uninstall());
-      }
-      if (nt_heap_hooks_ != nullptr) {
-        static_cast<void>(nt_heap_hooks_->stop_recording(0U));
-        static_cast<void>(nt_heap_hooks_->uninstall());
-      }
-      throw;
-    }
+    // Custom hook points degrade individually: failures are reported in the result and the
+    // already-installed built-in families stay in place.
+    result.custom_hooks = custom_hooks_->install();
   }
   return result;
 }

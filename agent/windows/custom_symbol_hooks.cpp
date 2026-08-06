@@ -33,6 +33,24 @@ inline constexpr std::size_t kPoolSize = CustomSymbolHooks::kMaximumHookPoints;
 inline constexpr std::uint8_t kNoArgumentSlot = 0xFFU;
 inline constexpr auto kModulePollInterval = std::chrono::milliseconds{100};
 
+using noleax::trace::CustomHookFailure;
+using noleax::trace::CustomHookFailureReason;
+using noleax::trace::CustomHookFailureRole;
+
+[[nodiscard]] constexpr const char* custom_hook_role_name(CustomHookFailureRole role) noexcept {
+  switch (role) {
+    case CustomHookFailureRole::kAlloc:
+      return "alloc";
+    case CustomHookFailureRole::kRealloc:
+      return "realloc";
+    case CustomHookFailureRole::kFree:
+      return "free";
+    case CustomHookFailureRole::kPoint:
+      return "point";
+  }
+  return "unknown";
+}
+
 // Per-point descriptor block shared between the control path and the generic replacements:
 // routing state, original trampolines, argument mapping, queue, and accounting. One code copy
 // per role reads its context from the slot bound to its thunk at install time.
@@ -615,7 +633,9 @@ struct ExportLookupResult {
   }
   const auto wait = std::chrono::milliseconds{hook.wait_module_ms};
   if (wait <= std::chrono::milliseconds::zero()) {
-    throw CustomHookError{"custom hook module '" + hook.module + "' is not loaded"};
+    throw CustomHookError{hook.module, CustomHookFailureRole::kPoint,
+                          CustomHookFailureReason::kModuleNotLoaded,
+                          "custom hook module '" + hook.module + "' is not loaded"};
   }
   const auto deadline = std::chrono::steady_clock::now() + wait;
   for (;;) {
@@ -625,8 +645,10 @@ struct ExportLookupResult {
       return module;
     }
     if (std::chrono::steady_clock::now() >= deadline) {
-      throw CustomHookError{"custom hook module '" + hook.module + "' did not load within " +
-                            std::to_string(wait.count()) + " ms"};
+      throw CustomHookError{hook.module, CustomHookFailureRole::kPoint,
+                            CustomHookFailureReason::kModuleNotLoaded,
+                            "custom hook module '" + hook.module + "' did not load within " +
+                                std::to_string(wait.count()) + " ms"};
     }
   }
 }
@@ -701,7 +723,7 @@ class CustomSymbolHooks::Implementation final {
   Implementation(const Implementation&) = delete;
   Implementation& operator=(const Implementation&) = delete;
 
-  void install() {
+  std::vector<CustomHookFailure> install() {
     const InternalThreadScope internal_thread;
     if (is_installed()) {
       throw std::logic_error{"custom symbol hooks are already installed"};
@@ -711,20 +733,37 @@ class CustomSymbolHooks::Implementation final {
       if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
                              reinterpret_cast<LPCWSTR>(replacement_module_base()),
                              &module) == FALSE) {
-        throw CustomHookError{"the custom hook replacement module could not be referenced"};
+        std::vector<CustomHookFailure> failures;
+        failures.reserve(points_.size());
+        for (const PointState& point : points_) {
+          failures.push_back(
+              CustomHookFailure{point.spec.module, CustomHookFailureRole::kPoint,
+                                CustomHookFailureReason::kBackendUnavailable,
+                                "the custom hook replacement module could not be referenced"});
+        }
+        return failures;
       }
       replacement_module_handle_ = module;
       replacement_module_referenced_ = true;
       note_agent_module_reference_acquired();
     }
-    try {
-      for (PointState& point : points_) {
-        install_point(point);
+    std::vector<CustomHookFailure> failures;
+    for (PointState& point : points_) {
+      if (point.installed) {
+        continue;
       }
-    } catch (...) {
-      rollback_install();
-      throw;
+      try {
+        install_point(point);
+      } catch (const CustomHookError& error) {
+        // install_point leaves a failed point fully reverted. Record the failure and keep
+        // installing the remaining points: one bad declaration must not silence the rest of
+        // the capture (the failure surfaces through the trace completeness issue instead).
+        failures.push_back(
+            CustomHookFailure{error.module().empty() ? point.spec.module : error.module(),
+                              error.role(), error.reason(), error.what()});
+      }
     }
+    return failures;
   }
 
   [[nodiscard]] bool uninstall(std::uint32_t flush_attempts) noexcept {
@@ -825,7 +864,9 @@ class CustomSymbolHooks::Implementation final {
     for (const PointState& point : points_) {
       const CustomHookSlot& slot = g_custom_hook_slots[point.slot_index];
       CustomHookApiStatistics entry;
-      entry.api_id = slot.api_id;
+      // Read the API ID from the point, not the slot: a point whose install failed before the
+      // slot was initialized still owns its API ID, while the slot's field is never set.
+      entry.api_id = point.api_id;
       entry.recordable_calls = slot.recordable_calls.load(std::memory_order_relaxed);
       entry.successful_calls = slot.successful_calls.load(std::memory_order_relaxed);
       entry.failed_calls = slot.failed_calls.load(std::memory_order_relaxed);
@@ -842,7 +883,7 @@ class CustomSymbolHooks::Implementation final {
     dropped.reserve(points_.size());
     for (PointState& point : points_) {
       CustomHookSlot& slot = g_custom_hook_slots[point.slot_index];
-      dropped.emplace_back(slot.api_id,
+      dropped.emplace_back(point.api_id,
                            slot.dropped_events.exchange(0U, std::memory_order_relaxed));
     }
     return dropped;
@@ -909,13 +950,17 @@ class CustomSymbolHooks::Implementation final {
     void* const module = wait_for_module(point.spec, module_name);
     const auto pe = pe_headers(module);
     if (!pe.has_value()) {
-      throw CustomHookError{"custom hook module '" + point.spec.module +
-                            "' is not a valid x64 PE image"};
+      throw CustomHookError{
+          point.spec.module, CustomHookFailureRole::kPoint, CustomHookFailureReason::kOther,
+          "custom hook module '" + point.spec.module + "' is not a valid x64 PE image"};
     }
     verify_image_identity(point, *pe);
-    point.alloc.target = resolve_role_target(point, point.alloc.spec, *pe, "alloc");
-    point.realloc.target = resolve_role_target(point, point.realloc.spec, *pe, "realloc");
-    point.free.target = resolve_role_target(point, point.free.spec, *pe, "free");
+    point.alloc.target =
+        resolve_role_target(point, point.alloc.spec, *pe, CustomHookFailureRole::kAlloc);
+    point.realloc.target =
+        resolve_role_target(point, point.realloc.spec, *pe, CustomHookFailureRole::kRealloc);
+    point.free.target =
+        resolve_role_target(point, point.free.spec, *pe, CustomHookFailureRole::kFree);
 
     CustomHookSlot& slot = g_custom_hook_slots[point.slot_index];
     slot.event_queue = event_queue_;
@@ -931,13 +976,13 @@ class CustomSymbolHooks::Implementation final {
     slot.lifecycle.start_recording();
     try {
       install_role(point, point.alloc, slot.alloc_trampoline, slot.alloc_restored_target,
-                   kAllocThunks[point.slot_index], "alloc");
+                   kAllocThunks[point.slot_index], CustomHookFailureRole::kAlloc);
       if (point.realloc.spec.locator != noleax::ipc::CustomHookLocator::kNone) {
         install_role(point, point.realloc, slot.realloc_trampoline, slot.realloc_restored_target,
-                     kReallocThunks[point.slot_index], "realloc");
+                     kReallocThunks[point.slot_index], CustomHookFailureRole::kRealloc);
       }
       install_role(point, point.free, slot.free_trampoline, slot.free_restored_target,
-                   kFreeThunks[point.slot_index], "free");
+                   kFreeThunks[point.slot_index], CustomHookFailureRole::kFree);
     } catch (...) {
       for (RoleState* role : {&point.alloc, &point.realloc, &point.free}) {
         if (role->installed) {
@@ -958,10 +1003,12 @@ class CustomSymbolHooks::Implementation final {
 
   void install_role(PointState& point, RoleState& role, OriginalTrampolineSlot& trampoline_slot,
                     std::atomic<void*>& restored_slot, CustomHookFunction thunk,
-                    const char* role_name) {
+                    CustomHookFailureRole failure_role) {
+    const char* const role_name = custom_hook_role_name(failure_role);
     if (!backend_->acquire_trampoline_lifetime_lease()) {
-      throw CustomHookError{std::string{"custom hook "} + role_name +
-                            " install failed: the hook backend is stopped"};
+      throw CustomHookError{
+          point.spec.module, failure_role, CustomHookFailureReason::kBackendUnavailable,
+          std::string{"custom hook "} + role_name + " install failed: the hook backend is stopped"};
     }
     role.lease_acquired = true;
     restored_slot.store(role.target, std::memory_order_release);
@@ -974,12 +1021,13 @@ class CustomSymbolHooks::Implementation final {
       backend_->release_trampoline_lifetime_lease();
       role.lease_acquired = false;
       restored_slot.store(nullptr, std::memory_order_release);
-      throw CustomHookError{std::string{"custom hook "} + role_name +
-                            " install failed for module '" + point.spec.module +
-                            "': " + std::string{hook_install_status_name(result.status)} +
-                            (point.spec.forced ? ""
-                                               : " (declare forced = true to allow forced "
-                                                 "relocation of an unsupported prologue)")};
+      throw CustomHookError{point.spec.module, failure_role, install_failure_reason(result.status),
+                            std::string{"custom hook "} + role_name +
+                                " install failed for module '" + point.spec.module +
+                                "': " + std::string{hook_install_status_name(result.status)} +
+                                (point.spec.forced ? ""
+                                                   : " (declare forced = true to allow forced "
+                                                     "relocation of an unsupported prologue)")};
     }
     role.installed = true;
   }
@@ -993,61 +1041,71 @@ class CustomSymbolHooks::Implementation final {
         pe.nt->OptionalHeader.CheckSum != expected.checksum ||
         pe.nt->OptionalHeader.SizeOfImage != expected.image_size) {
       throw CustomHookError{
+          point.spec.module, CustomHookFailureRole::kPoint,
+          CustomHookFailureReason::kImageIdentityMismatch,
           "custom hook module '" + point.spec.module +
-          "' image identity does not match the identity recorded when its PDB symbols were "
-          "resolved; re-bake the configuration so the RVAs match the loaded module"};
+              "' image identity does not match the identity recorded when its PDB symbols were "
+              "resolved; re-bake the configuration so the RVAs match the loaded module"};
     }
   }
 
   [[nodiscard]] void* resolve_role_target(const PointState& point,
                                           const noleax::ipc::CustomHookRoleSpec& role,
-                                          const PeHeaders& pe, const char* role_name) {
+                                          const PeHeaders& pe, CustomHookFailureRole failure_role) {
+    const char* const role_name = custom_hook_role_name(failure_role);
     switch (role.locator) {
       case noleax::ipc::CustomHookLocator::kNone:
         return nullptr;
       case noleax::ipc::CustomHookLocator::kExport: {
         const ExportLookupResult lookup = find_export_rva(pe, role.export_name);
         if (lookup.status == ExportLookup::kForwarded) {
-          throw CustomHookError{std::string{"custom hook "} + role_name + " export '" +
-                                role.export_name + "' of module '" + point.spec.module +
-                                "' is a forwarded export; hook the forward target instead"};
+          throw CustomHookError{point.spec.module, failure_role,
+                                CustomHookFailureReason::kForwardedExport,
+                                std::string{"custom hook "} + role_name + " export '" +
+                                    role.export_name + "' of module '" + point.spec.module +
+                                    "' is a forwarded export; hook the forward target instead"};
         }
         if (lookup.status != ExportLookup::kFound) {
-          throw CustomHookError{std::string{"custom hook "} + role_name + " export '" +
-                                role.export_name + "' was not found in module '" +
-                                point.spec.module + "'"};
+          throw CustomHookError{
+              point.spec.module, failure_role, CustomHookFailureReason::kExportNotFound,
+              std::string{"custom hook "} + role_name + " export '" + role.export_name +
+                  "' was not found in module '" + point.spec.module + "'"};
         }
         return const_cast<std::byte*>(pe.base) + lookup.rva;
       }
       case noleax::ipc::CustomHookLocator::kRva:
         if (role.rva > std::numeric_limits<std::uint32_t>::max() ||
             !rva_is_executable(pe, static_cast<std::uint32_t>(role.rva))) {
-          throw CustomHookError{std::string{"custom hook "} + role_name +
-                                " RVA does not point into an executable section of module '" +
-                                point.spec.module + "'"};
+          throw CustomHookError{point.spec.module, failure_role,
+                                CustomHookFailureReason::kInvalidRva,
+                                std::string{"custom hook "} + role_name +
+                                    " RVA does not point into an executable section of module '" +
+                                    point.spec.module + "'"};
         }
         return const_cast<std::byte*>(pe.base) + static_cast<std::size_t>(role.rva);
     }
-    throw CustomHookError{std::string{"custom hook "} + role_name + " locator is not supported"};
+    throw CustomHookError{point.spec.module, failure_role, CustomHookFailureReason::kOther,
+                          std::string{"custom hook "} + role_name + " locator is not supported"};
   }
 
-  void rollback_install() noexcept {
-    for (PointState& point : points_) {
-      if (!point.installed) {
-        continue;
-      }
-      CustomHookSlot& slot = g_custom_hook_slots[point.slot_index];
-      slot.lifecycle.stop_recording();
-      for (RoleState* role : {&point.alloc, &point.realloc, &point.free}) {
-        if (role->installed) {
-          static_cast<void>(backend_->uninstall(role->target, 0U));
-          role->installed = false;
-        }
-      }
-      slot.lifecycle.route_to_target();
-      point.teardown_pending = true;
+  [[nodiscard]] static CustomHookFailureReason install_failure_reason(
+      HookInstallStatus status) noexcept {
+    switch (status) {
+      case HookInstallStatus::kWrongSignature:
+        return CustomHookFailureReason::kWrongSignature;
+      case HookInstallStatus::kBackendStopped:
+      case HookInstallStatus::kTeardownPending:
+        return CustomHookFailureReason::kBackendUnavailable;
+      case HookInstallStatus::kInstalled:
+      case HookInstallStatus::kInvalidArgument:
+      case HookInstallStatus::kAlreadyInstalled:
+      case HookInstallStatus::kAlreadyReplaced:
+      case HookInstallStatus::kPolicyViolation:
+      case HookInstallStatus::kWrongType:
+      case HookInstallStatus::kMissingOriginal:
+        return CustomHookFailureReason::kOther;
     }
-    static_cast<void>(try_finish_teardown(0U));
+    return CustomHookFailureReason::kOther;
   }
 
   [[nodiscard]] bool try_finish_teardown(std::uint32_t max_attempts) noexcept {
@@ -1144,7 +1202,9 @@ CustomSymbolHooks::CustomSymbolHooks(HookBackend& backend, RtlHeapEventQueue& ev
 
 CustomSymbolHooks::~CustomSymbolHooks() = default;
 
-void CustomSymbolHooks::install() { implementation_->install(); }
+std::vector<noleax::trace::CustomHookFailure> CustomSymbolHooks::install() {
+  return implementation_->install();
+}
 
 bool CustomSymbolHooks::uninstall(std::uint32_t flush_attempts) noexcept {
   return implementation_->uninstall(flush_attempts);

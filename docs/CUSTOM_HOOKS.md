@@ -129,8 +129,10 @@ adapter 基础设施;uninstall/reinstall/unload-on-stop 与内置 hook 行为一
 
 - **CustomHookDefinition 记录**(trace 新记录类型):`{api_id, module_name, label}`。label 为
   符号名或 `module+0x<rva>`。首个自定义事件前写出。api_id 从 `0x1000` 起按声明顺序分配,
-  一次捕获内稳定。老 analyzer 跳过未知记录并显示 `api-<id>` 兜底,新 analyzer 解析出真实名;
-  **trace format minor +1,major 不变**。
+  一次捕获内稳定。老 analyzer 跳过未知记录并显示 `api-<id>` 兜底,新 analyzer 解析出真实名。
+- **CustomHookFailure 记录**(minor 3):`{module, role, reason, detail}`。某个 hook 点安装
+  失败时逐条写出(紧接 CustomHookDefinition 之后),捕获降级继续;analyzer 据此列出失败明细
+  并设置 `custom_hook_install_failed`(bit 10),live 与直写两种模式行为一致。
 - `EventMetadata.api_name/api_module`、`--api` 过滤、stacks 聚合 apis 展示全部自然扩展到自定义
   名称。
 - **StartCaptureRequest** 增加 `custom_hooks` 数组(每元素:module、三个角色的 RVA 与启用位、
@@ -141,8 +143,10 @@ adapter 基础设施;uninstall/reinstall/unload-on-stop 与内置 hook 行为一
 
 - TOML/CLI 语法、角色必填、定位互斥、参数位 0–7、重复模块、wait_module 时长解析。
 - `--custom-hook` 仅 run/attach 有效(patch/doctor/analyze 下报错)。
-- 安装期失败(模块超时未出现、导出/PDB/RVA 解析失败、checked relocation 拒绝)以退出码 3
-  报明确原因;目标进程的既有状态不被破坏。
+- 安装期失败(模块超时未出现、导出/PDB/RVA 解析失败、checked relocation 拒绝)按 hook point
+  降级:只回滚失败的 hook 点,其余 hook 点与内置 profile 照常安装,捕获继续;失败明细写入
+  trace 的 CustomHookFailure 记录并置 completeness `custom_hook_install_failed`,退出码由
+  trace 完整性驱动为 2。目标进程的既有状态不被破坏。
 
 ## 7. 测试
 
@@ -170,9 +174,10 @@ CLI.md、CONFIG.md、QUICKSTART.md(示例)、HOOK_API_MATRIX.md §5 更新、TRA
 - **wait_module 的轮询盲区**:模块加载到下一次轮询 tick(100ms)之间发生的调用必然错过——
   这是轮询式等待的固有限制。需要捕获"加载后第一批调用"时,应让目标在加载后给 agent 留出
   安装窗口(如先 attach 到已加载模块的进程,或目标侧配合停顿)。
-- **wait_module 超时是 capture 级失败**:超时后整个 capture 启动失败并报错(不是静默跳过
-  该 hook 点)。因此预算必须覆盖最坏情况下的模块加载延迟——包括安全软件扫描未签名 DLL 的
-  时间(实测在企业 AV 环境下首次加载可达 25 秒以上),不宜照抄示例值。
+- **wait_module 超时按 hook point 降级**:超时只放弃该 hook 点(记录 module_not_loaded),
+  捕获以其余 hook 继续并通过 completeness issue 与退出码 2 暴露,不再使整个 capture 启动
+  失败。需要"装不上就不捕获"的旧语义时,应在 analyze 侧检查
+  `custom_hook_install_failed` 后再采信结果。
 - **PDB 与加载映像不一致**:DbgHelp 按 PDB identity 校验(沿用既有 symbolizer 的 identity
   检查),不匹配即报错而不是错位 hook。
 
@@ -208,9 +213,9 @@ CLI.md、CONFIG.md、QUICKSTART.md(示例)、HOOK_API_MATRIX.md §5 更新、TRA
    `module+0x<rva>` 形式;live 路径(label 在 controller 侧按原始声明生成并随 IPC 下发)
    保留符号名。
 6. **agent 侧模块定位**:导出名在 agent 内经只读 PE 导出表解析(forwarded export 明确
-   报错);RVA 定位在安装期校验落在可执行节内;identity 不一致、模块缺失、导出缺失、
-   PDB 未解析(standalone TOML 中出现 `_pdb`)都以明确错误使捕获启动失败(controller
-   侧退出码 3),agent 并把启动失败作为 ErrorResponse 回报,controller 不再只看到管道
-   断开。
+   报错);RVA 定位在安装期校验落在可执行节内。identity 不一致、模块缺失、导出缺失按
+   hook point 降级:失败点回滚并写入 CustomHookFailure 记录,捕获继续并以
+   `custom_hook_install_failed` + 退出码 2 暴露;PDB 未解析(standalone TOML 中出现
+   `_pdb`)仍是启动期硬错误(agent 无法从中恢复出可安装的定位)。
 7. **api_id 命名解析顺序**:内建注册表 → trace 内 CustomHookDefinition → `api-<id>` 兜底,
    与老 minor reader 跳过该记录并显示兜底名的兼容语义一致。

@@ -26,6 +26,7 @@ namespace {
 inline constexpr std::uint16_t kRecordVersion = 1;
 inline constexpr std::size_t kEventHeaderPayloadSize = 56U;
 inline constexpr std::size_t kCustomHookDefinitionFixedPayloadSize = 16U;
+inline constexpr std::size_t kCustomHookFailureFixedPayloadSize = 16U;
 inline constexpr std::size_t kModuleLoadFixedPayloadSize = 80U;
 inline constexpr std::size_t kModuleUnloadPayloadSize = 16U;
 inline constexpr std::size_t kStackDefinitionFixedPayloadSize = 16U;
@@ -708,6 +709,106 @@ std::optional<CustomHookDefinition> decode_custom_hook_definition_record(const R
     throw RecordCodecError{"invalid CustomHookDefinition record: " + std::string{error.what()}};
   }
   return definition;
+}
+
+void append_custom_hook_failure_record(std::vector<std::byte>& chunk_payload,
+                                       const CustomHookFailure& failure,
+                                       std::uint32_t maximum_record_size) {
+  validate_custom_hook_failure(failure);
+  if (failure.module.size() > std::numeric_limits<std::uint32_t>::max() ||
+      failure.detail.size() > std::numeric_limits<std::uint32_t>::max() ||
+      maximum_record_size < kRecordHeaderSize + kCustomHookFailureFixedPayloadSize ||
+      failure.module.size() + failure.detail.size() >
+          maximum_record_size - kRecordHeaderSize - kCustomHookFailureFixedPayloadSize) {
+    throw RecordCodecError{"custom hook failure exceeds the configured record size limit"};
+  }
+
+  std::vector<std::byte> payload;
+  payload.reserve(kCustomHookFailureFixedPayloadSize + failure.module.size() +
+                  failure.detail.size());
+  append_u32(payload, static_cast<std::uint32_t>(failure.module.size()));
+  append_u32(payload, static_cast<std::uint32_t>(failure.detail.size()));
+  append_u8(payload, static_cast<std::uint8_t>(failure.role));
+  append_u8(payload, static_cast<std::uint8_t>(failure.reason));
+  append_zeros(payload, 6U);
+  append_string_bytes(payload, failure.module);
+  append_string_bytes(payload, failure.detail);
+  append_record(chunk_payload, static_cast<std::uint16_t>(MetadataRecordType::kCustomHookFailure),
+                kRecordVersion, payload, maximum_record_size);
+}
+
+std::optional<CustomHookFailure> decode_custom_hook_failure_record(const RecordView& record) {
+  if (record.type != static_cast<std::uint16_t>(MetadataRecordType::kCustomHookFailure) ||
+      record.version != kRecordVersion) {
+    return std::nullopt;
+  }
+  if (record.payload.size() < kCustomHookFailureFixedPayloadSize) {
+    throw RecordCodecError{"custom hook failure payload is truncated"};
+  }
+  PayloadReader reader{record.payload};
+  CustomHookFailure failure;
+  const std::uint32_t module_size = reader.read_u32();
+  const std::uint32_t detail_size = reader.read_u32();
+  const std::uint8_t role = reader.read_u8();
+  const std::uint8_t reason = reader.read_u8();
+  reader.expect_zeros(6U);
+  if (static_cast<std::uint64_t>(module_size) + detail_size !=
+      record.payload.size() - kCustomHookFailureFixedPayloadSize) {
+    throw RecordCodecError{"custom hook failure string sizes do not match the record payload"};
+  }
+  failure.module = reader.read_string(module_size);
+  failure.detail = reader.read_string(detail_size);
+  reader.expect_done();
+  switch (role) {
+    case static_cast<std::uint8_t>(CustomHookFailureRole::kAlloc):
+      failure.role = CustomHookFailureRole::kAlloc;
+      break;
+    case static_cast<std::uint8_t>(CustomHookFailureRole::kRealloc):
+      failure.role = CustomHookFailureRole::kRealloc;
+      break;
+    case static_cast<std::uint8_t>(CustomHookFailureRole::kFree):
+      failure.role = CustomHookFailureRole::kFree;
+      break;
+    case static_cast<std::uint8_t>(CustomHookFailureRole::kPoint):
+      failure.role = CustomHookFailureRole::kPoint;
+      break;
+    default:
+      throw RecordCodecError{"custom hook failure role is not supported"};
+  }
+  switch (reason) {
+    case static_cast<std::uint8_t>(CustomHookFailureReason::kModuleNotLoaded):
+      failure.reason = CustomHookFailureReason::kModuleNotLoaded;
+      break;
+    case static_cast<std::uint8_t>(CustomHookFailureReason::kExportNotFound):
+      failure.reason = CustomHookFailureReason::kExportNotFound;
+      break;
+    case static_cast<std::uint8_t>(CustomHookFailureReason::kForwardedExport):
+      failure.reason = CustomHookFailureReason::kForwardedExport;
+      break;
+    case static_cast<std::uint8_t>(CustomHookFailureReason::kInvalidRva):
+      failure.reason = CustomHookFailureReason::kInvalidRva;
+      break;
+    case static_cast<std::uint8_t>(CustomHookFailureReason::kWrongSignature):
+      failure.reason = CustomHookFailureReason::kWrongSignature;
+      break;
+    case static_cast<std::uint8_t>(CustomHookFailureReason::kImageIdentityMismatch):
+      failure.reason = CustomHookFailureReason::kImageIdentityMismatch;
+      break;
+    case static_cast<std::uint8_t>(CustomHookFailureReason::kBackendUnavailable):
+      failure.reason = CustomHookFailureReason::kBackendUnavailable;
+      break;
+    case static_cast<std::uint8_t>(CustomHookFailureReason::kOther):
+      failure.reason = CustomHookFailureReason::kOther;
+      break;
+    default:
+      throw RecordCodecError{"custom hook failure reason is not supported"};
+  }
+  try {
+    validate_custom_hook_failure(failure);
+  } catch (const CustomHookValidationError& error) {
+    throw RecordCodecError{"invalid CustomHookFailure record: " + std::string{error.what()}};
+  }
+  return failure;
 }
 
 void append_module_load_record(std::vector<std::byte>& chunk_payload, const ModuleLoad& load,

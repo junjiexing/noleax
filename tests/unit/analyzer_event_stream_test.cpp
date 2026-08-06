@@ -643,3 +643,33 @@ TEST_CASE("event stream rejects malformed memory snapshot chunks", "[analyzer][e
     CHECK(result.completeness.has(CompletenessIssue::kUnknownRecordSkipped));
   }
 }
+
+TEST_CASE("event stream surfaces custom hook install failures", "[analyzer][events]") {
+  using namespace noleax::trace;
+  const CustomHookDefinition definition{kCustomHookApiIdBase, "noleax-missing.dll", "my_malloc"};
+  const CustomHookFailure failure{"noleax-missing.dll", CustomHookFailureRole::kPoint,
+                                  CustomHookFailureReason::kModuleNotLoaded,
+                                  "custom hook module 'noleax-missing.dll' is not loaded"};
+
+  std::vector<CustomHookFailure> observed_failures;
+  noleax::analyzer::EventStreamCallbacks callbacks;
+  callbacks.on_custom_hook_failure = [&observed_failures](const CustomHookFailure& record) {
+    observed_failures.push_back(record);
+  };
+  noleax::testing::SyntheticTraceBuilder builder{file_header(), {true, false}};
+  const auto encoded = builder.add_custom_hook_definition(definition)
+                           .add_custom_hook_failure(failure)
+                           .finish_normally()
+                           .build();
+  const auto result = analyze(encoded, callbacks);
+
+  CHECK(observed_failures == std::vector{failure});
+  CHECK(result.custom_hook_failures == std::vector{failure});
+  CHECK(result.custom_hooks == std::vector{definition});
+  CHECK(result.completeness.has(CompletenessIssue::kCustomHookInstallFailed));
+  CHECK(result.completeness.lifecycle_state() == CompletenessState::kIncomplete);
+  CHECK(result.completeness.stack_detail_state() == CompletenessState::kIncomplete);
+  CHECK(result.completeness.understanding_state() == UnderstandingState::kFull);
+  CHECK(result.completeness.recommended_exit_code() == 2);
+  CHECK_FALSE(result.partially_understood);
+}

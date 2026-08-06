@@ -133,7 +133,7 @@ if(WIN32)
   set_tests_properties(cli.end-to-end-trace-analyze PROPERTIES
     LABELS "cli;controller;agent;run;attach;trace;analyzer;outstanding;windows"
     PASS_REGULAR_EXPRESSION
-      "^status=ok run=1 attach=1 hijack=1 entrypoint=1 patch=1 static=1 agent=1 outstanding=1 console=1 json=1 csv=1 stacks=1 seqwindow=1 memory=1 errors=1"
+      "^status=ok run=1 attach=1 hijack=1 entrypoint=1 patch=1 static=1 agent=1 outstanding=1 console=1 json=1 csv=1 stacks=1 seqwindow=1 memory=1 errors=1 customhook=1"
     RUN_SERIAL TRUE
     TIMEOUT 90
   )
@@ -1282,7 +1282,7 @@ if(WIN32)
   )
   set_tests_properties(controller.custom-symbol-hook PROPERTIES
     LABELS "controller;agent;injection;attach;custom-hook;windows"
-    PASS_REGULAR_EXPRESSION "status=ok export=1 forced=1 rva=1 pdb=1 mappings=1 min-size=1 wait-module=1 missing-module=1 missing-export=1 unload=1 patch-standalone=1"
+    PASS_REGULAR_EXPRESSION "status=ok export=1 forced=1 rva=1 pdb=1 mappings=1 min-size=1 wait-module=1 missing-module=1 missing-export=1 mixed=1 unload=1 patch-standalone=1"
     RUN_SERIAL TRUE
     TIMEOUT 240
   )
