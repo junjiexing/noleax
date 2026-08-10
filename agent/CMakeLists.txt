@@ -23,6 +23,12 @@ if(WIN32)
   )
 endif()
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_sources(noleax-hook-backend PRIVATE
+    linux/stack_capture.cpp
+  )
+endif()
+
 add_library(noleax::hook-backend ALIAS noleax-hook-backend)
 
 target_include_directories(noleax-hook-backend

@@ -294,11 +294,18 @@ guard 用 initial-exec `__thread`，热路径零调用零分配。Windows 侧 TE
 （loader 期内 thread_local 触雷）在 glibc 上的对应物是 TLS 动态模型首次访问触发
 `__tls_get_addr` 分配——同一崩溃类，M1 必须用测试钉死。
 
-### 5.6 栈捕获：libunwind，失败可降级
+### 5.6 栈捕获：`_Unwind_Backtrace`，失败可降级
+
+> 修订（M2 原型验证后）：首选从 libunwind 改为 **libgcc 的 `_Unwind_Backtrace`**——零新增
+> 依赖（agent 自身链接 libgcc_s，目标进程无需任何配合），原型实测（2.5 万次×双构型）：
+> 省略帧指针下完整回溯 47/47 帧、冷热路径**全程零分配**、~0.7µs/次（≤32 帧）。
+> libunwind 方案弃用：它需要 vcpkg autotools 工具链且没有表现出任何优势。
+> 已知约束：依赖 `.eh_frame`（发行版默认携带）；glibc ≥ 2.35 的 lock-free `_dl_find_object`
+> 是无 loader 锁竞争的前提，更老 glibc 的风险写入文档。
 
 热路径契约（预分配、无锁、raw PC、四态状态）不变。现代发行版默认
-`-fomit-frame-pointer`，帧指针快径不可靠，首选 libunwind + 预热缓存；CFI 缺失或
-缓存未命中按 truncated/failed 落盘而非阻塞。该降级语义已在
+`-fomit-frame-pointer`，帧指针快径不可靠（实测仅剩 2 帧），只作为调试辅助。
+CFI 缺失或异常按 truncated/failed 落盘而非阻塞。该降级语义已在
 [STACK_CAPTURE.md](STACK_CAPTURE.md) 的状态机内，不需要格式变更。
 
 ### 5.7 模块跟踪：轮询代替通知
@@ -322,7 +329,7 @@ slow-path syscall 由 handler 正确恢复（SA_RESTART 语义审计）。证明
 |---|---|---|---|
 | R1 | hoox POSIX 后端从未验证，可能对 glibc 函数不可用 | M3 起全部阻塞 | **已在 M1 验证并修复**：完整尺寸函数开箱可用；短序言目标由新增的 near-redirect 回退覆盖；patch 写入安全由新增的信号停核 guard 保证。残余：slice 回收竞态（M2/M3 编排关闭） |
 | R2 | TLS/loader 期内重入分配 hook（Windows 已出过一次同类事故） | agent 崩溃 | **已在 M1 固化**：initial-exec TLS + readelf 结构回归 + 信号 handler 回归（HOOK_GUARD.md §6） |
-| R3 | libunwind 热路径分配/加锁，违反捕获契约 | 栈捕获不可用 | M2 原型验证；降级路径已定义（§5.6） |
+| R3 | libunwind 热路径分配/加锁，违反捕获契约 | 栈捕获不可用 | **已消解**：M2 原型选定 `_Unwind_Backtrace`（零依赖、实测零分配、~0.7µs/次），libunwind 弃用；glibc≥2.35 的 loader 锁前提写入文档 |
 | R4 | glibc hidden alias 绕过公开符号，覆盖率低于预期 | 遗漏事件 | 基线实测摸清边界并写入文档；与 Windows 边界同类表述（§5.3） |
 | R5 | ptrace attach 注入时目标线程持有 ld.so/malloc 锁，死锁 | attach 挂死 | M6 线程选择规则 + 超时拒绝，照搬 thread-hijack 事故教训 |
 | R6 | 发行版差异（glibc 版本、内核 ptrace_scope、默认编译 flags） | 行为漂移 | CI 覆盖 ubuntu 近两个 LTS；doctor 检查项兜底 |

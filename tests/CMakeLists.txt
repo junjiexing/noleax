@@ -97,6 +97,26 @@ endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_sources(noleax-unit-tests PRIVATE
     unit/ipc_unix_socket_test.cpp
+    unit/linux_stack_capture_test.cpp
+  )
+
+  add_executable(noleax-linux-stack-capture-probe
+    integration/linux_stack_capture_probe.cpp
+  )
+  target_link_libraries(noleax-linux-stack-capture-probe PRIVATE
+    noleax::hook-backend
+    ${CMAKE_DL_LIBS}
+  )
+  noleax_set_project_warnings(noleax-linux-stack-capture-probe)
+  add_dependencies(noleax-linux-stack-capture-probe noleax-hook-backend-fixture)
+  target_compile_definitions(noleax-linux-stack-capture-probe PRIVATE
+    NOLEAX_HOOK_FIXTURE_PATH="$<TARGET_FILE:noleax-hook-backend-fixture>"
+  )
+  add_test(NAME agent.linux-stack-capture-probe
+    COMMAND noleax-linux-stack-capture-probe
+  )
+  set_tests_properties(agent.linux-stack-capture-probe PROPERTIES
+    TIMEOUT 60
   )
 endif()
 
