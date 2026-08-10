@@ -24,7 +24,7 @@ namespace {
 using GetpidFunction = pid_t (*)() noexcept;
 
 std::atomic<std::uint64_t> getpid_replacement_calls{0U};
-GetpidFunction getpid_original = nullptr;
+noleax::agent::OriginalTrampolineSlot getpid_original{nullptr};
 
 using FixtureFunction = std::uint64_t (*)(std::uint64_t, std::uint64_t) noexcept;
 
@@ -33,7 +33,8 @@ FixtureFunction reload_original = nullptr;
 
 __attribute__((noinline)) pid_t getpid_replacement() noexcept {
   getpid_replacement_calls.fetch_add(1U, std::memory_order_relaxed);
-  return getpid_original();
+  // The slot is published before hook activation; reading it here is race-free.
+  return reinterpret_cast<GetpidFunction>(getpid_original.load(std::memory_order_acquire))();
 }
 
 __attribute__((noinline)) std::uint64_t reload_replacement(std::uint64_t left,
@@ -183,10 +184,9 @@ TEST_CASE("hook backend patches a libc export under concurrent load",
   // PLT. A crash, a torn patch, or a wrong result anywhere fails the run by itself; the
   // counters below only confirm the hooks actually engaged.
   for (std::uint32_t cycle = 0U; cycle < 50U; ++cycle) {
-    const auto installed =
-        backend.install_fast(target, reinterpret_cast<void*>(&getpid_replacement));
+    const auto installed = backend.install_fast(
+        target, reinterpret_cast<void*>(&getpid_replacement), &getpid_original);
     REQUIRE(installed.installed());
-    getpid_original = reinterpret_cast<GetpidFunction>(installed.original);
     const std::uint64_t calls_before = getpid_replacement_calls.load(std::memory_order_acquire);
     REQUIRE(::getpid() == expected_pid);
     CHECK(getpid_replacement_calls.load(std::memory_order_acquire) > calls_before);
@@ -215,10 +215,9 @@ TEST_CASE("hook backend survives repeated install cycles on one target",
 
   noleax::agent::HookBackend backend;
   for (std::uint32_t cycle = 0U; cycle < 200U; ++cycle) {
-    const auto installed =
-        backend.install_fast(target, reinterpret_cast<void*>(&getpid_replacement));
+    const auto installed = backend.install_fast(
+        target, reinterpret_cast<void*>(&getpid_replacement), &getpid_original);
     REQUIRE(installed.installed());
-    getpid_original = reinterpret_cast<GetpidFunction>(installed.original);
     REQUIRE(::getpid() == expected_pid);
     REQUIRE(backend.uninstall(target) == noleax::agent::HookUninstallStatus::kUninstalled);
   }
@@ -262,10 +261,9 @@ TEST_CASE("hook backend forced relocation installs on glibc text", "[agent][hook
   const pid_t expected_pid = ::getpid();
 
   noleax::agent::HookBackend backend;
-  const auto installed =
-      backend.install_fast_forced(target, reinterpret_cast<void*>(&getpid_replacement));
+  const auto installed = backend.install_fast_forced(
+      target, reinterpret_cast<void*>(&getpid_replacement), &getpid_original);
   REQUIRE(installed.installed());
-  getpid_original = reinterpret_cast<GetpidFunction>(installed.original);
   CHECK(::getpid() == expected_pid);
   CHECK(getpid_replacement_calls.load(std::memory_order_acquire) > 0U);
   CHECK(backend.uninstall(target) == noleax::agent::HookUninstallStatus::kUninstalled);
