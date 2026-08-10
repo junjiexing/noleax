@@ -25,6 +25,7 @@ endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_sources(noleax-hook-backend PRIVATE
+    linux/glibc_heap_hooks.cpp
     linux/module_tracker.cpp
     linux/stack_capture.cpp
     linux/trace_writer.cpp

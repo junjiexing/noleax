@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -18,6 +19,19 @@
 #include "noleax/trace/wire_format.hpp"
 
 namespace noleax::agent::linux {
+
+// Producer-side hot-path counters, consulted at finalize when
+// LinuxTraceWriterOptions::counter_source is set. dropped_events is the
+// producer-attributed queue drop count (the queue's own counter is global; per-API
+// attribution lives with the producers).
+struct LinuxTraceWriterApiCounterSnapshot {
+  noleax::trace::ApiId api_id{0U};
+  std::uint64_t recordable_calls{0U};
+  std::uint64_t successful_calls{0U};
+  std::uint64_t failed_calls{0U};
+  std::uint64_t filtered_calls{0U};
+  std::uint64_t dropped_events{0U};
+};
 
 // Linux counterpart of RtlAllocateHeapTraceWriterOptions (docs/LINUX_PORT_PLAN.md M3),
 // scoped to the single glibc heap event family: no heap lifecycle, VM, custom-hook, or
@@ -39,6 +53,11 @@ struct LinuxTraceWriterOptions {
   std::uint64_t monotonic_origin{0U};
   // CLOCK_REALTIME nanosecond origin; zero samples the clock at writer construction.
   std::int64_t utc_origin_ns{0};
+  // Authoritative producer counters per API, consulted once at finalize. Events the
+  // producer filters out before the queue (capture.min_size) never reach the writer,
+  // so an honest filtered_before_queue and the observed side of the reconciliation
+  // come from this snapshot. Unset: statistics derive from drained events only.
+  std::function<std::vector<LinuxTraceWriterApiCounterSnapshot>()> counter_source;
 };
 
 enum class LinuxTraceWriterStatus : std::uint8_t {

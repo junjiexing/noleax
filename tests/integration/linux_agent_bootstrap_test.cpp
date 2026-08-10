@@ -113,7 +113,7 @@ TEST_CASE("linux agent bootstraps over the env channel and runs the session prot
   REQUIRE(started.type == MessageType::kError);
   const auto error = noleax::ipc::decode_error_response(started.payload);
   CHECK(error.error_code == 5U);
-  CHECK(error.message.find("M3") != std::string::npos);
+  CHECK(error.message.find("linux-glibc-heap") != std::string::npos);
 
   int status = 0;
   CHECK(::waitpid(child, &status, 0) == child);

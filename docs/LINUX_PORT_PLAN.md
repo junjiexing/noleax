@@ -187,6 +187,30 @@ Windows trace 的 Linux 侧符号化（跨平台符号化保持现有 `unsupport
 
 ### M3 run 端到端：`linux-glibc-heap` profile
 
+> 状态：**已完成**（2026-08-10）。linux-x64-release / debug 各 293/293 测试通过，含
+> run→trace→analyze 端到端（`cli.linux-end-to-end`）。
+>
+> 落地与计划出入之处：
+> - **注入/会话合并为单通道**：Windows 的"agent 直写"与"--live 管道"两条路在 Linux 合并为
+>   一条 socket 会话（默认模式只是不轮询）；Ctrl+C detach 后会话关闭，agent 继续捕获到
+>   目标退出。standalone（纯 env + TOML）已在 agent 内实现（exit hook 收尾 + duration
+>   定时），`noleax patch` 的 ELF 对应物仍不做（§5.4）。
+> - **constructor 同步完成全部 bootstrap**（connect/hello/start/install/begin），原因两条：
+>   "入口点前注入"保证 + loader 锁只对同线程递归（worker 线程里 dlsym/dl_iterate_phdr
+>   会与 constructor 持有的锁死锁）。该约束写进了 agent_runtime.cpp 头注。
+> - **目标退出自收尾**：agent hook 住 `exit`/`_exit`，一次性 finalize（停录→writer 排水→
+>   关 trace）；abort/信号死亡走 trace 截断恢复语义。
+> - **writer 统计计数通道**：finalize 时从 hook 侧取权威计数快照（filtered 事件不进队列），
+>   对账不变式精确成立（observed == successful+failed == written+filtered+dropped）。
+> - **事件覆盖实证**：constructor 前 ld.so/CRT 分配也被完整捕获（事件 #1 早于 main）；
+>   group-by stack 输出与 Windows 同格式（api 名经 Linux registry 解析）。
+> - 交付物：glibc_heap_hooks（8 API 适配器，全合同）、trace_writer（代际配对/栈去重/
+  >   模块交织/有界文件/对账）、controller 会话、run plumbing、e2e 测试、
+>   LINUX_HOOK_PROFILES/LINUX_HOOK_API_MATRIX/LINUX_LAUNCH_INJECTION 三篇文档。
+> - 已知边界（后续里程碑）：attach（M6）、VM 组与内存快照（M4）、符号化（M5，当前栈帧
+  >   以 module+offset 呈现）、`--unload-on-stop`（Linux 不 dlclose，文档记录）、
+>   detach 后 duration 失效（M3 已知差距，写进 QUICKSTART/TROUBLESHOOTING 时对齐 M8）。
+
 目标：`noleax run --hook-profile linux-glibc-heap -- ./app` 全链路产出完整 trace，
 analyzer 三模式可分析。这是 Linux 版第一个用户可用形态。
 

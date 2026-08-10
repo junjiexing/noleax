@@ -1026,16 +1026,61 @@ class LinuxTraceWriter::Implementation final {
     }
 
     noleax::trace::CaptureStatistics statistics;
+    // When the producer exposes authoritative counters (the runtime wires the hooks'
+    // per-API snapshots here), observed/successful/failed/filtered/dropped come from
+    // the hot path; events filtered before the queue are invisible to the writer.
+    std::vector<LinuxTraceWriterApiCounterSnapshot> counter_snapshots;
+    if (options_.counter_source) {
+      counter_snapshots = options_.counter_source();
+    }
     for (std::size_t index = 0U; index < kLinuxHookRegistry.size(); ++index) {
       const ApiCounters& counters = api_counters_[index];
+      const LinuxTraceWriterApiCounterSnapshot* snapshot = nullptr;
+      for (const auto& candidate : counter_snapshots) {
+        if (candidate.api_id == kLinuxHookRegistry[index].api_id) {
+          snapshot = &candidate;
+          break;
+        }
+      }
       noleax::trace::ApiStatistics api;
       api.api_id = kLinuxHookRegistry[index].api_id;
-      api.observed_calls = counters.successful;
-      checked_add(api.observed_calls, counters.failed, "per-API observed call count overflow");
-      api.successful_operations = counters.successful;
-      api.failed_operations = counters.failed;
-      api.filtered_before_queue = 0U;
-      api.dropped_events = counters.trace_dropped;
+      if (snapshot != nullptr) {
+        api.observed_calls = snapshot->recordable_calls;
+        api.successful_operations = snapshot->successful_calls;
+        api.failed_operations = snapshot->failed_calls;
+        api.filtered_before_queue = snapshot->filtered_calls;
+        api.dropped_events = snapshot->dropped_events;
+        checked_add(api.dropped_events, counters.trace_dropped,
+                    "per-API dropped event count overflow");
+        if (snapshot->recordable_calls != snapshot->successful_calls + snapshot->failed_calls) {
+          throw std::runtime_error{
+              "glibc heap hook counters do not reconcile (recordable "
+              "!= successful + failed)"};
+        }
+        std::uint64_t accounted = counters.written;
+        checked_add(accounted, api.filtered_before_queue,
+                    "accounted per-API filtered count overflow");
+        checked_add(accounted, api.dropped_events, "accounted per-API drop count overflow");
+        if (accounted != api.observed_calls) {
+          throw std::runtime_error{
+              "glibc heap hook counters do not reconcile with drained trace events"};
+        }
+      } else {
+        api.observed_calls = counters.successful;
+        checked_add(api.observed_calls, counters.failed, "per-API observed call count overflow");
+        api.successful_operations = counters.successful;
+        api.failed_operations = counters.failed;
+        api.filtered_before_queue = 0U;
+        api.dropped_events = counters.trace_dropped;
+        // Hard reconciliation per API: every drained event was either written to the
+        // trace or accounted as a writer-side drop.
+        std::uint64_t accounted = counters.written;
+        checked_add(accounted, counters.trace_dropped, "accounted per-API event count overflow");
+        if (accounted != api.observed_calls) {
+          throw std::runtime_error{
+              "glibc heap hook counters do not reconcile with drained trace events"};
+        }
+      }
       statistics.per_api.push_back(api);
       checked_add(statistics.observed_calls, api.observed_calls,
                   "aggregate observed call count overflow");
@@ -1045,14 +1090,6 @@ class LinuxTraceWriter::Implementation final {
                   "aggregate failed operation count overflow");
       checked_add(statistics.dropped_events, api.dropped_events,
                   "aggregate dropped event count overflow");
-      // Hard reconciliation per API: every drained event was either written to the
-      // trace or accounted as a writer-side drop.
-      std::uint64_t accounted = counters.written;
-      checked_add(accounted, counters.trace_dropped, "accounted per-API event count overflow");
-      if (accounted != api.observed_calls) {
-        throw std::runtime_error{
-            "glibc heap hook counters do not reconcile with drained trace events"};
-      }
     }
     statistics.unique_stacks = unique_stacks_;
     statistics.reused_stacks = reused_stacks_;

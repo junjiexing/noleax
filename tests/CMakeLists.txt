@@ -113,6 +113,46 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_compile_definitions(noleax-linux-stack-capture-probe PRIVATE
     NOLEAX_HOOK_FIXTURE_PATH="$<TARGET_FILE:noleax-hook-backend-fixture>"
   )
+  add_executable(noleax-linux-workload-target
+    targets/linux_workload_target.cpp
+  )
+  noleax_set_project_warnings(noleax-linux-workload-target)
+
+  add_executable(noleax-linux-e2e-test
+    integration/linux_e2e_test.cpp
+  )
+  target_link_libraries(noleax-linux-e2e-test PRIVATE
+    Catch2::Catch2WithMain
+  )
+  noleax_set_project_warnings(noleax-linux-e2e-test)
+  add_dependencies(noleax-linux-e2e-test noleax noleax-agent noleax-linux-workload-target)
+  target_compile_definitions(noleax-linux-e2e-test PRIVATE
+    NOLEAX_CLI_PATH="$<TARGET_FILE:noleax>"
+    NOLEAX_WORKLOAD_PATH="$<TARGET_FILE:noleax-linux-workload-target>"
+  )
+  add_test(NAME cli.linux-end-to-end
+    COMMAND noleax-linux-e2e-test
+  )
+  set_tests_properties(cli.linux-end-to-end PROPERTIES
+    TIMEOUT 90
+    RUN_SERIAL TRUE
+  )
+
+  add_executable(noleax-linux-glibc-heap-hooks-probe
+    integration/linux_glibc_heap_hooks_probe.cpp
+  )
+  target_link_libraries(noleax-linux-glibc-heap-hooks-probe PRIVATE
+    noleax::hook-backend
+    ${CMAKE_DL_LIBS}
+  )
+  noleax_set_project_warnings(noleax-linux-glibc-heap-hooks-probe)
+  add_test(NAME agent.linux-glibc-heap-hooks-probe
+    COMMAND noleax-linux-glibc-heap-hooks-probe
+  )
+  set_tests_properties(agent.linux-glibc-heap-hooks-probe PROPERTIES
+    TIMEOUT 60
+  )
+
   add_executable(noleax-linux-trace-writer-probe
     integration/linux_trace_writer_probe.cpp
   )

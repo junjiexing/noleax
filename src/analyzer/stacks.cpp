@@ -11,6 +11,7 @@
 #include <variant>
 #include <vector>
 
+#include "noleax/agent/linux/hook_registry.hpp"
 #include "noleax/agent/windows/hook_registry.hpp"
 #include "noleax/analyzer/generation_tracker.hpp"
 #include "noleax/analyzer/time.hpp"
@@ -25,9 +26,17 @@ std::vector<std::string> group_api_names(
   std::vector<std::string> names;
   names.reserve(api_ids.size());
   for (const noleax::trace::ApiId api_id : api_ids) {
-    const auto* api = noleax::agent::windows::find_windows_hook(api_id);
-    if (api != nullptr) {
-      names.emplace_back(api->canonical_name);
+    // The built-in id spaces are disjoint (1-9 Windows, 10+ Linux), so one lookup chain
+    // serves traces from either platform.
+    const auto* windows_api = noleax::agent::windows::find_windows_hook(api_id);
+    const auto* linux_api =
+        windows_api == nullptr ? noleax::agent::linux::find_linux_hook(api_id) : nullptr;
+    if (windows_api != nullptr) {
+      names.emplace_back(windows_api->canonical_name);
+      continue;
+    }
+    if (linux_api != nullptr) {
+      names.emplace_back(linux_api->canonical_name);
       continue;
     }
     const auto custom = std::find_if(custom_hooks.begin(), custom_hooks.end(),
