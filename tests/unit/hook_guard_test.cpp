@@ -139,3 +139,41 @@ TEST_CASE("hook guard probe reports zero depths until the runtime is ready",
   CHECK(cleared.hook_depth == 0U);
   CHECK(cleared.internal_depth == 0U);
 }
+
+#if !defined(_WIN32)
+#include <csignal>
+
+namespace {
+
+std::atomic<bool> signal_handler_ran{false};
+std::atomic<std::uint32_t> signal_handler_depth{0U};
+
+void probe_signal_handler(int /*signal*/) {
+  // The whole point of the Linux guard model: classification must work in contexts where
+  // lazy TLS setup would be fatal. With initial-exec TLS this touches nothing but %fs.
+  const noleax::agent::HookInvocationGuard guard;
+  if (guard.should_record()) {
+    signal_handler_depth.store(noleax::agent::current_hook_depth(), std::memory_order_relaxed);
+    signal_handler_ran.store(true, std::memory_order_relaxed);
+  }
+}
+
+}  // namespace
+
+TEST_CASE("hook guard classifies from a POSIX signal handler", "[agent][hook-guard][posix]") {
+  REQUIRE(noleax::agent::acquire_hook_guard_runtime());
+  [[maybe_unused]] const HookGuardRuntimeLease runtime;
+
+  struct sigaction previous {};
+  struct sigaction action {};
+  sigemptyset(&action.sa_mask);
+  action.sa_handler = probe_signal_handler;
+  REQUIRE(sigaction(SIGUSR1, &action, &previous) == 0);
+  REQUIRE(std::raise(SIGUSR1) == 0);
+  REQUIRE(sigaction(SIGUSR1, &previous, nullptr) == 0);
+
+  CHECK(signal_handler_ran.load(std::memory_order_acquire));
+  CHECK(signal_handler_depth.load(std::memory_order_acquire) == 1U);
+  CHECK(noleax::agent::current_hook_depth() == 0U);
+}
+#endif

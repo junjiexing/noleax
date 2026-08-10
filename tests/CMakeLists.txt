@@ -17,6 +17,7 @@ add_executable(noleax-unit-tests
   unit/generation_tracker_test.cpp
   unit/json_test.cpp
   unit/hook_backend_test.cpp
+  unit/hook_guard_test.cpp
   unit/ipc_protocol_test.cpp
   unit/memory_analysis_test.cpp
   unit/outstanding_test.cpp
@@ -84,6 +85,12 @@ if(NOT WIN32)
     unit/hook_backend_posix_test.cpp
   )
   target_link_libraries(noleax-unit-tests PRIVATE ${CMAKE_DL_LIBS})
+
+  add_test(NAME agent.initial-exec-tls
+    COMMAND "${CMAKE_COMMAND}"
+      -DAGENT_PATH=$<TARGET_FILE:noleax-agent>
+      -P "${PROJECT_SOURCE_DIR}/tests/cmake/VerifyLinuxAgentTls.cmake"
+  )
 endif()
 
 add_test(NAME cli.version COMMAND noleax --version)
@@ -110,7 +117,6 @@ if(WIN32)
     unit/controller_process_test.cpp
     unit/entrypoint_injector_test.cpp
     unit/ipc_named_pipe_test.cpp
-    unit/hook_guard_test.cpp
     unit/patch_rendezvous_test.cpp
     unit/pe_patch_test.cpp
     unit/stack_capture_test.cpp

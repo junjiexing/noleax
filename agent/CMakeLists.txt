@@ -68,6 +68,15 @@ endif()
 target_compile_definitions(noleax-agent PRIVATE NOLEAX_AGENT_BUILD)
 noleax_set_project_warnings(noleax-agent)
 
+if(NOT WIN32)
+  # The hook guard's thread state must be reachable without __tls_get_addr: that helper
+  # can allocate on first use, which would recurse into the very allocator hooks the
+  # guard protects (same crash class as the Windows TEB incident, see HOOK_GUARD.md).
+  # LD_PRELOAD loads the agent at startup, so the static-TLS block is always available.
+  target_compile_options(noleax-hook-backend PRIVATE -ftls-model=initial-exec)
+  target_compile_options(noleax-agent PRIVATE -ftls-model=initial-exec)
+endif()
+
 if(WIN32)
   # No incremental link thunks: the patch rendezvous must see every replacement's real entry
   # inside the ".nlxhk" section, not a .text ILT stub.
