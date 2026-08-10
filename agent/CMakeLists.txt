@@ -25,6 +25,7 @@ endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_sources(noleax-hook-backend PRIVATE
+    linux/module_tracker.cpp
     linux/stack_capture.cpp
   )
 endif()
@@ -56,6 +57,12 @@ add_library(noleax-agent SHARED
 if(WIN32)
   target_sources(noleax-agent PRIVATE
     windows/agent_runtime.cpp
+  )
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_sources(noleax-agent PRIVATE
+    linux/agent_runtime.cpp
   )
 endif()
 
