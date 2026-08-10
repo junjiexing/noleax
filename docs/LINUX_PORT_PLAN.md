@@ -103,6 +103,27 @@ Windows trace 的 Linux 侧符号化（跨平台符号化保持现有 `unsupport
 
 ### M1 hook 原语验证与加固
 
+> 状态：**已完成**（2026-08-10）。linux-x64-release / debug 各 277/277 测试通过；并发锤压
+> （8 线程 × 50 轮 patch/unpatch）连续 10 轮稳定。
+>
+> 实证结论（推翻或修正了计划的假设）：
+> - hoox POSIX 路径对**完整尺寸的 glibc 函数**开箱可用（malloc/calloc/realloc/free/
+>   posix_memalign/mmap 安装、trampoline 调用、卸载全部正确）——R1 大幅缩窄。
+> - 发现真实缺陷并已修复（vendored hoox 本地扩展，计划回流上游）：
+>   1. FAST replace 只规划 16 字节远跳转，短序言目标（syscall stub、跳转别名）必败 →
+>      新增 **near-redirect 回退**（5 字节近跳 + slice 内远跳转），glibc profile 矩阵
+>      11 个函数全部可钩；
+>   2. POSIX patch 写入无任何线程排除（Windows 有 PC guard）→ 新增**信号停核**
+>      （`hoox_peer_park_*`，SIGRTMIN+6 park 协议）并接入 patch guard，语义与 Windows
+>      guard 对齐（含区间不净时的 release-重试与 fail-closed）；
+>   3. hook_guard 的 Linux 分支从"占位"固化为 **initial-exec TLS** 模型，readelf 结构
+>      回归 + 信号 handler 内分类回归（HOOK_GUARD.md §6）。
+> - `patch_rendezvous` Linux 实现落地：`hook_code_region` 走 dladdr1+磁盘 ELF 节解析，
+>   `verify_replacement_evacuated` 复用 park 原语（HOOK_QUIESCENCE.md §8）。
+> - 残余差距（转入 M2/M3 编排层）：FAST trampoline 使用计数恒 0 导致的 slice 回收竞态，
+>   由生产拆除顺序（停止记录→路由→quiescence→rendezvous→lease→flush）关闭，与
+>   Windows 编排一致。
+
 目标：在写任何业务 hook 之前，先证明 hook 引擎与防递归/停核原语在 Linux 上成立。
 这是全计划风险最高的环节，单独成里程碑。
 
@@ -299,8 +320,8 @@ slow-path syscall 由 handler 正确恢复（SA_RESTART 语义审计）。证明
 
 | # | 风险 | 影响 | 缓解 |
 |---|---|---|---|
-| R1 | hoox POSIX 后端从未验证，可能对 glibc 函数不可用 | M3 起全部阻塞 | M1 独立验证先行；回退方案为符号覆盖（§5.2） |
-| R2 | TLS/loader 期内重入分配 hook（Windows 已出过一次同类事故） | agent 崩溃 | M1 专项回归；initial-exec 模型（§5.5） |
+| R1 | hoox POSIX 后端从未验证，可能对 glibc 函数不可用 | M3 起全部阻塞 | **已在 M1 验证并修复**：完整尺寸函数开箱可用；短序言目标由新增的 near-redirect 回退覆盖；patch 写入安全由新增的信号停核 guard 保证。残余：slice 回收竞态（M2/M3 编排关闭） |
+| R2 | TLS/loader 期内重入分配 hook（Windows 已出过一次同类事故） | agent 崩溃 | **已在 M1 固化**：initial-exec TLS + readelf 结构回归 + 信号 handler 回归（HOOK_GUARD.md §6） |
 | R3 | libunwind 热路径分配/加锁，违反捕获契约 | 栈捕获不可用 | M2 原型验证；降级路径已定义（§5.6） |
 | R4 | glibc hidden alias 绕过公开符号，覆盖率低于预期 | 遗漏事件 | 基线实测摸清边界并写入文档；与 Windows 边界同类表述（§5.3） |
 | R5 | ptrace attach 注入时目标线程持有 ld.so/malloc 锁，死锁 | attach 挂死 | M6 线程选择规则 + 超时拒绝，照搬 thread-hijack 事故教训 |

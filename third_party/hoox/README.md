@@ -20,6 +20,18 @@ upstream and a new release is vendored.
    rel32 range; the slice head holds the absolute jump to the replacement
    (emitted at activation time, when the replacement address is assigned).
    Previously working targets are unaffected.
+2. **Linux peer parking** (`hoox.c`/`hoox.h`, `hoox_peer_park_begin` /
+   `hoox_peer_park_all_clear_of` / `hoox_peer_park_end`): signal-driven
+   stop-the-world for Linux. Peers are `tgkill`'d a dedicated real-time signal
+   (default `SIGRTMIN+6`, overridable via `HOOX_PEER_PARK_SIGNAL`); the handler
+   records the interrupted RIP and spins until released. Fail-closed on
+   blocked signals, enumeration failure, or wait-budget overrun; performs no
+   heap allocation while peers are parked.
+3. **POSIX patch PC guard** (`hoox.c`, opt-in `HOOX_POSIX_PATCH_PC_GUARD`):
+   wires peer parking into `hoox_memory_patch_code_pages_guarded` so Linux
+   patch writes get the same no-thread-in-transit guarantee the Windows
+   `HOOX_WINDOWS_PATCH_PC_GUARD` provides, including the release-and-retry
+   loop when a parked thread's PC sits inside a guard range.
 
 ## Build integration
 

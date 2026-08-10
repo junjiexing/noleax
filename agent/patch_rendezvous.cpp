@@ -229,6 +229,129 @@ bool verify_replacement_evacuated(HookCodeRegion region, std::uint32_t max_attem
 
 }  // namespace noleax::agent
 
+#elif defined(__linux__)
+
+#include <dlfcn.h>
+#include <fcntl.h>
+#include <hoox.h>
+#include <link.h>
+#include <unistd.h>
+
+#include <cstring>
+#include <thread>
+#include <vector>
+
+namespace noleax::agent {
+namespace {
+
+// Reads the ".nlxhk" section bounds from the ELF image backing the given module. Section
+// headers are not mapped at runtime on Linux, so they come from the file on disk; this runs
+// at hook install/teardown time, never on the capture hot path.
+[[nodiscard]] HookCodeRegion find_hook_section(const char* path,
+                                               std::uintptr_t load_bias) noexcept {
+  HookCodeRegion region;
+  const int fd = open(path, O_RDONLY | O_CLOEXEC);
+  if (fd < 0) {
+    return region;
+  }
+
+  Elf64_Ehdr header;
+  if (pread(fd, &header, sizeof(header), 0) != static_cast<ssize_t>(sizeof(header)) ||
+      std::memcmp(header.e_ident, ELFMAG, SELFMAG) != 0 || header.e_ident[EI_CLASS] != ELFCLASS64 ||
+      header.e_ident[EI_DATA] != ELFDATA2LSB || header.e_machine != EM_X86_64 ||
+      header.e_shoff == 0 || header.e_shnum == 0U || header.e_shnum >= 4096U ||
+      header.e_shentsize != sizeof(Elf64_Shdr) || header.e_shstrndx >= header.e_shnum) {
+    close(fd);
+    return region;
+  }
+
+  std::vector<Elf64_Shdr> sections(header.e_shnum);
+  const off_t sections_offset = static_cast<off_t>(header.e_shoff);
+  const std::size_t sections_size = sizeof(Elf64_Shdr) * header.e_shnum;
+  if (pread(fd, sections.data(), sections_size, sections_offset) !=
+      static_cast<ssize_t>(sections_size)) {
+    close(fd);
+    return region;
+  }
+
+  const Elf64_Shdr& names_header = sections[header.e_shstrndx];
+  if (names_header.sh_size == 0 || names_header.sh_size > (1U << 20)) {
+    close(fd);
+    return region;
+  }
+  std::vector<char> names(names_header.sh_size);
+  if (pread(fd, names.data(), names.size(), static_cast<off_t>(names_header.sh_offset)) !=
+      static_cast<ssize_t>(names.size())) {
+    close(fd);
+    return region;
+  }
+  close(fd);
+
+  for (const Elf64_Shdr& section : sections) {
+    if (section.sh_name >= names.size()) {
+      continue;
+    }
+    const char* const name = names.data() + section.sh_name;
+    if (std::memcmp(name, ".nlxhk", sizeof(".nlxhk")) == 0 && (section.sh_flags & SHF_ALLOC) != 0 &&
+        section.sh_size != 0) {
+      region.begin = reinterpret_cast<const void*>(load_bias + section.sh_addr);
+      region.end = static_cast<const std::byte*>(region.begin) + section.sh_size;
+      return region;
+    }
+  }
+  return region;
+}
+
+}  // namespace
+
+HookCodeRegion hook_code_region(const void* address_in_module) noexcept {
+  HookCodeRegion region;
+  if (address_in_module == nullptr) {
+    return region;
+  }
+  Dl_info info;
+  struct link_map* map = nullptr;
+  if (dladdr1(const_cast<void*>(address_in_module), &info, reinterpret_cast<void**>(&map),
+              RTLD_DL_LINKMAP) == 0 ||
+      map == nullptr) {
+    return region;
+  }
+  const char* path = map->l_name;
+  if (path == nullptr || path[0] == '\0') {
+    path = "/proc/self/exe";
+  }
+  return find_hook_section(path, static_cast<std::uintptr_t>(map->l_addr));
+}
+
+bool verify_replacement_evacuated(HookCodeRegion region, std::uint32_t max_attempts) noexcept {
+  const auto invalid_region =
+      region.begin == nullptr || reinterpret_cast<std::uintptr_t>(region.begin) >=
+                                     reinterpret_cast<std::uintptr_t>(region.end);
+  if (invalid_region) {
+    return false;
+  }
+  HooxPeerParkRange range;
+  range.begin = const_cast<void*>(region.begin);
+  range.end = const_cast<void*>(region.end);
+  for (std::uint32_t attempt = 0U;; ++attempt) {
+    // NULL means the park failed closed (busy, blocked signals, or a wait overrun).
+    HooxPeerPark* const park = hoox_peer_park_begin();
+    if (park != nullptr) {
+      const bool clear = hoox_peer_park_all_clear_of(park, &range, 1U) != 0;
+      hoox_peer_park_end(park);
+      if (clear) {
+        return true;
+      }
+    }
+    if (attempt == max_attempts) {
+      return false;
+    }
+    std::this_thread::yield();
+  }
+}
+
+}  // namespace noleax::agent
+
 #else
 
 namespace noleax::agent {

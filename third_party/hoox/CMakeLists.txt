@@ -13,6 +13,10 @@ if(NOT WIN32)
   # pthread mutexes, syscall, mprotect); the project's strict -std=c17 build
   # hides their declarations unless the feature test macro is set.
   target_compile_definitions(noleax-hoox PRIVATE _GNU_SOURCE)
+  # Signal-driven peer parking around patch writes (hoox_peer_park_*), so
+  # multi-byte patches on Linux get the same no-thread-in-transit guarantee
+  # the Windows PC guard provides.
+  target_compile_definitions(noleax-hoox PRIVATE HOOX_POSIX_PATCH_PC_GUARD)
 endif()
 
 set_target_properties(noleax-hoox PROPERTIES

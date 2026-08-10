@@ -204,3 +204,40 @@ ctest --preset windows-x64-debug -R "replacement lifecycle|lifetime lease|quiesc
 ctest --preset windows-x64-debug -R "hook.(rtl-.*heap|nt-virtual-memory).*quiescence-race" --repeat until-fail:100 --output-on-failure
 ctest --preset windows-x64-release -R "hook.(rtl-.*heap|nt-virtual-memory).*quiescence-race" --repeat until-fail:100 --output-on-failure
 ~~~
+
+## 8. Linux 实现：信号停核
+
+> 状态：已实现（Linux 移植 M1）。`HOOX_POSIX_PATCH_PC_GUARD` 与 `hoox_peer_park_*` 当前是
+> vendored hoox 的本地扩展，计划回流上游（third_party/hoox/README.md 的 deviation 清单）。
+
+Linux 没有 SuspendThread/GetThreadContext 的对应物，停核用信号实现（`agent/patch_rendezvous.cpp`
+的 Linux 分支 + hoox 的 POSIX patch guard，共用同一套 park 原语）：
+
+- **park 协议**：停核线程枚举 `/proc/self/task`（raw getdents64，固定缓冲，无堆分配），向每个
+  peer 线程 `tgkill` 专用实时信号（默认 `SIGRTMIN+6`，NPTL 自用 +0/+1）；handler 从 ucontext
+  记录被打断的 RIP，原子登记到达后原地自旋（pause），直到 release 标志置位才返回。反复枚举
+  直到完整一轮没有新线程——与 Windows 版"枚举到无新线程"语义对齐。停核期间无线程运行，也就
+  无线程能创建新线程，收敛性证明与 Windows 相同。
+- **fail-closed**：线程屏蔽了 park 信号（信号滞留、handler 不运行）、枚举失败、等待超时
+  （每轮 50ms 预算）、并发重入 park，一律返回失败；patch 失败沿 HookBackend 状态链路上报，
+  不静默降级。
+- **patch guard 接线**：`HOOX_POSIX_PATCH_PC_GUARD`（非 Windows 构建在 `third_party/hoox/
+  CMakeLists.txt` 定义）让 `hoox_memory_patch_code_pages_guarded` 的 Linux 路径启用
+  park：park → 逐 PC 扫描 guard 区间（与 Windows 相同的 `(function+1, function+prologue_len)`
+  开区间）→ 不干净则 release、1ms 后重 park，次数耗尽则 patch 失败。apply/revert 的写入与
+  mprotect 临界区全程处于 park 状态。
+- **replacement 撤离证明**：`verify_replacement_evacuated` 在 Linux 上复用同一 park 原语，
+  对 `.nlxhk` 区间做全线程 PC 扫描；`hook_code_region` 用 `dladdr1` 定位模块后从**磁盘 ELF**
+  读节头解析 `.nlxhk` 边界（Linux 运行时不映射节头，这点与 Windows 读内存 PE 头不同）。
+  该函数只在安装/拆除路径调用，不在捕获热路径。
+- **可观察副作用**：park 信号以 `SA_RESTART` 安装，多数被中断的慢系统调用自动重启；但
+  `poll`/`select`/`nanosleep` 一类仍可能对应用返回一次 `EINTR`（窗口仅停核期间，微秒级）。
+  按 POSIX 规则编写的代码必须处理 EINTR，此处如实记录。
+- **fork**：停核窗口内目标 fork 的行为未定义（子进程继承已 park 的线程镜像但没有停核者），
+  捕获期约定不支持，与 Windows 侧"不支持捕获期中创建进程"同类。
+
+与 Windows 版的残余差距（有意推迟到 M2/M3 的 agent 编排层解决）：Hoox 的 FAST trampoline
+使用计数恒为 0，slice 在 revert+flush 后即回收到分配器空闲表；线程"已取跳转、未进
+replacement"的窗口不由 patch guard 覆盖。生产拆除顺序（停止记录 → 路由 original → 静态化
+→ rendezvous 验证 → 释放 lease → flush 回收）在 M2/M3 接线时照搬 Windows 编排，届时该窗口
+关闭。

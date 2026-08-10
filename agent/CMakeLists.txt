@@ -75,6 +75,9 @@ if(NOT WIN32)
   # LD_PRELOAD loads the agent at startup, so the static-TLS block is always available.
   target_compile_options(noleax-hook-backend PRIVATE -ftls-model=initial-exec)
   target_compile_options(noleax-agent PRIVATE -ftls-model=initial-exec)
+  # dladdr1/RTLD_DL_LINKMAP (patch rendezvous) are GNU extensions.
+  target_compile_definitions(noleax-hook-backend PRIVATE _GNU_SOURCE)
+  target_link_libraries(noleax-hook-backend PRIVATE ${CMAKE_DL_LIBS})
 endif()
 
 if(WIN32)

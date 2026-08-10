@@ -113,3 +113,27 @@ ctest --preset windows-x64-debug -R "hook guard|rtl-allocate-heap-passthrough" -
 ctest --preset windows-x64-release -R "hook guard|rtl-allocate-heap-passthrough" --output-on-failure
 ctest --preset windows-x64-release -L passthrough --repeat until-fail:20
 ~~~
+
+## 6. Linux 实现：initial-exec TLS
+
+> 状态：已实现（Linux 移植 M1）。非 Windows 分支此前是"仅保证可编译"的占位，现已按本节模型固化。
+
+Linux 侧的崩溃类与第 2 节相同，触发点不同：glibc 默认 TLS 模型（global-dynamic）首次访问
+要过 `__tls_get_addr`，该函数可能分配内存——在 malloc hook 的热路径里等于递归进入被 hook 的
+分配器。Linux 模型的选择是把分配可能性从结构上消掉，而不是找"安全的调用点"：
+
+- agent 侧 target（`noleax-hook-backend`、`noleax-agent`）以 `-ftls-model=initial-exec` 编译，
+  guard 状态保持 `constinit thread_local` POD。编译产物中对 guard 状态的访问是直接的
+  `%fs` 段寻址：无函数调用、无分配、无锁。
+- LD_PRELOAD 在进程启动期加载 agent，静态 TLS 块随模块加载分配，constructor 运行前由 ld.so
+  完成初始化；新线程的静态 TLS 镜像由 pthread_create 按初始镜像复制。因此 guard 在任何
+  可达上下文（含信号 handler、loader 早期）都可用。
+- `runtime_ready` 门控语义与 Windows 一致：`acquire_hook_guard_runtime` 前读写按未就绪处理
+  （probe 返回零深度，直接读写 terminate）。
+- 结构回归：`tests/cmake/VerifyLinuxAgentTls.cmake` 用 readelf 断言 agent DSO 不含
+  `__tls_get_addr` 引用与 `R_X86_64_TLS_GD/LD` 重定位，防止任何 TU 退回动态 TLS 模型。
+- 行为回归：POSIX 信号 handler 内做 guard 进出并断言分类正确（模拟最苛刻的异步上下文）。
+
+已知边界：attach（M6，ptrace dlopen 迟加载 agent）依赖 glibc 的静态 TLS 盈余区
+（`TLS_STATIC_SURPLUS`）；agent 的 TLS 占用仅数字节，常规进程不成问题，盈余耗尽时 dlopen
+失败、attach 以注入失败报错——可接受的失败语义，届时在 attach 文档记录。

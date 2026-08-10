@@ -19,6 +19,7 @@ add_executable(noleax-unit-tests
   unit/hook_backend_test.cpp
   unit/hook_guard_test.cpp
   unit/ipc_protocol_test.cpp
+  unit/patch_rendezvous_test.cpp
   unit/memory_analysis_test.cpp
   unit/outstanding_test.cpp
   unit/stacks_test.cpp
@@ -117,7 +118,6 @@ if(WIN32)
     unit/controller_process_test.cpp
     unit/entrypoint_injector_test.cpp
     unit/ipc_named_pipe_test.cpp
-    unit/patch_rendezvous_test.cpp
     unit/pe_patch_test.cpp
     unit/stack_capture_test.cpp
     unit/stack_dictionary_test.cpp

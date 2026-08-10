@@ -1,12 +1,17 @@
 #include "noleax/agent/patch_rendezvous.hpp"
 
+#include "noleax/agent/hook_section.hpp"
+
+#if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <intrin.h>
 #include <windows.h>
+#endif
 
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
+#include <chrono>
 #include <cstdint>
 #include <thread>
 
@@ -18,16 +23,21 @@ namespace {
 volatile bool spin_stop{false};
 std::atomic<bool> spin_entered{false};
 
-#pragma code_seg(push, ".nlxhk")
+NOLEAX_HOOK_SECTION_PUSH
 
+NOLEAX_HOOK_SECTION
 void spin_in_hook_section() noexcept {
   spin_entered.store(true, std::memory_order_release);
   while (!spin_stop) {
+#if defined(_WIN32)
     _mm_pause();
+#elif defined(__x86_64__) || defined(__i386__)
+    __builtin_ia32_pause();
+#endif
   }
 }
 
-#pragma code_seg(pop)
+NOLEAX_HOOK_SECTION_POP
 
 [[nodiscard]] bool address_inside(const noleax::agent::HookCodeRegion& region,
                                   const void* address) noexcept {
@@ -78,8 +88,9 @@ TEST_CASE("replacement evacuation observes threads inside the section",
   spin_stop = false;
   spin_entered.store(false, std::memory_order_release);
   std::thread spinner{&spin_in_hook_section};
-  const unsigned long long deadline = GetTickCount64() + 10'000U;
-  while (!spin_entered.load(std::memory_order_acquire) && GetTickCount64() < deadline) {
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{10};
+  while (!spin_entered.load(std::memory_order_acquire) &&
+         std::chrono::steady_clock::now() < deadline) {
     std::this_thread::yield();
   }
   REQUIRE(spin_entered.load(std::memory_order_acquire));
