@@ -48,6 +48,40 @@
       "name": "windows-x64-ci",
       "displayName": "Windows x64 CI",
       "inherits": "windows-x64-release"
+    },
+    {
+      "name": "linux-x64-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-linux",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": true,
+        "NOLEAX_BUILD_TESTS": true,
+        "NOLEAX_WARNINGS_AS_ERRORS": true
+      }
+    },
+    {
+      "name": "linux-x64-debug",
+      "displayName": "Linux x64 Debug",
+      "inherits": "linux-x64-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "linux-x64-release",
+      "displayName": "Linux x64 Release",
+      "inherits": "linux-x64-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "linux-x64-ci",
+      "displayName": "Linux x64 CI",
+      "inherits": "linux-x64-release"
     }
   ],
   "buildPresets": [
@@ -66,6 +100,18 @@
     {
       "name": "windows-x64-ci",
       "configurePreset": "windows-x64-ci"
+    },
+    {
+      "name": "linux-x64-debug",
+      "configurePreset": "linux-x64-debug"
+    },
+    {
+      "name": "linux-x64-release",
+      "configurePreset": "linux-x64-release"
+    },
+    {
+      "name": "linux-x64-ci",
+      "configurePreset": "linux-x64-ci"
     }
   ],
   "testPresets": [
@@ -93,6 +139,27 @@
     {
       "name": "windows-x64-ci",
       "configurePreset": "windows-x64-ci",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-x64-debug",
+      "configurePreset": "linux-x64-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-x64-release",
+      "configurePreset": "linux-x64-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-x64-ci",
+      "configurePreset": "linux-x64-ci",
       "output": {
         "outputOnFailure": true
       }

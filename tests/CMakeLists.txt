@@ -45,6 +45,7 @@ target_link_libraries(noleax-unit-tests
     noleax::cli
     noleax::config
     noleax::core
+    noleax::hook-backend
     noleax::ipc
     noleax::trace
     lz4::lz4
@@ -94,7 +95,6 @@ if(WIN32)
     unit/stack_dictionary_test.cpp
     unit/windows_hook_registry_test.cpp
   )
-  target_link_libraries(noleax-unit-tests PRIVATE noleax::hook-backend)
   target_link_libraries(noleax-unit-tests PRIVATE noleax::controller)
   target_link_libraries(noleax-unit-tests PRIVATE Shell32)
 

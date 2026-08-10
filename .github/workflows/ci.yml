@@ -153,6 +153,49 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  linux-x64:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - preset: linux-x64-debug
+          - preset: linux-x64-release
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure, build, and test
+        shell: bash
+        env:
+          PRESET: ${{ matrix.preset }}
+        run: |
+          set -euo pipefail
+          export VCPKG_ROOT="${VCPKG_INSTALLATION_ROOT}"
+
+          # Runner images ship vcpkg checkouts that may predate the pinned baseline or be
+          # shallow clones missing it; align the registry with the pinned baseline so manifest
+          # mode resolves the same versions as a local build.
+          baseline=$(python3 -c 'import json,sys; print(json.load(open("vcpkg.json"))["builtin-baseline"])')
+          if ! git -C "$VCPKG_ROOT" cat-file -e "$baseline^{commit}" 2>/dev/null; then
+            git -C "$VCPKG_ROOT" fetch --depth 1 origin "$baseline"
+          fi
+          git -C "$VCPKG_ROOT" -c advice.detachedHead=false checkout --force --quiet "$baseline"
+
+          # The image's preinstalled vcpkg can be newer than the pinned baseline registry and
+          # refuse its vcpkg-tools.json; rebuild it from the checked-out sources so tool and
+          # registry always match.
+          "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
+
+          if ! command -v ninja >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends ninja-build
+          fi
+
+          cmake --preset "$PRESET"
+          cmake --build --preset "$PRESET"
+          ctest --preset "$PRESET"
+
   release:
     runs-on: windows-2022
     needs: [format, windows-x64]

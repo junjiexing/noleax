@@ -7,6 +7,8 @@
 #include <limits>
 #include <mutex>
 
+#include "noleax/agent/hook_section.hpp"
+
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -197,10 +199,13 @@ std::uint32_t current_internal_depth() noexcept { return load_thread_state().int
 
 bool current_thread_is_internal() noexcept { return load_thread_state().internal_depth != 0U; }
 
-#pragma code_seg(push, ".nlxhk")
+// The quiescence probe must land in the dedicated ".nlxhk" section so the patch
+// rendezvous can prove no thread is executing it (see hook_section.hpp).
+NOLEAX_HOOK_SECTION_PUSH
 
 namespace detail {
 
+NOLEAX_HOOK_SECTION
 HookGuardThreadState probe_hook_guard_thread_state() noexcept {
 #if defined(_WIN32)
   const DWORD index = state_tls_index.load(std::memory_order_acquire);
@@ -220,6 +225,6 @@ HookGuardThreadState probe_hook_guard_thread_state() noexcept {
 
 }  // namespace detail
 
-#pragma code_seg(pop)
+NOLEAX_HOOK_SECTION_POP
 
 }  // namespace noleax::agent

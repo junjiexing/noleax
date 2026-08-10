@@ -24,6 +24,12 @@ set(CMAKE_C_STANDARD 17)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
+# The agent is a shared object linking the project's static libraries; on ELF
+# platforms those libraries must be position-independent.
+if(NOT WIN32)
+  set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif()
+
 if(NOLEAX_WINDOWS_HARDENED_TESTING)
   if(NOT WIN32 OR NOT MSVC)
     message(FATAL_ERROR "NOLEAX_WINDOWS_HARDENED_TESTING requires MSVC on Windows.")

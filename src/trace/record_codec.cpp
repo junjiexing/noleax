@@ -1027,9 +1027,10 @@ void append_loss_record(std::vector<std::byte>& chunk_payload, const LossRecord&
   append_u8(payload, static_cast<std::uint8_t>(loss.reason));
   append_u8(payload, static_cast<std::uint8_t>(loss.location));
   std::uint8_t presence = 0U;
-  presence |= loss.estimated_event_count.has_value() ? 0x01U : 0U;
-  presence |= loss.sequence_range.has_value() ? 0x02U : 0U;
-  presence |= loss.tick_range.has_value() ? 0x04U : 0U;
+  presence =
+      static_cast<std::uint8_t>(presence | (loss.estimated_event_count.has_value() ? 0x01U : 0U));
+  presence = static_cast<std::uint8_t>(presence | (loss.sequence_range.has_value() ? 0x02U : 0U));
+  presence = static_cast<std::uint8_t>(presence | (loss.tick_range.has_value() ? 0x04U : 0U));
   append_u8(payload, presence);
   append_zeros(payload, 5U);
   append_u64(payload, loss.estimated_event_count.value_or(0U));

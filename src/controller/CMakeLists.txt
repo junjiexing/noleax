@@ -13,6 +13,10 @@ if(WIN32)
     windows/thread_suspension.cpp
   )
   target_link_libraries(noleax-controller PRIVATE bcrypt Psapi)
+else()
+  target_sources(noleax-controller PRIVATE
+    controller_stub.cpp
+  )
 endif()
 
 add_library(noleax::controller ALIAS noleax-controller)
