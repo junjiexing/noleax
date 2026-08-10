@@ -8,6 +8,12 @@ if(WIN32)
   )
 endif()
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_sources(noleax-ipc PRIVATE
+    linux/unix_socket.cpp
+  )
+endif()
+
 add_library(noleax::ipc ALIAS noleax-ipc)
 
 target_include_directories(noleax-ipc

@@ -94,6 +94,12 @@ if(NOT WIN32)
   )
 endif()
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_sources(noleax-unit-tests PRIVATE
+    unit/ipc_unix_socket_test.cpp
+  )
+endif()
+
 add_test(NAME cli.version COMMAND noleax --version)
 set_tests_properties(cli.version PROPERTIES
   PASS_REGULAR_EXPRESSION "0\\.4\\.1-dev")
