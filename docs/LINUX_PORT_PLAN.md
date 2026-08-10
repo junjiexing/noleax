@@ -143,6 +143,24 @@ Windows trace 的 Linux 侧符号化（跨平台符号化保持现有 `unsupport
 
 ### M2 agent Linux 骨架
 
+> 状态：**已完成**（2026-08-10）。linux-x64-release / debug 各 290/290 测试通过。
+>
+> 落地内容与计划出入之处：
+> - 栈捕获机制经原型对比从 libunwind 改为 **`_Unwind_Backtrace`**（零依赖、零分配、
+>   ~0.7µs/次；libunwind 的 vcpkg 构建还需 autotools 工具链，无优势），见 §5.6 修订注记。
+> - agent runtime 骨架以 **LD_PRELOAD constructor 为唯一入口**：env 通道（socket 名/token/
+  >   controller pid/timeout）读取后立即 scrub，目标子进程不会再 bootstrap；会话协议状态机
+>   （hello/start/status/stop/finalize）已按 Windows agent_worker 同构实现并经 e2e 验证
+>   （harness 扮 controller 对 `/bin/sleep` 预加载）；StartCapture 目前返回 M3 占位错误。
+> - **agent ABI 保持 4**：wire 协议无变更（Linux bootstrap 走 env 而非内存结构体，
+>   不影响 ABI）；计划中的"ABI 5"修订为不需要。
+> - **writer 中性层抽取调整**：不重构 Windows writer（避免扰动稳定侧）；Linux writer 在
+>   M3 与新 profile 事件语义一并新写，直接复用 `src/trace` 中性库、
+>   `bounded_mpsc_queue` 与既有 stack_dictionary（平台中性代码），守恒不变式
+>   （sequence 连续、计数对账）照搬。
+> - Unix socket 传输、dl_iterate_phdr 轮询模块跟踪、栈捕获均已落地并有测试；
+>   IPC_PROTOCOL/STACK_CAPTURE/MODULE_TRACKING 三文档已增 Linux 章节。
+
 目标：`noleax-agent.so` 成型，承载捕获管线的平台骨架就绪（尚未挂业务 hook）。
 
 - `agent/linux/agent_runtime.cpp`：`__attribute__((constructor))` 入口（LD_PRELOAD 下

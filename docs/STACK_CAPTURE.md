@@ -92,3 +92,19 @@ Release object 审计确认生产捕获函数唯一的外部调用是 `RtlCaptur
 guard、original、错误状态/计时/thread API、无锁 queue 和该捕获入口，未出现 allocator、文件、
 日志、符号、loader 或显式锁调用。相关 object 也没有 `.tls$` section。卸载时的 replacement
 in-flight 生命周期见 [HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)。
+
+## 6. Linux 实现：`_Unwind_Backtrace`
+
+> 状态：已实现（Linux 移植 M2）。机制选型经原型对比后从计划的 libunwind 改为 libgcc
+> `_Unwind_Backtrace`，合同与状态机不变。
+
+- 机制：`_Unwind_Backtrace`（libgcc_s 随 agent 自身加载，目标进程零配合），逐帧取
+  `_Unwind_GetIP` 原始 PC，热路径合同（预分配、无锁、无 I/O、raw PC）与第 1 节一致。
+- 原型实测（2.5 万次 × 双构型）：省略帧指针下完整回溯；冷/热路径全程零分配；
+  ~0.7µs/次（≤32 帧），hook 化 malloc 压测 2 秒 1020 万次捕获零失败。
+- 依赖前提：`.eh_frame`（发行版默认携带，含 release 构建）；glibc ≥ 2.35 的 lock-free
+  `_dl_find_object` 保证与 loader 锁无竞争（探针以 dlopen/dlclose 并发搅动专项验证）。
+  更老 glibc 与 stripped 掉 `.eh_frame` 的目标按 kFailed/kUnavailable 落盘。
+- 帧指针快径实测仅剩 2 帧（`-fomit-frame-pointer` 主流默认），不作主路径，仅调试辅助。
+- 对应物映射：method 取值 `kUnwindBacktrace`；Windows 的 `kRtlCaptureStackBackTrace`/
+  `kVirtualUnwind` 语义分别对应"生产默认"与"对照校验"，Linux 目前单方法。

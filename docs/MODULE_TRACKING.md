@@ -79,3 +79,24 @@ identity 解析旧 generation。
 - DLL 已卸载后仍使用 trace identity 完成离线符号化；
 - Debug、Release、hardened、CFG/CET 和 Application Verifier/Full Page Heap 回归。
 
+
+## 6. Linux 实现：轮询代际
+
+> 状态：已实现（Linux 移植 M2）。`LinuxModuleTracker`（`agent/linux/module_tracker.cpp`）。
+
+Linux 没有进程内模块加载通知（`r_debug` 是调试器接口，不在进程内使用），按移植计划
+§5.7 采用轮询模型：
+
+- 初始快照：`dl_iterate_phdr` 全量枚举（构造时完成，打 `kInitialSnapshot`，ticks 取
+  monotonic origin），模块边界为 PT_LOAD 段相对 load bias 的覆盖区间；主可执行文件
+  路径取 `/proc/self/exe`。
+- 变更检测：writer 线程在 drain 循环里调用 `poll()`，重新枚举并与存活集合按 base 比较
+  得出 load/unload；同 base 不同内容（尺寸或路径变化）按 unload+load 两个代际处理，
+  对应 dlclose 后地址复用。轮询窗口内的多次加载/卸载合并为一批——代际模型天然容忍，
+  窗口语义即"相邻两次 poll 之间"。
+- 队列纪律与 Windows 相同：有界队列（默认 256），溢出计数丢弃并在 Loss 记录中归因；
+  poll 内部任何分配失败按跳过一轮并计入丢弃处理，不终结捕获。
+- 与 Windows 通知模型的语义差：通知模型是"事件发生时入队"，轮询模型是"窗口合并入队"；
+  两者都满足 writer 的"模块记录先于引用它的事件"排序要求（writer 按 ticks 排水）。
+- 身份字段：本期记录不带 ELF build-id（线格式把模块身份设计为可选）；build-id 的落位
+  是 M5 的格式治理决策。

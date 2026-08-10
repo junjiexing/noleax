@@ -50,3 +50,17 @@ ABI 4 在 `flush_interval_ns` 之后为 `StartCapture` 增加 `memory_counters_i
 
 自动测试覆盖 payload/frame round-trip、major/minor、恶意长度、截断、尾随字节、accept timeout、
 部分 header timeout、双向传输和 peer PID。
+
+## 4. Linux 传输：抽象命名空间 Unix socket
+
+Linux 侧传输实现为 `noleax::ipc::linux`（`src/ipc/linux/unix_socket.cpp`），帧格式、消息
+状态机与安全边界不变：
+
+- 命名：`make_socket_name(token)` 生成抽象命名空间名称（`\0noleax-<hex(token)>`），无文件
+  系统痕迹、无需清理；等价于 Windows 的 `\\.\pipe\noleax-<hex>`。
+- 对端校验：`SO_PEERCRED` 双向提供对端 PID，替代 `PIPE_REJECT_REMOTE_CLIENTS` + 客户端
+  PID 校验；agent 侧拒绝非预期 controller PID 的连接。
+- 超时与中断：poll 截止驱动 send/receive/accept 超时；`poll` 不受 `SA_RESTART` 覆盖，
+  所有等待显式处理 `EINTR`——park 信号（停核）到达不破坏传输。
+- 发送使用 `MSG_NOSIGNAL`（不产生 SIGPIPE）；所有 fd 以 `CLOEXEC` 创建，不泄漏进目标
+  exec 后的子进程。
