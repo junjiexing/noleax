@@ -76,6 +76,16 @@ void write_file(const std::filesystem::path& path, std::string_view contents = {
   return normalized;
 }
 
+[[nodiscard]] std::string replace_all(std::string value, std::string_view from,
+                                      std::string_view to) {
+  std::string::size_type position = 0U;
+  while ((position = value.find(from, position)) != std::string::npos) {
+    value.replace(position, from.size(), to);
+    position += to.size();
+  }
+  return value;
+}
+
 [[nodiscard]] noleax::config::WindowBound time_bound(std::chrono::nanoseconds time) {
   noleax::config::WindowBound bound;
   bound.time = time;
@@ -96,7 +106,11 @@ TEST_CASE("default configuration has stable values and serialization", "[config]
 
   CHECK(configuration.schema_version.value == 1U);
   CHECK_FALSE(configuration.operation.value.has_value());
+#if defined(_WIN32)
   CHECK(configuration.capture.hook_profile.value == noleax::config::HookProfile::kWindowsNative);
+#else
+  CHECK(configuration.capture.hook_profile.value == noleax::config::HookProfile::kLinuxGlibcHeap);
+#endif
   CHECK(configuration.capture.max_stack_depth.value == 64U);
   CHECK(configuration.injection.timeout.value == 10s);
   CHECK(configuration.trace.buffer_size.value == 16U * 1024U * 1024U);
@@ -108,8 +122,14 @@ TEST_CASE("default configuration has stable values and serialization", "[config]
 
   const auto fixture = std::filesystem::path{NOLEAX_TEST_SOURCE_DIR} / "tests" / "fixtures" /
                        "default-effective.toml";
-  CHECK(noleax::config::serialize_effective_config(configuration) ==
-        normalize_newlines(read_file(fixture)));
+  std::string expected = normalize_newlines(read_file(fixture));
+#if !defined(_WIN32)
+  // Platform-aware defaults: the fixture records the Windows values.
+  expected = replace_all(expected, "method = \"remote-thread\"", "method = \"ld-preload\"");
+  expected = replace_all(expected, "hook_profile = \"windows-native\"",
+                         "hook_profile = \"linux-glibc-heap\"");
+#endif
+  CHECK(noleax::config::serialize_effective_config(configuration) == expected);
 }
 
 TEST_CASE("TOML loader maps every schema field and resolves relative paths", "[config][toml]") {
@@ -464,6 +484,11 @@ TEST_CASE("operation validation checks capture, injection, and relevance rules",
   auto attach = noleax::config::make_default_configuration();
   attach.operation.value = noleax::config::Operation::kAttach;
   attach.target.pid.value = 42U;
+#if !defined(_WIN32)
+  // The Linux default injection method (ld-preload) has no attach channel; pin a
+  // schema-valid one here — platform capability is enforced at execution, not validation.
+  attach.injection.method.value = noleax::config::InjectionMethod::kThreadHijack;
+#endif
   CHECK_NOTHROW(noleax::config::validate_configuration(attach));
   attach.injection.method.value = noleax::config::InjectionMethod::kEntrypointCode;
   CHECK_THROWS_AS(noleax::config::validate_configuration(attach), noleax::config::ConfigError);

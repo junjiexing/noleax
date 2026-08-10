@@ -55,12 +55,14 @@ enum class InjectionMethod : std::uint8_t {
   kThreadHijack,
   kEntrypointCode,
   kStaticPePatch,
+  kLdPreload,
 };
 
 enum class HookProfile : std::uint8_t {
   kWindowsNtHeap,
   kWindowsVirtualMemory,
   kWindowsNative,
+  kLinuxGlibcHeap,
 };
 
 enum class TraceFullPolicy : std::uint8_t {
@@ -238,6 +240,7 @@ struct EnumTraits<InjectionMethod> {
       NamedEnumValue{std::string_view{"thread-hijack"}, InjectionMethod::kThreadHijack},
       NamedEnumValue{std::string_view{"entrypoint-code"}, InjectionMethod::kEntrypointCode},
       NamedEnumValue{std::string_view{"static-pe-patch"}, InjectionMethod::kStaticPePatch},
+      NamedEnumValue{std::string_view{"ld-preload"}, InjectionMethod::kLdPreload},
   };
 };
 
@@ -249,6 +252,7 @@ struct EnumTraits<HookProfile> {
       NamedEnumValue{std::string_view{"windows-virtual-memory"},
                      HookProfile::kWindowsVirtualMemory},
       NamedEnumValue{std::string_view{"windows-native"}, HookProfile::kWindowsNative},
+      NamedEnumValue{std::string_view{"linux-glibc-heap"}, HookProfile::kLinuxGlibcHeap},
   };
 };
 

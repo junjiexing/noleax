@@ -83,11 +83,19 @@ Configuration make_default_configuration() {
   configuration.schema_version.value = kConfigSchemaVersion;
   configuration.operation.value = std::nullopt;
 
+#if defined(_WIN32)
   configuration.injection.method.value = InjectionMethod::kRemoteThread;
+#else
+  configuration.injection.method.value = InjectionMethod::kLdPreload;
+#endif
   configuration.injection.timeout.value = 10s;
   configuration.injection.unload_on_stop.value = false;
 
+#if defined(_WIN32)
   configuration.capture.hook_profile.value = HookProfile::kWindowsNative;
+#else
+  configuration.capture.hook_profile.value = HookProfile::kLinuxGlibcHeap;
+#endif
   configuration.capture.max_stack_depth.value = 64U;
   configuration.capture.min_size.value = 0U;
   configuration.capture.live.value = false;

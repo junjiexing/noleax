@@ -1,0 +1,381 @@
+#include "noleax/controller/linux/controller.hpp"
+
+#include <fcntl.h>
+#include <sys/random.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#include <array>
+#include <atomic>
+#include <cerrno>
+#include <chrono>
+#include <cstring>
+#include <optional>
+#include <span>
+#include <string>
+#include <thread>
+#include <utility>
+#include <vector>
+
+#include "noleax/agent/linux/bootstrap.hpp"
+#include "noleax/ipc/linux/unix_socket.hpp"
+#include "noleax/version.hpp"
+
+extern char** environ;
+
+namespace noleax::controller::linux {
+namespace {
+
+using Clock = std::chrono::steady_clock;
+using noleax::ipc::MessageType;
+using namespace std::chrono_literals;
+
+[[nodiscard]] std::array<std::byte, 16U> make_session_token() {
+  std::array<std::byte, 16U> token{};
+  std::size_t filled = 0U;
+  while (filled < token.size()) {
+    const ssize_t count = ::getrandom(token.data() + filled, token.size() - filled, GRND_NONBLOCK);
+    if (count < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      throw ControllerError{"getrandom failed", static_cast<std::uint32_t>(errno)};
+    }
+    if (count == 0) {
+      // Non-blocking pool not initialized this early: fall back to time+pid mixing; the
+      // token only names the session socket and authenticates the hello on this host.
+      const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+      const auto mixed = static_cast<std::uint64_t>(now) ^
+                         (static_cast<std::uint64_t>(::getpid()) << 32U) ^
+                         (static_cast<std::uint64_t>(::getppid()) << 17U);
+      for (std::size_t index = filled; index < token.size(); ++index) {
+        token[index] = static_cast<std::byte>((mixed >> ((index % 8U) * 8U)) & 0xffU);
+      }
+      break;
+    }
+    filled += static_cast<std::size_t>(count);
+  }
+  return token;
+}
+
+[[nodiscard]] std::string hex_encode(std::span<const std::byte> bytes) {
+  constexpr char digits[] = "0123456789abcdef";
+  std::string hex;
+  hex.reserve(bytes.size() * 2U);
+  for (const std::byte value : bytes) {
+    const auto byte = static_cast<unsigned>(value);
+    hex.push_back(digits[(byte >> 4U) & 0x0fU]);
+    hex.push_back(digits[byte & 0x0fU]);
+  }
+  return hex;
+}
+
+struct ChildEnvironment {
+  std::vector<std::string> storage;
+  std::vector<char*> pointers;
+};
+
+// Builds the child's environment: current environ minus the variables we override, plus
+// the LD_PRELOAD/bootstrap set. All allocation happens here, before fork.
+[[nodiscard]] ChildEnvironment make_child_environment(const std::filesystem::path& agent_path,
+                                                      std::string_view socket_env_name,
+                                                      std::string_view token_hex,
+                                                      std::uint32_t controller_pid,
+                                                      std::uint32_t timeout_ms) {
+  ChildEnvironment environment;
+  environment.storage.emplace_back("LD_PRELOAD=" + agent_path.string());
+  environment.storage.emplace_back(std::string{noleax::agent::linux::kBootstrapSocketEnv} + "=" +
+                                   std::string{socket_env_name});
+  environment.storage.emplace_back(std::string{noleax::agent::linux::kSessionTokenEnv} + "=" +
+                                   std::string{token_hex});
+  environment.storage.emplace_back(std::string{noleax::agent::linux::kControllerPidEnv} + "=" +
+                                   std::to_string(controller_pid));
+  environment.storage.emplace_back(std::string{noleax::agent::linux::kConnectTimeoutEnv} + "=" +
+                                   std::to_string(timeout_ms));
+
+  for (char** current = environ; *current != nullptr; ++current) {
+    const std::string_view entry{*current};
+    const auto separator = entry.find('=');
+    const std::string_view key = entry.substr(0U, separator);
+    if (key == "LD_PRELOAD" || key == noleax::agent::linux::kBootstrapSocketEnv ||
+        key == noleax::agent::linux::kSessionTokenEnv ||
+        key == noleax::agent::linux::kControllerPidEnv ||
+        key == noleax::agent::linux::kConnectTimeoutEnv ||
+        key == noleax::agent::linux::kAgentConfigEnv) {
+      continue;
+    }
+    environment.pointers.push_back(const_cast<char*>(entry.data()));
+  }
+  for (std::string& entry : environment.storage) {
+    environment.pointers.push_back(entry.data());
+  }
+  environment.pointers.push_back(nullptr);
+  return environment;
+}
+
+[[noreturn]] void child_exec(const LaunchOptions& launch, const ChildEnvironment& environment,
+                             int error_fd) {
+  if (!launch.working_directory.empty()) {
+    if (::chdir(launch.working_directory.c_str()) != 0) {
+      const int error = errno;
+      const ssize_t ignored = ::write(error_fd, &error, sizeof(error));
+      static_cast<void>(ignored);
+      ::_exit(127);
+    }
+  }
+  std::vector<char*> argv;
+  argv.reserve(launch.arguments.size() + 2U);
+  argv.push_back(const_cast<char*>(launch.executable.c_str()));
+  for (const std::string& argument : launch.arguments) {
+    argv.push_back(const_cast<char*>(argument.c_str()));
+  }
+  argv.push_back(nullptr);
+  ::execve(launch.executable.c_str(), argv.data(),
+           const_cast<char* const*>(environment.pointers.data()));
+  const int error = errno;
+  const ssize_t ignored = ::write(error_fd, &error, sizeof(error));
+  static_cast<void>(ignored);
+  ::_exit(127);
+}
+
+}  // namespace
+
+ControllerError::ControllerError(const std::string& message, std::uint32_t system_error)
+    : std::runtime_error{message}, system_error_{system_error} {}
+
+std::uint32_t ControllerError::system_error() const noexcept { return system_error_; }
+
+class CaptureSession::Impl {
+ public:
+  Impl(LaunchOptions launch, const CaptureOptions& capture) {
+    if (capture.agent_path.empty()) {
+      throw ControllerError{"agent path must not be empty", EINVAL};
+    }
+    token_ = make_session_token();
+    const std::string socket_name = noleax::ipc::linux::make_socket_name(token_);
+    server_.emplace(socket_name);
+
+    int error_pipe[2] = {-1, -1};
+    if (::pipe2(error_pipe, O_CLOEXEC) != 0) {
+      throw ControllerError{"pipe2 failed", static_cast<std::uint32_t>(errno)};
+    }
+
+    ChildEnvironment environment =
+        make_child_environment(capture.agent_path, std::string_view{socket_name}.substr(1U),
+                               hex_encode(token_), static_cast<std::uint32_t>(::getpid()),
+                               static_cast<std::uint32_t>(capture.timeout.count()));
+    const pid_t child = ::fork();
+    if (child < 0) {
+      ::close(error_pipe[0]);
+      ::close(error_pipe[1]);
+      throw ControllerError{"fork failed", static_cast<std::uint32_t>(errno)};
+    }
+    if (child == 0) {
+      ::close(error_pipe[0]);
+      child_exec(launch, environment, error_pipe[1]);
+    }
+    ::close(error_pipe[1]);
+    process_id_ = static_cast<std::uint32_t>(child);
+
+    std::optional<int> exec_error;
+    for (;;) {
+      int value = 0;
+      const ssize_t count = ::read(error_pipe[0], &value, sizeof(value));
+      if (count == static_cast<ssize_t>(sizeof(value))) {
+        exec_error = value;
+        break;
+      }
+      if (count == 0) {
+        break;  // write end closed on exec: the target is running
+      }
+      if (count < 0 && errno != EINTR) {
+        ::close(error_pipe[0]);
+        throw ControllerError{"failed to read the child exec status",
+                              static_cast<std::uint32_t>(errno)};
+      }
+    }
+    ::close(error_pipe[0]);
+    if (exec_error.has_value()) {
+      throw ControllerError{
+          "cannot execute '" + launch.executable.string() + "': " + std::strerror(*exec_error),
+          static_cast<std::uint32_t>(*exec_error)};
+    }
+
+    try {
+      channel_.emplace(server_->accept(capture.timeout));
+      server_.reset();  // single-shot session: no further accepts
+
+      noleax::ipc::Message hello = channel_->receive(capture.timeout);
+      if (hello.type != MessageType::kAgentHello) {
+        throw ControllerError{"agent did not start the session with a hello"};
+      }
+      const auto hello_payload = noleax::ipc::decode_agent_hello(hello.payload);
+      if (hello_payload.session_token != token_ ||
+          hello_payload.agent_abi_version != noleax::kAgentAbiVersion ||
+          hello_payload.pointer_width != sizeof(void*) ||
+          hello_payload.architecture != noleax::ipc::Architecture::kX64) {
+        throw ControllerError{"agent hello failed validation"};
+      }
+      agent_thread_id_ = hello_payload.worker_thread_id;
+      if (channel_->client_process_id() != process_id_) {
+        throw ControllerError{"agent connection did not come from the launched target"};
+      }
+
+      noleax::ipc::Message start;
+      start.type = MessageType::kStartCapture;
+      start.request_id = hello.request_id;
+      start.payload = noleax::ipc::encode_start_capture(capture.start);
+      channel_->send(start, capture.timeout);
+      noleax::ipc::Message ready = channel_->receive(capture.timeout);
+      if (ready.type == MessageType::kError) {
+        const auto error = noleax::ipc::decode_error_response(ready.payload);
+        throw ControllerError{"agent failed to start the capture: " + error.message,
+                              error.error_code};
+      }
+      if (ready.type != MessageType::kCaptureReady) {
+        throw ControllerError{"agent did not signal capture ready"};
+      }
+    } catch (const noleax::ipc::linux::SocketError& error) {
+      throw ControllerError{std::string{"agent session failed: "} + error.what(),
+                            error.system_error()};
+    } catch (const noleax::ipc::ProtocolError& error) {
+      throw ControllerError{std::string{"agent protocol violation: "} + error.what()};
+    }
+  }
+
+  ~Impl() {
+    if (process_id_ != 0U) {
+      int status = 0;
+      static_cast<void>(::waitpid(static_cast<pid_t>(process_id_), &status, WNOHANG));
+    }
+  }
+
+  [[nodiscard]] noleax::ipc::CaptureStatus query_status() {
+    noleax::ipc::Message request;
+    request.type = MessageType::kQueryStatus;
+    request.request_id = ++next_request_id_;
+    channel_->send(request, 5s);
+    const noleax::ipc::Message response = channel_->receive(5s);
+    if (response.type != MessageType::kCaptureStatus) {
+      throw ControllerError{"agent did not answer the status query"};
+    }
+    return noleax::ipc::decode_capture_status(response.payload);
+  }
+
+  [[nodiscard]] noleax::ipc::CaptureStatus stop() {
+    if (stopped_) {
+      return last_status_;
+    }
+    noleax::ipc::Message request;
+    request.request_id = ++next_request_id_;
+
+    request.type = MessageType::kStopCapture;
+    channel_->send(request, 30s);
+    noleax::ipc::Message response = channel_->receive(30s);
+    if (response.type != MessageType::kCaptureDrained) {
+      throw ControllerError{"agent did not drain the capture"};
+    }
+    last_status_ = noleax::ipc::decode_capture_status(response.payload);
+
+    request.request_id = ++next_request_id_;
+    request.type = MessageType::kFinalizeHooks;
+    channel_->send(request, 30s);
+    response = channel_->receive(30s);
+    if (response.type != MessageType::kCaptureFinalized) {
+      throw ControllerError{"agent did not finalize the capture"};
+    }
+    last_status_ = noleax::ipc::decode_capture_status(response.payload);
+    stopped_ = true;
+    return last_status_;
+  }
+
+  [[nodiscard]] bool wait_for_target(std::chrono::milliseconds timeout) {
+    const auto deadline = Clock::now() + timeout;
+    for (;;) {
+      int status = 0;
+      const pid_t result = ::waitpid(static_cast<pid_t>(process_id_), &status, WNOHANG);
+      if (result == static_cast<pid_t>(process_id_)) {
+        target_exited_ = true;
+        if (WIFEXITED(status)) {
+          target_exit_code_ = static_cast<std::uint32_t>(WEXITSTATUS(status));
+        } else if (WIFSIGNALED(status)) {
+          target_exit_code_ = 128U + static_cast<std::uint32_t>(WTERMSIG(status));
+        }
+        return true;
+      }
+      if (result < 0) {
+        if (errno == EINTR) {
+          continue;
+        }
+        throw ControllerError{"waitpid failed", static_cast<std::uint32_t>(errno)};
+      }
+      if (Clock::now() >= deadline) {
+        return false;
+      }
+      std::this_thread::sleep_for(1ms);
+    }
+  }
+
+  [[nodiscard]] std::uint32_t target_exit_code() const {
+    if (!target_exited_) {
+      throw ControllerError{"target has not exited"};
+    }
+    return target_exit_code_;
+  }
+
+  [[nodiscard]] std::uint32_t process_id() const noexcept { return process_id_; }
+  [[nodiscard]] std::uint32_t agent_thread_id() const noexcept { return agent_thread_id_; }
+  [[nodiscard]] bool stopped() const noexcept { return stopped_; }
+  [[nodiscard]] bool target_exited() const noexcept { return target_exited_; }
+
+ private:
+  std::array<std::byte, 16U> token_{};
+  std::optional<noleax::ipc::linux::UnixSocketServer> server_;
+  std::optional<noleax::ipc::linux::SocketChannel> channel_;
+  std::uint32_t process_id_{0U};
+  std::uint32_t agent_thread_id_{0U};
+  std::uint64_t next_request_id_{1U};
+  bool stopped_{false};
+  bool target_exited_{false};
+  std::uint32_t target_exit_code_{0U};
+  noleax::ipc::CaptureStatus last_status_{};
+};
+
+CaptureSession::CaptureSession(std::unique_ptr<Impl> implementation) noexcept
+    : implementation_{std::move(implementation)} {}
+
+CaptureSession::~CaptureSession() = default;
+
+CaptureSession::CaptureSession(CaptureSession&& other) noexcept = default;
+
+CaptureSession& CaptureSession::operator=(CaptureSession&& other) noexcept = default;
+
+CaptureSession CaptureSession::launch(const LaunchOptions& launch, const CaptureOptions& capture) {
+  return CaptureSession{std::make_unique<Impl>(launch, capture)};
+}
+
+noleax::ipc::CaptureStatus CaptureSession::query_status() {
+  return implementation_->query_status();
+}
+
+noleax::ipc::CaptureStatus CaptureSession::stop() { return implementation_->stop(); }
+
+bool CaptureSession::wait_for_target(std::chrono::milliseconds timeout) {
+  return implementation_->wait_for_target(timeout);
+}
+
+std::uint32_t CaptureSession::target_exit_code() const {
+  return implementation_->target_exit_code();
+}
+
+std::uint32_t CaptureSession::process_id() const noexcept { return implementation_->process_id(); }
+
+std::uint32_t CaptureSession::agent_thread_id() const noexcept {
+  return implementation_->agent_thread_id();
+}
+
+bool CaptureSession::stopped() const noexcept { return implementation_->stopped(); }
+
+bool CaptureSession::target_exited() const noexcept { return implementation_->target_exited(); }
+
+}  // namespace noleax::controller::linux

@@ -373,7 +373,8 @@ void validate_run(const Configuration& configuration, const Configuration& defau
   if (configuration.injection.method.value != InjectionMethod::kRemoteThread &&
       configuration.injection.method.value != InjectionMethod::kThreadHijack &&
       configuration.injection.method.value != InjectionMethod::kEntrypointCode &&
-      configuration.injection.method.value != InjectionMethod::kStaticPePatch) {
+      configuration.injection.method.value != InjectionMethod::kStaticPePatch &&
+      configuration.injection.method.value != InjectionMethod::kLdPreload) {
     fail("injection.method", "is not supported by run");
   }
   require_default(configuration.injection.unload_on_stop, defaults.injection.unload_on_stop,

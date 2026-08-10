@@ -1,6 +1,7 @@
 #include "operations.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -17,6 +18,13 @@
 #include <string_view>
 #include <thread>
 #include <utility>
+
+#if !defined(_WIN32)
+#include <unistd.h>
+
+#include <csignal>
+#include <ctime>
+#endif
 
 #include "noleax/analyzer/console.hpp"
 #include "noleax/analyzer/csv.hpp"
@@ -42,6 +50,8 @@
 #include "noleax/controller/windows/controller.hpp"
 #include "noleax/controller/windows/diagnostics.hpp"
 #include "noleax/controller/windows/pe_patch.hpp"
+#else
+#include "noleax/controller/linux/controller.hpp"
 #endif
 
 namespace noleax::app {
@@ -1114,8 +1124,222 @@ void remove_quietly(const std::filesystem::path& path) noexcept {
 
 #else
 
-[[nodiscard]] int execute_capture(const noleax::config::Configuration&) {
-  unsupported("run and attach are not implemented on this platform");
+std::atomic<bool> stop_requested{false};
+
+void sigint_handler(int /*signal*/) { stop_requested.store(true, std::memory_order_relaxed); }
+
+class InterruptHandlerGuard final {
+ public:
+  InterruptHandlerGuard() {
+    stop_requested.store(false, std::memory_order_relaxed);
+    struct sigaction action {};
+    action.sa_handler = sigint_handler;
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = 0;  // no SA_RESTART: the wait loop polls, EINTR is fine
+    if (::sigaction(SIGINT, &action, &previous_) != 0) {
+      throw ApplicationError{1, "cannot install the SIGINT handler"};
+    }
+    installed_ = true;
+  }
+
+  ~InterruptHandlerGuard() {
+    if (installed_) {
+      static_cast<void>(::sigaction(SIGINT, &previous_, nullptr));
+    }
+  }
+
+  InterruptHandlerGuard(const InterruptHandlerGuard&) = delete;
+  InterruptHandlerGuard& operator=(const InterruptHandlerGuard&) = delete;
+
+ private:
+  struct sigaction previous_ {};
+  bool installed_{false};
+};
+
+[[nodiscard]] std::filesystem::path executable_path() {
+  std::array<char, 4096U> buffer{};
+  const ssize_t length = ::readlink("/proc/self/exe", buffer.data(), buffer.size() - 1U);
+  if (length <= 0) {
+    throw ApplicationError{1, "cannot determine the noleax executable path"};
+  }
+  return std::filesystem::path{std::string{buffer.data(), static_cast<std::size_t>(length)}};
+}
+
+[[nodiscard]] std::string timestamp_text() {
+  const std::time_t now = std::time(nullptr);
+  std::tm broken_down{};
+  static_cast<void>(::localtime_r(&now, &broken_down));
+  std::ostringstream output;
+  output << std::setfill('0') << std::setw(4) << broken_down.tm_year + 1900 << std::setw(2)
+         << broken_down.tm_mon + 1 << std::setw(2) << broken_down.tm_mday << '-' << std::setw(2)
+         << broken_down.tm_hour << std::setw(2) << broken_down.tm_min << std::setw(2)
+         << broken_down.tm_sec;
+  return output.str();
+}
+
+[[nodiscard]] std::filesystem::path default_trace_path(
+    const noleax::config::Configuration& configuration) {
+  std::string prefix{"noleax"};
+  if (configuration.target.path.value.has_value()) {
+    prefix = noleax::config::path_to_utf8(configuration.target.path.value->stem());
+  } else if (configuration.target.pid.value.has_value()) {
+    prefix.append("-");
+    prefix.append(std::to_string(*configuration.target.pid.value));
+  }
+  return std::filesystem::current_path() / (prefix + "-" + timestamp_text() + ".nlx");
+}
+
+[[nodiscard]] noleax::ipc::HookProfile linux_hook_profile(noleax::config::HookProfile profile) {
+  switch (profile) {
+    case noleax::config::HookProfile::kLinuxGlibcHeap:
+      return noleax::ipc::HookProfile::kLinuxGlibcHeap;
+    default:
+      throw ApplicationError{5, "hook profile '" +
+                                    std::string{noleax::config::enum_value_name(profile)} +
+                                    "' is not supported on Linux"};
+  }
+}
+
+[[nodiscard]] noleax::ipc::CompressionCodec linux_compression_codec(
+    noleax::config::Compression compression) {
+  switch (compression) {
+    case noleax::config::Compression::kNone:
+      return noleax::ipc::CompressionCodec::kNone;
+    case noleax::config::Compression::kLz4:
+      return noleax::ipc::CompressionCodec::kLz4;
+    case noleax::config::Compression::kZstd:
+      return noleax::ipc::CompressionCodec::kZstd;
+  }
+  throw ApplicationError{5, "compression codec is not supported by the Linux agent"};
+}
+
+[[nodiscard]] noleax::controller::linux::CaptureOptions linux_capture_options(
+    const noleax::config::Configuration& configuration, const std::filesystem::path& trace_path) {
+  noleax::controller::linux::CaptureOptions capture;
+  capture.agent_path = configuration.injection.agent_path.value.value_or(
+      executable_path().parent_path() / "noleax-agent.so");
+  const auto nanoseconds = configuration.injection.timeout.value;
+  auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(nanoseconds);
+  if (milliseconds < nanoseconds) {
+    milliseconds += 1ms;
+  }
+  capture.timeout = milliseconds;
+  capture.start.capture_kind = noleax::ipc::CaptureKind::kLaunch;
+  capture.start.hook_profile = linux_hook_profile(configuration.capture.hook_profile.value);
+  capture.start.compression = linux_compression_codec(configuration.trace.compression.value);
+  capture.start.maximum_stack_depth = configuration.capture.max_stack_depth.value;
+  capture.start.minimum_capture_size = configuration.capture.min_size.value;
+  capture.start.buffer_size = configuration.trace.buffer_size.value;
+  capture.start.maximum_trace_size = configuration.trace.max_file_size.value;
+  capture.start.flush_interval_ns =
+      static_cast<std::uint64_t>(configuration.trace.flush_interval.value.count());
+  capture.start.memory_counters_interval_ns =
+      static_cast<std::uint64_t>(configuration.capture.memory_counters_interval.value.count());
+  capture.start.memory_map_interval_ns =
+      static_cast<std::uint64_t>(configuration.capture.memory_map_interval.value.count());
+  capture.start.compression_level = configuration.trace.compression_level.value;
+  const auto trace_utf8 = std::filesystem::absolute(trace_path).generic_u8string();
+  capture.start.trace_path_utf8 = std::string{trace_utf8.begin(), trace_utf8.end()};
+  capture.start.unload_on_stop = configuration.injection.unload_on_stop.value;
+  return capture;
+}
+
+[[nodiscard]] int print_capture_summary(const std::filesystem::path& trace_path, std::uint32_t pid,
+                                        bool target_exited,
+                                        std::optional<std::uint32_t> target_exit_code,
+                                        bool detached) {
+  if (detached) {
+    std::cout << "capture detached: trace=" << noleax::config::path_to_utf8(trace_path)
+              << " pid=" << pid
+              << " note=controller stopped waiting; the agent continues until the target "
+                 "exits\n";
+    return 2;
+  }
+  std::ifstream input{trace_path, std::ios::binary};
+  if (!input) {
+    std::cout << "capture produced no trace: trace=" << noleax::config::path_to_utf8(trace_path)
+              << " pid=" << pid << " note=the agent may have failed to start\n";
+    return 2;
+  }
+  const auto analyzed = noleax::analyzer::analyze_event_stream(input);
+  std::cout << "capture finalized: trace=" << noleax::config::path_to_utf8(trace_path)
+            << " pid=" << pid;
+  if (analyzed.statistics.has_value()) {
+    const auto& statistics = *analyzed.statistics;
+    std::cout << " observed=" << statistics.observed_calls << " written="
+              << statistics.observed_calls - statistics.filtered_before_queue -
+                     statistics.dropped_events
+              << " filtered=" << statistics.filtered_before_queue
+              << " dropped=" << statistics.dropped_events
+              << " bytes=" << statistics.written_stored_bytes;
+  }
+  if (target_exited && target_exit_code.has_value()) {
+    std::cout << " target_exit_code=" << *target_exit_code;
+  } else if (!target_exited) {
+    std::cout << " target_state=running";
+  }
+  std::cout << '\n';
+  return analyzed.completeness.recommended_exit_code();
+}
+
+[[nodiscard]] int execute_capture(const noleax::config::Configuration& configuration) {
+  if (*configuration.operation.value != noleax::config::Operation::kRun) {
+    throw ApplicationError{5, "attach is not implemented on Linux yet (port milestone M6)"};
+  }
+  if (configuration.injection.method.value != noleax::config::InjectionMethod::kLdPreload) {
+    throw ApplicationError{
+        5, "injection method '" +
+               std::string{noleax::config::enum_value_name(configuration.injection.method.value)} +
+               "' is not supported on Linux; use ld-preload"};
+  }
+
+  const std::filesystem::path trace_path =
+      configuration.trace.path.value.value_or(default_trace_path(configuration));
+  ensure_output_directory(trace_path);
+  const auto capture = linux_capture_options(configuration, trace_path);
+  InterruptHandlerGuard interrupts;
+  try {
+    noleax::controller::linux::LaunchOptions launch;
+    launch.executable = *configuration.target.path.value;
+    launch.arguments = configuration.target.args.value;
+    launch.working_directory =
+        configuration.target.working_directory.value.value_or(launch.executable.parent_path());
+
+    auto session = noleax::controller::linux::CaptureSession::launch(launch, capture);
+
+    // Wait for the target exit, the capture duration, or Ctrl+C (detach), whichever
+    // comes first. On duration the controller drives the stop/finalize handshake; the
+    // target then keeps running with hooks reverted.
+    bool target_exited = false;
+    bool detached = false;
+    const auto deadline =
+        configuration.capture.duration.value.has_value()
+            ? std::chrono::steady_clock::now() + *configuration.capture.duration.value
+            : std::chrono::steady_clock::time_point::max();
+    for (;;) {
+      if (session.wait_for_target(50ms)) {
+        target_exited = true;
+        break;
+      }
+      if (stop_requested.load(std::memory_order_relaxed)) {
+        detached = true;
+        break;
+      }
+      if (std::chrono::steady_clock::now() >= deadline) {
+        static_cast<void>(session.stop());
+        break;
+      }
+    }
+
+    return print_capture_summary(
+        trace_path, session.process_id(), target_exited,
+        target_exited ? std::optional<std::uint32_t>{session.target_exit_code()} : std::nullopt,
+        detached);
+  } catch (const ApplicationError&) {
+    throw;
+  } catch (const std::exception& error) {
+    throw ApplicationError{3, std::string{"capture failed: "} + error.what()};
+  }
 }
 
 [[nodiscard]] int execute_doctor(const noleax::config::Configuration&) {
