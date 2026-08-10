@@ -9,9 +9,9 @@
 namespace noleax::agent::linux {
 
 enum class LinuxHeapEventOperation : std::uint8_t {
-  kAllocate,   // malloc/calloc/aligned family: result_address carries the new pointer
-  kReallocate, // realloc/reallocarray: address carries the input pointer
-  kFree,       // free: address carries the freed pointer
+  kAllocate,    // malloc/calloc/aligned family: result_address carries the new pointer
+  kReallocate,  // realloc/reallocarray: address carries the input pointer
+  kFree,        // free: address carries the freed pointer
 };
 
 enum class LinuxHeapEventStatus : std::uint8_t {
@@ -52,6 +52,6 @@ using LinuxHeapEventQueue = BoundedMpscQueue<LinuxHeapEvent>;
 
 static_assert(std::is_trivially_copyable_v<LinuxHeapEvent>);
 static_assert(std::is_trivially_destructible_v<LinuxHeapEvent>);
-static_assert(sizeof(LinuxHeapEvent) == 608U);
+static_assert(sizeof(LinuxHeapEvent) == 600U);
 
 }  // namespace noleax::agent::linux

@@ -27,6 +27,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_sources(noleax-hook-backend PRIVATE
     linux/module_tracker.cpp
     linux/stack_capture.cpp
+    linux/trace_writer.cpp
+    # Platform-neutral code under the windows path; hoisting to the shared namespace is
+    # deferred to a Windows-CI-verified change.
+    windows/stack_dictionary.cpp
   )
 endif()
 

@@ -207,3 +207,20 @@ void NormalizedStackDictionary::reset_segment() noexcept {
 }
 
 }  // namespace noleax::agent::windows
+
+#if !defined(_WIN32)
+namespace noleax::agent::windows {
+
+// Link shim for non-Windows builds: stack_capture.cpp (which defines this on Windows)
+// is Windows-only, while this dictionary is platform-neutral. The body mirrors the
+// Windows definition exactly; the POD layout is identical on both platforms. Hoisting
+// the dictionary to the shared namespace is deferred to a Windows-CI-verified change.
+bool stack_capture_succeeded(const CapturedStack& stack) noexcept {
+  return (stack.status == StackCaptureStatus::kCaptured ||
+          stack.status == StackCaptureStatus::kTruncated) &&
+         stack.frame_count != 0U && stack.frame_count <= stack.requested_depth &&
+         stack.requested_depth <= kMaximumCapturedStackDepth;
+}
+
+}  // namespace noleax::agent::windows
+#endif

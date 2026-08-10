@@ -113,6 +113,24 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_compile_definitions(noleax-linux-stack-capture-probe PRIVATE
     NOLEAX_HOOK_FIXTURE_PATH="$<TARGET_FILE:noleax-hook-backend-fixture>"
   )
+  add_executable(noleax-linux-trace-writer-probe
+    integration/linux_trace_writer_probe.cpp
+  )
+  target_link_libraries(noleax-linux-trace-writer-probe PRIVATE
+    noleax::analyzer
+    noleax::hook-backend
+    noleax::trace
+    noleax::core
+    ${CMAKE_DL_LIBS}
+  )
+  noleax_set_project_warnings(noleax-linux-trace-writer-probe)
+  add_test(NAME agent.linux-trace-writer-probe
+    COMMAND noleax-linux-trace-writer-probe
+  )
+  set_tests_properties(agent.linux-trace-writer-probe PROPERTIES
+    TIMEOUT 60
+  )
+
   add_executable(noleax-linux-agent-bootstrap-test
     integration/linux_agent_bootstrap_test.cpp
   )
