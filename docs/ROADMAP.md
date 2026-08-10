@@ -16,4 +16,5 @@ Noleax 当前版本的已知边界。这里只列**未实现**的能力；已实
 ## 其他平台
 
 源码布局与工具链为跨平台预留（配置、analyzer、trace 格式均与平台解耦），但 hook、注入与
-控制器只有 Windows x64 实现。Linux/macOS 没有支持时间表。
+控制器只有 Windows x64 实现。Linux x86_64/glibc 端口的开发计划见
+[LINUX_PORT_PLAN.md](LINUX_PORT_PLAN.md)（待审核，未开始实施）；macOS 没有支持时间表。
