@@ -1,8 +1,12 @@
 #include "noleax/agent/hook_backend.hpp"
 
+#if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
 
 #include <array>
 #include <atomic>
@@ -17,7 +21,13 @@
 
 namespace {
 
+#if defined(_WIN32)
 using FixtureFunction = std::uint64_t(WINAPI*)(std::uint64_t, std::uint64_t) noexcept;
+#define NOLEAX_TEST_NOINLINE __declspec(noinline)
+#else
+using FixtureFunction = std::uint64_t (*)(std::uint64_t, std::uint64_t) noexcept;
+#define NOLEAX_TEST_NOINLINE __attribute__((noinline))
+#endif
 
 constexpr std::uint64_t kTransformMask = 0xa5a55a5af0f00f0fULL;
 constexpr std::uint64_t kCombineMask = 0x5a5aa5a50f0ff0f0ULL;
@@ -29,20 +39,20 @@ std::atomic<std::uint64_t> combine_calls{0U};
 noleax::agent::OriginalTrampolineSlot published_original{nullptr};
 std::atomic<bool> entered_without_published_original{false};
 
-__declspec(noinline) std::uint64_t WINAPI transform_replacement(std::uint64_t left,
-                                                                std::uint64_t right) noexcept {
+NOLEAX_TEST_NOINLINE std::uint64_t transform_replacement(std::uint64_t left,
+                                                         std::uint64_t right) noexcept {
   transform_calls.fetch_add(1U, std::memory_order_relaxed);
   return transform_original(left, right) ^ kTransformMask;
 }
 
-__declspec(noinline) std::uint64_t WINAPI combine_replacement(std::uint64_t left,
-                                                              std::uint64_t right) noexcept {
+NOLEAX_TEST_NOINLINE std::uint64_t combine_replacement(std::uint64_t left,
+                                                       std::uint64_t right) noexcept {
   combine_calls.fetch_add(1U, std::memory_order_relaxed);
   return combine_original(left, right) ^ kCombineMask;
 }
 
-__declspec(noinline) std::uint64_t WINAPI
-published_original_replacement(std::uint64_t left, std::uint64_t right) noexcept {
+NOLEAX_TEST_NOINLINE std::uint64_t published_original_replacement(std::uint64_t left,
+                                                                  std::uint64_t right) noexcept {
   void* const original_address = published_original.load(std::memory_order_acquire);
   if (original_address == nullptr) {
     entered_without_published_original.store(true, std::memory_order_relaxed);
@@ -58,6 +68,7 @@ published_original_replacement(std::uint64_t left, std::uint64_t right) noexcept
 
 class LoadedHookFixture {
  public:
+#if defined(_WIN32)
   LoadedHookFixture()
       : module_{LoadLibraryW(std::filesystem::path{NOLEAX_HOOK_FIXTURE_PATH}.c_str())} {
     if (module_ == nullptr) {
@@ -71,9 +82,6 @@ class LoadedHookFixture {
     }
   }
 
-  LoadedHookFixture(const LoadedHookFixture&) = delete;
-  LoadedHookFixture& operator=(const LoadedHookFixture&) = delete;
-
   [[nodiscard]] FixtureFunction function(const char* name) const {
     const FARPROC address = GetProcAddress(module_, name);
     if (address == nullptr) {
@@ -84,6 +92,34 @@ class LoadedHookFixture {
 
  private:
   HMODULE module_{nullptr};
+#else
+  LoadedHookFixture() : module_{dlopen(NOLEAX_HOOK_FIXTURE_PATH, RTLD_NOW | RTLD_LOCAL)} {
+    if (module_ == nullptr) {
+      throw std::runtime_error{"cannot load the hook backend fixture"};
+    }
+  }
+
+  ~LoadedHookFixture() {
+    if (module_ != nullptr) {
+      dlclose(module_);
+    }
+  }
+
+  [[nodiscard]] FixtureFunction function(const char* name) const {
+    void* const address = dlsym(module_, name);
+    if (address == nullptr) {
+      throw std::runtime_error{"hook backend fixture export is missing"};
+    }
+    return reinterpret_cast<FixtureFunction>(address);
+  }
+
+ private:
+  void* module_{nullptr};
+#endif
+
+ public:
+  LoadedHookFixture(const LoadedHookFixture&) = delete;
+  LoadedHookFixture& operator=(const LoadedHookFixture&) = delete;
 };
 
 class OriginalReset {

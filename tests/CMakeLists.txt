@@ -16,6 +16,7 @@ add_executable(noleax-unit-tests
   unit/filter_test.cpp
   unit/generation_tracker_test.cpp
   unit/json_test.cpp
+  unit/hook_backend_test.cpp
   unit/ipc_protocol_test.cpp
   unit/memory_analysis_test.cpp
   unit/outstanding_test.cpp
@@ -63,6 +64,28 @@ noleax_set_project_warnings(noleax-unit-tests)
 include(Catch)
 catch_discover_tests(noleax-unit-tests)
 
+# Shared fixture module for the hook backend lifecycle tests; loaded with LoadLibrary on
+# Windows and dlopen elsewhere.
+add_library(noleax-hook-backend-fixture SHARED
+  integration/hook_backend_fixture.cpp
+)
+noleax_set_project_warnings(noleax-hook-backend-fixture)
+if(MSVC)
+  target_link_options(noleax-hook-backend-fixture PRIVATE /OPT:NOICF)
+endif()
+
+add_dependencies(noleax-unit-tests noleax-hook-backend-fixture)
+target_compile_definitions(noleax-unit-tests PRIVATE
+  NOLEAX_HOOK_FIXTURE_PATH="$<TARGET_FILE:noleax-hook-backend-fixture>"
+)
+
+if(NOT WIN32)
+  target_sources(noleax-unit-tests PRIVATE
+    unit/hook_backend_posix_test.cpp
+  )
+  target_link_libraries(noleax-unit-tests PRIVATE ${CMAKE_DL_LIBS})
+endif()
+
 add_test(NAME cli.version COMMAND noleax --version)
 set_tests_properties(cli.version PROPERTIES
   PASS_REGULAR_EXPRESSION "0\\.4\\.1-dev")
@@ -88,7 +111,6 @@ if(WIN32)
     unit/entrypoint_injector_test.cpp
     unit/ipc_named_pipe_test.cpp
     unit/hook_guard_test.cpp
-    unit/hook_backend_test.cpp
     unit/patch_rendezvous_test.cpp
     unit/pe_patch_test.cpp
     unit/stack_capture_test.cpp
@@ -540,19 +562,6 @@ if(WIN32)
       "^status=ok rollback=1 module-unloaded=1 main-suspended=1 attempts=8 handles-stable=1"
     RUN_SERIAL TRUE
     TIMEOUT 30
-  )
-
-  add_library(noleax-hook-backend-fixture SHARED
-    integration/hook_backend_fixture.cpp
-  )
-  noleax_set_project_warnings(noleax-hook-backend-fixture)
-  if(MSVC)
-    target_link_options(noleax-hook-backend-fixture PRIVATE /OPT:NOICF)
-  endif()
-
-  add_dependencies(noleax-unit-tests noleax-hook-backend-fixture)
-  target_compile_definitions(noleax-unit-tests PRIVATE
-    NOLEAX_HOOK_FIXTURE_PATH="$<TARGET_FILE:noleax-hook-backend-fixture>"
   )
 
   add_library(noleax-rtl-allocate-heap-hook-harness SHARED

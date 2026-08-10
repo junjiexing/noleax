@@ -68124,6 +68124,7 @@ struct _HooxX86FunctionContextData
   hx_uint redirect_code_size;
   hx_pointer push_to_shadow_stack;
   hx_uint available_space;
+  hx_boolean near_redirect;
 };
 
 HX_STATIC_ASSERT (sizeof (HooxX86FunctionContextData)
@@ -68255,14 +68256,41 @@ hoox_interceptor_backend_prepare_trampoline (HooxInterceptorBackend * self,
 
   if (!force && !hoox_x86_relocator_can_relocate (ctx->function_address,
         data->redirect_code_size, scenario, NULL))
-    goto not_enough_space;
+    {
+      /*
+       * A fast redirect jumps straight to the replacement function, so the
+       * default plan reserves the worst-case 16-byte far jump. Targets with a
+       * shorter clean prologue (glibc syscall stubs, jump-only aliases, …)
+       * can still be hooked when a slice within near-jump range is available:
+       * the 5-byte near jump then lands on a slice-local far jump to the
+       * replacement.
+       */
+      if (ctx->type == HOOX_INTERCEPTOR_TYPE_FAST &&
+          hoox_x86_relocator_can_relocate (ctx->function_address,
+            HOOX_INTERCEPTOR_NEAR_REDIRECT_SIZE, scenario, NULL))
+        {
+          hoox_code_slice_unref (ctx->trampoline_slice);
+          ctx->trampoline_slice = hoox_code_allocator_try_alloc_slice_near (
+              self->allocator, &spec, default_alignment);
+          if (ctx->trampoline_slice != NULL)
+            {
+              data->redirect_code_size = HOOX_INTERCEPTOR_NEAR_REDIRECT_SIZE;
+              data->near_redirect = TRUE;
+              return TRUE;
+            }
+        }
+      goto not_enough_space;
+    }
 
   return TRUE;
 
 not_enough_space:
   {
-    hoox_code_slice_unref (ctx->trampoline_slice);
-    ctx->trampoline_slice = NULL;
+    if (ctx->trampoline_slice != NULL)
+      {
+        hoox_code_slice_unref (ctx->trampoline_slice);
+        ctx->trampoline_slice = NULL;
+      }
     return FALSE;
   }
 }
@@ -68329,6 +68357,18 @@ _hoox_interceptor_backend_create_trampoline (HooxInterceptorBackend * self,
     hoox_x86_writer_flush (cw);
     hx_assert (hoox_x86_writer_offset (cw) <= ctx->trampoline_slice->size);
   }
+
+  if (ctx->type == HOOX_INTERCEPTOR_TYPE_FAST && data->near_redirect)
+    {
+      /*
+       * Reserve the slice head for the far jump to the replacement. The jump
+       * itself is emitted at activation time: replacement_function is only
+       * assigned after the trampoline has been created.
+       */
+      hoox_x86_writer_put_nop_padding (cw, HOOX_INTERCEPTOR_FULL_REDIRECT_SIZE);
+      hoox_x86_writer_flush (cw);
+      hx_assert (hoox_x86_writer_offset (cw) <= ctx->trampoline_slice->size);
+    }
 
   ctx->on_invoke_trampoline =
       (hx_uint8 *) ctx->trampoline_slice->pc + hoox_x86_writer_offset (cw);
@@ -68433,8 +68473,33 @@ _hoox_interceptor_backend_activate_trampoline (HooxInterceptorBackend * self,
   }
   else if (ctx->type == HOOX_INTERCEPTOR_TYPE_FAST)
   {
-    hoox_x86_writer_put_jmp_address (cw,
-        HOOX_ADDRESS (ctx->replacement_function));
+    if (data->near_redirect)
+      {
+        /*
+         * Bind the reserved slice head to the replacement now that it is
+         * known, then point the target's near redirect at the slice.
+         * Code slices are writable through their data alias, so no page
+         * protection dance is needed here.
+         */
+        HooxX86Writer dw;
+
+        hoox_x86_writer_init (&dw, ctx->trampoline_slice->data);
+        dw.pc = HOOX_ADDRESS (ctx->trampoline_slice->pc);
+        hoox_x86_writer_put_jmp_address (&dw,
+            HOOX_ADDRESS (ctx->replacement_function));
+        hoox_x86_writer_flush (&dw);
+        hx_assert (hoox_x86_writer_offset (&dw) <=
+            HOOX_INTERCEPTOR_FULL_REDIRECT_SIZE);
+        hoox_x86_writer_clear (&dw);
+
+        hoox_x86_writer_put_jmp_address (cw,
+            HOOX_ADDRESS (ctx->trampoline_slice->pc));
+      }
+    else
+      {
+        hoox_x86_writer_put_jmp_address (cw,
+            HOOX_ADDRESS (ctx->replacement_function));
+      }
   }
   else
   {
