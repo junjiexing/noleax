@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <utility>
 
+#include "noleax/agent/linux/hook_registry.hpp"
 #include "noleax/agent/windows/hook_registry.hpp"
 #include "noleax/analyzer/event_stream.hpp"
 #include "noleax/analyzer/filter.hpp"
@@ -127,6 +128,16 @@ class TraceMetadata::Impl final {
     EventMetadata result;
     if (file_header_.platform == noleax::trace::Platform::kWindows) {
       if (const auto* api = noleax::agent::windows::find_windows_hook(event.header.api_id);
+          api != nullptr) {
+        result.api_name = std::string{api->canonical_name};
+        result.api_module = std::string{api->module_name};
+      } else if (const auto custom = custom_hooks_.find(event.header.api_id);
+                 custom != custom_hooks_.end()) {
+        result.api_name = custom->second.label;
+        result.api_module = custom->second.module_name;
+      }
+    } else if (file_header_.platform == noleax::trace::Platform::kLinux) {
+      if (const auto* api = noleax::agent::linux::find_linux_hook(event.header.api_id);
           api != nullptr) {
         result.api_name = std::string{api->canonical_name};
         result.api_module = std::string{api->module_name};
