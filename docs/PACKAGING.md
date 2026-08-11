@@ -97,3 +97,19 @@ ci workflow 在 `windows-x64-release` job 的构建与测试全部通过后执�
 
 包内含 `bin/`（noleax.exe 与 noleax-agent.dll）、`LICENSE`、第三方声明与 `licenses/` 原始版权
 文本，布局与本地 `cpack` 产物一致。
+
+## Linux 包
+
+Linux 版以 TGZ 打包：`noleax-<version>-linux-x86_64.tar.gz` + `.sha256`，布局为
+`bin/noleax` 与 `bin/noleax-agent.so` 同目录（CLI 按可执行文件旁的路径解析 agent），
+另含 LICENSE、docs、examples、`licenses/` 第三方版权文本。`cpack`（默认生成器在非
+Windows 平台即 TGZ）在 `linux-x64-release` preset 构建后执行：
+
+~~~sh
+cpack --config build/linux-x64-release/CPackConfig.cmake
+~~~
+
+发布包的依赖面：静态链接 hoox/lz4/zstd/toml++/CLI11，运行时仅依赖 glibc 与 libstdc++
+（`ldd bin/noleax` 应只列系统库）；agent 为 `-ftls-model=initial-exec` 编译，LD_PRELOAD
+加载时占用少量静态 TLS。CI 的 `linux-x64` job 在 release preset 上打包并上传 artifact；
+`release` job 同时发布 Windows ZIP 与 Linux TGZ（滚动 `ci-latest` 与 `v*` 标签同规则）。

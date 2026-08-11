@@ -196,23 +196,41 @@ jobs:
           cmake --build --preset "$PRESET"
           ctest --preset "$PRESET"
 
+      - name: Package release tarball
+        if: matrix.preset == 'linux-x64-release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cpack --config build/linux-x64-release/CPackConfig.cmake
+          ls build/linux-x64-release/package/
+
+      - name: Upload release package artifact
+        if: matrix.preset == 'linux-x64-release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: noleax-linux-x64-package
+          path: build/linux-x64-release/package/*.tar.gz*
+          if-no-files-found: error
+          retention-days: 30
+
   release:
     runs-on: windows-2022
-    needs: [format, windows-x64]
+    needs: [format, windows-x64, linux-x64]
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     permissions:
       contents: write
     steps:
-      - name: Download release package
+      - name: Download release packages
         uses: actions/download-artifact@v4
         with:
-          name: noleax-windows-x64-package
+          pattern: noleax-*-package
+          merge-multiple: true
 
       - name: Publish tagged release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: "*.zip*"
+          files: "*.zip* *.tar.gz*"
 
       - name: Update rolling prerelease
         if: github.ref == 'refs/heads/main'
@@ -221,4 +239,4 @@ jobs:
           tag_name: ci-latest
           name: "Continuous build (main)"
           prerelease: true
-          files: "*.zip*"
+          files: "*.zip* *.tar.gz*"

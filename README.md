@@ -5,19 +5,23 @@ DLL 注入目标进程，hook 内存分配 API，将 alloc/realloc/free、heap l
 事件连同原始调用栈写入有界、可恢复的 trace 文件，再由内置 analyzer 离线过滤、聚合与符号化，
 用于定位内存泄漏和分析分配行为。
 
-当前支持 Windows x64（控制器与目标均为 x64）。以 MIT License 发布，发布包与滚动构建见
+当前支持 Windows x64 与 Linux x86-64/glibc（控制器与目标均为 x64）。以 MIT License 发布，发布包与滚动构建见
 GitHub Releases；尚未完成的能力见 [docs/ROADMAP.md](docs/ROADMAP.md)。
 
 ## 功能特性
 
-- 四种启动注入：`remote-thread`、`thread-hijack`、`entrypoint-code`、`static-pe-patch`，均在目标
-  入口点之前完成注入。默认 agent 直写模式：注入后 agent 自行记录并写出 trace，
+- Windows：四种启动注入 `remote-thread`、`thread-hijack`、`entrypoint-code`、`static-pe-patch`，
+  均在目标入口点之前完成注入；两种 attach 注入 `remote-thread`、`thread-hijack`。
+  Linux：启动注入 `ld-preload`（loader 在目标入口点前加载 agent），attach 注入 `ptrace`。
+  默认 agent 直写模式：注入后 agent 自行记录并写出 trace，
   无需管道编排；`--live` 可恢复管道实时会话。
-- 两种 attach 注入：`remote-thread`、`thread-hijack`，连接运行中的进程。
-- `noleax patch` 生成静态 patch 副本，配合 `static-pe-patch` 方式捕获，无需启动期远程注入；
+- `noleax patch` 生成静态 patch 副本（仅 Windows），配合 `static-pe-patch` 方式捕获，无需启动期远程注入；
   `patch --standalone` 更进一步，patched 副本可直接运行，agent 读配置自写 trace，
-  无需控制器（`docs/STATIC_PE_PATCH.md` 第 8 节）。
-- 基于 Hoox v0.1.1 的 hook profile 覆盖 Windows NT Heap 与 NT virtual memory 共九个逻辑 API。
+  无需控制器（`docs/STATIC_PE_PATCH.md` 第 8 节）。Linux 的 standalone 由
+  `LD_PRELOAD` + `NOLEAX_AGENT_CONFIG` 直接覆盖。
+- 基于 Hoox 的 hook profile 覆盖 Windows NT Heap 与 NT virtual memory 共九个逻辑 API；
+  Linux 侧覆盖 glibc malloc 族八个入口与 mmap/munmap/mremap（见
+  [docs/LINUX_HOOK_PROFILES.md](docs/LINUX_HOOK_PROFILES.md)）。
 - 有界 trace：大小上限、定期 flush、lz4/zstd 压缩、Module/Stack 字典去重，损坏时可部分恢复。
 - 定时内存快照：捕获期间按可配间隔记录进程内存计数器与全量虚拟内存 map，
   `--mode memory` 输出时间序列。
@@ -27,9 +31,9 @@ GitHub Releases；尚未完成的能力见 [docs/ROADMAP.md](docs/ROADMAP.md)。
 
 ## 系统要求
 
-- Windows 10 或 Windows 11 x64。
-- 构建需要 Visual Studio 2022（Desktop development with C++）、CMake 3.25+、Ninja、Git 和
-  vcpkg。
+- Windows 10 或 Windows 11 x64；或 Linux x86-64（glibc ≥ 2.35，建议 Ubuntu 22.04+ 同级发行版）。
+- 构建需要：Windows 为 Visual Studio 2022（Desktop development with C++）；Linux 为 GCC 13+ 或
+  Clang 17+。两者都需要 CMake 3.25+、Ninja、Git 和 vcpkg。
 
 ## 构建
 
@@ -139,7 +143,7 @@ noleax run [capture-options] [injection-options] -- target [args...]
 
 | 选项 | 默认值 | 说明 |
 |---|---|---|
-| `--inject-method METHOD` | remote-thread | remote-thread、thread-hijack、entrypoint-code、static-pe-patch |
+| `--inject-method METHOD` | Windows: remote-thread；Linux: ld-preload | Windows: remote-thread、thread-hijack、entrypoint-code、static-pe-patch；Linux: ld-preload（run） |
 | `--agent PATH` | 与 noleax 匹配的 agent | agent DLL 路径 |
 | `--inject-timeout DURATION` | 10s | 注入超时 |
 | `--trace PATH` | 按目标名与时间生成 | trace 输出路径 |
@@ -193,11 +197,14 @@ noleax patch --input C:\apps\demo.exe --output C:\apps\demo.patched.exe
 
 hook profile：
 
-| profile | API 组 |
-|---|---|
-| windows-nt-heap | Rtl heap create/destroy/alloc/realloc/free |
-| windows-virtual-memory | NT virtual memory allocate/free/map/unmap |
-| windows-native | 上述两组并集 |
+| profile | API 组 | 平台 |
+|---|---|---|
+| windows-nt-heap | Rtl heap create/destroy/alloc/realloc/free | Windows |
+| windows-virtual-memory | NT virtual memory allocate/free/map/unmap | Windows |
+| windows-native | 上述两组并集 | Windows |
+| linux-glibc-heap | malloc/calloc/realloc/free/aligned 族 | Linux |
+| linux-virtual-memory | mmap/munmap/mremap | Linux |
+| linux-native | 上述两组并集 | Linux |
 
 `--capture-min-size` 只在 hook 热路径过滤尺寸严格小于阈值的 `RtlAllocateHeap`、
 `NtAllocateVirtualMemory` 和 `NtMapViewOfSection` 创建侧事件；realloc、free/unmap、heap
@@ -331,6 +338,11 @@ noleax 自身成功时返回 0，目标进程退出码在摘要中以 `target_ex
 - 注入与 patch：[docs/ENTRYPOINT_INJECTION.md](docs/ENTRYPOINT_INJECTION.md)、
   [docs/THREAD_HIJACK_INJECTION.md](docs/THREAD_HIJACK_INJECTION.md)、
   [docs/STATIC_PE_PATCH.md](docs/STATIC_PE_PATCH.md)
+- Linux 移植：[docs/LINUX_PORT_PLAN.md](docs/LINUX_PORT_PLAN.md)、
+  [docs/LINUX_HOOK_PROFILES.md](docs/LINUX_HOOK_PROFILES.md)、
+  [docs/LINUX_HOOK_API_MATRIX.md](docs/LINUX_HOOK_API_MATRIX.md)、
+  [docs/LINUX_LAUNCH_INJECTION.md](docs/LINUX_LAUNCH_INJECTION.md)、
+  [docs/LINUX_PTRACE_INJECTION.md](docs/LINUX_PTRACE_INJECTION.md)
 - 打包与发布：[docs/PACKAGING.md](docs/PACKAGING.md)
 - 尚未完成的能力：[docs/ROADMAP.md](docs/ROADMAP.md)
 

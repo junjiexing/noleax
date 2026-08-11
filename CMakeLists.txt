@@ -78,9 +78,16 @@ endif()
 
 include(GNUInstallDirs)
 
-install(TARGETS noleax noleax-agent
-  RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
-  LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+if(WIN32)
+  install(TARGETS noleax noleax-agent
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+else()
+  # The CLI resolves the agent beside the executable, so both ship in bin/.
+  install(TARGETS noleax noleax-agent
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+    LIBRARY DESTINATION "${CMAKE_INSTALL_BINDIR}")
+endif()
 
 install(FILES
   "${PROJECT_SOURCE_DIR}/README.md"
@@ -167,7 +174,11 @@ else()
   set(NOLEAX_PACKAGE_PLATFORM "linux-${CMAKE_SYSTEM_PROCESSOR}")
 endif()
 
-set(CPACK_GENERATOR "ZIP")
+if(WIN32)
+  set(CPACK_GENERATOR "ZIP")
+else()
+  set(CPACK_GENERATOR "TGZ")
+endif()
 set(CPACK_PACKAGE_NAME "noleax")
 set(CPACK_PACKAGE_VENDOR "Noleax contributors")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "${PROJECT_DESCRIPTION}")
