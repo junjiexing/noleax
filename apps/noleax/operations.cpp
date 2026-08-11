@@ -1548,8 +1548,118 @@ class InterruptHandlerGuard final {
 
 #else
 
-[[nodiscard]] int execute_symbols(const noleax::config::Configuration&) {
-  unsupported("symbols is not implemented on this platform");
+// ELF module images have no PE timestamp/checksum identity; the listing carries zeros
+// there. image_base is 0 (RVAs are the file-relative link vaddrs minus the PT_LOAD bias,
+// which the symbolizer backend applies).
+[[nodiscard]] int execute_symbols(const noleax::config::Configuration& configuration) {
+  const std::filesystem::path& input = *configuration.symbol_listing.input.value;
+  std::error_code size_error;
+  const auto image_size = static_cast<std::uint64_t>(std::filesystem::file_size(input, size_error));
+  if (size_error) {
+    throw ApplicationError{1, "cannot read the ELF image '" + noleax::config::path_to_utf8(input) +
+                                  "': " + size_error.message()};
+  }
+
+  auto symbolizer_options = make_symbolizer_options(configuration);
+  symbolizer_options.allow_export_symbols = true;
+  noleax::analyzer::OfflineSymbolizer symbolizer{symbolizer_options};
+  noleax::analyzer::SymbolModule module;
+  module.module_id = noleax::trace::ModuleId{1U};
+  module.image_size = image_size;
+  module.image_path = input;
+  const noleax::analyzer::SymbolModuleResult registered = symbolizer.register_module(module);
+  switch (registered.status) {
+    case noleax::analyzer::SymbolModuleStatus::kSymbolsLoaded:
+    case noleax::analyzer::SymbolModuleStatus::kExportsOnly:
+    case noleax::analyzer::SymbolModuleStatus::kNoSymbols:
+      break;
+    case noleax::analyzer::SymbolModuleStatus::kUnsupportedPlatform:
+      throw ApplicationError{5, "symbols is not supported on this platform"};
+    case noleax::analyzer::SymbolModuleStatus::kImageNotFound:
+    case noleax::analyzer::SymbolModuleStatus::kImageIdentityMismatch:
+    case noleax::analyzer::SymbolModuleStatus::kPdbNotFound:
+    case noleax::analyzer::SymbolModuleStatus::kPdbIdentityMismatch:
+    case noleax::analyzer::SymbolModuleStatus::kLoadFailed:
+      throw ApplicationError{
+          1, "cannot load symbols for '" + noleax::config::path_to_utf8(input) + "': " +
+                 std::string{noleax::analyzer::symbol_module_status_name(registered.status)}};
+  }
+
+  noleax::analyzer::SymbolListing listing;
+  listing.module_path = noleax::config::path_to_utf8(input);
+  listing.status = std::string{noleax::analyzer::symbol_module_status_name(registered.status)};
+  listing.image_size = image_size;
+  listing.image_base = 0U;
+  listing.timestamp = 0U;
+  listing.checksum = 0U;
+  listing.name_filters = configuration.symbol_listing.name.value;
+  listing.match_case = configuration.symbol_listing.match_case.value;
+  listing.kind_filters = configuration.symbol_listing.kind.value;
+
+  const bool exports_only = registered.status == noleax::analyzer::SymbolModuleStatus::kExportsOnly;
+  const auto enumerated = symbolizer.enumerate_symbols(module.module_id);
+  listing.total = enumerated.size();
+  for (const auto& symbol : enumerated) {
+    const auto kind = noleax::analyzer::symbol_kind_from_tag(symbol.tag, exports_only);
+    if (!listing.name_filters.empty()) {
+      const bool matched =
+          std::any_of(listing.name_filters.begin(), listing.name_filters.end(),
+                      [&](const std::string& pattern) {
+                        return noleax::analyzer::detail::wildcard_match(pattern, symbol.name,
+                                                                        listing.match_case) ||
+                               noleax::analyzer::detail::wildcard_match(
+                                   pattern, symbol.undecorated_name, listing.match_case);
+                      });
+      if (!matched) {
+        continue;
+      }
+    }
+    if (!listing.kind_filters.empty() &&
+        std::find(listing.kind_filters.begin(), listing.kind_filters.end(), kind) ==
+            listing.kind_filters.end()) {
+      continue;
+    }
+    noleax::analyzer::SymbolListingEntry entry;
+    entry.name = symbol.name;
+    entry.undecorated_name = symbol.undecorated_name;
+    entry.rva = symbol.rva;
+    entry.va = symbol.rva;
+    entry.size = symbol.size;
+    entry.kind = kind;
+    listing.entries.push_back(std::move(entry));
+  }
+  symbolizer.unregister_module(module.module_id);
+
+  std::ofstream output_file;
+  std::ostream* output = &std::cout;
+  if (configuration.symbol_listing.output.value.has_value()) {
+    ensure_output_directory(*configuration.symbol_listing.output.value);
+    output_file.open(*configuration.symbol_listing.output.value,
+                     std::ios::binary | std::ios::trunc);
+    if (!output_file) {
+      throw ApplicationError{
+          1, "cannot create symbols output '" +
+                 noleax::config::path_to_utf8(*configuration.symbol_listing.output.value) + "'"};
+    }
+    output = &output_file;
+  }
+  const auto& fields = configuration.symbol_listing.fields.value;
+  switch (configuration.symbol_listing.format.value) {
+    case noleax::config::OutputFormat::kConsole:
+      noleax::analyzer::write_symbol_listing_console(*output, listing, fields);
+      break;
+    case noleax::config::OutputFormat::kJson:
+      noleax::analyzer::write_symbol_listing_json(*output, listing, fields);
+      break;
+    case noleax::config::OutputFormat::kCsv:
+      noleax::analyzer::write_symbol_listing_csv(*output, listing, fields);
+      break;
+  }
+  output->flush();
+  if (!*output) {
+    throw ApplicationError{1, "cannot finish symbols output"};
+  }
+  return 0;
 }
 
 #endif

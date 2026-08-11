@@ -1,5 +1,7 @@
 #include <dlfcn.h>
+#include <unistd.h>
 
+#include <array>
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
 #include <cstdint>
@@ -24,6 +26,13 @@ using noleax::agent::linux::RawModuleEventType;
 
 TEST_CASE("linux module tracker snapshots the initial module set",
           "[agent][module-tracker][linux]") {
+  std::array<char, 4096U> executable{};
+  const ssize_t executable_length =
+      ::readlink("/proc/self/exe", executable.data(), executable.size() - 1U);
+  REQUIRE(executable_length > 0);
+  const std::string expected_main_path{executable.data(),
+                                       static_cast<std::size_t>(executable_length)};
+
   const LinuxModuleTracker tracker{1'000'000U};
   const auto initial = tracker.initial_modules();
 
@@ -40,7 +49,9 @@ TEST_CASE("linux module tracker snapshots the initial module set",
     CHECK(event.base_address >= previous_base);
     previous_base = event.base_address;
     const std::string_view path{event.path.data(), event.path_length};
-    saw_main_executable = saw_main_executable || path == "/proc/self/exe";
+    // The main executable records its real path (readlink of /proc/self/exe) so the
+    // offline analyzer opens the right image.
+    saw_main_executable = saw_main_executable || path == expected_main_path;
     saw_libc = saw_libc || has_suffix(path, "libc.so.6");
   }
   CHECK(saw_main_executable);

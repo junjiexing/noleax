@@ -295,7 +295,10 @@ void check_common_readback(const Readback& readback, std::uint64_t monotonic_ori
   bool saw_exe = false;
   bool saw_libc = false;
   for (const noleax::trace::ModuleLoad& load : readback.module_loads) {
-    saw_exe = saw_exe || load.image_path == "/proc/self/exe";
+    // The main executable records its real path (readlink of /proc/self/exe at capture
+    // time), so the analyzer opens the target image rather than its own.
+    saw_exe = saw_exe || (!load.image_path.empty() && load.image_path[0] == '/' &&
+                          load.image_path.find("/proc/") != 0U);
     saw_libc = saw_libc || load.image_path.find("libc") != std::string::npos;
   }
   check(saw_exe, "main executable module record is present");

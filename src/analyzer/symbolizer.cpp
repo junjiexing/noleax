@@ -22,6 +22,12 @@
 #include "noleax/trace/identifiers.hpp"
 #include "utf8.hpp"
 
+#ifdef __linux__
+#include <cerrno>
+
+#include "elf_image.hpp"
+#endif
+
 #ifdef _WIN32
 #define NOMINMAX
 // DbgHelp requires the Windows base types to be declared first.
@@ -311,6 +317,8 @@ class OfflineSymbolizer::Impl {
     entry.module_name = module_name(entry.module.image_path);
 #ifdef _WIN32
     register_windows_module(entry);
+#elif defined(__linux__)
+    register_linux_module(entry);
 #else
     entry.result.status = SymbolModuleStatus::kUnsupportedPlatform;
 #endif
@@ -359,6 +367,10 @@ class OfflineSymbolizer::Impl {
     if (entry.dbghelp_loaded) {
       resolve_windows_symbol(entry, frame);
     }
+#elif defined(__linux__)
+    if (entry.elf_image != nullptr) {
+      resolve_linux_symbol(entry, frame);
+    }
 #endif
     return frame;
   }
@@ -390,6 +402,17 @@ class OfflineSymbolizer::Impl {
       return std::nullopt;
     }
     return symbol->Address - entry.dbghelp_base;
+#elif defined(__linux__)
+    if (entry.elf_image == nullptr || symbol_name.empty()) {
+      return std::nullopt;
+    }
+    // The RVA of a named symbol is its link-time vaddr relative to the module's recorded
+    // base, i.e. minus the minimum PT_LOAD vaddr.
+    const std::optional<elf::ElfSymbol> symbol = entry.elf_image->find_symbol(symbol_name);
+    if (!symbol.has_value()) {
+      return std::nullopt;
+    }
+    return symbol->value - entry.elf_image->minimum_load_vaddr();
 #else
     static_cast<void>(entry);
     static_cast<void>(symbol_name);
@@ -419,6 +442,32 @@ class OfflineSymbolizer::Impl {
     if (context.failed) {
       throw SymbolizerError{"cannot enumerate the module symbols"};
     }
+#elif defined(__linux__)
+    if (entry.elf_image == nullptr || (entry.result.status != SymbolModuleStatus::kSymbolsLoaded &&
+                                       entry.result.status != SymbolModuleStatus::kExportsOnly)) {
+      return result;
+    }
+    // Mirror the DbgHelp split: full symbol table for symbols_loaded modules, the
+    // export-equivalent .dynsym for exports_only ones.
+    const elf::SymbolTable table = entry.result.status == SymbolModuleStatus::kSymbolsLoaded
+                                       ? elf::SymbolTable::kSymtab
+                                       : elf::SymbolTable::kDynsym;
+    for (const elf::ElfSymbol& symbol : entry.elf_image->symbols(table)) {
+      if (!elf::is_displayable(symbol)) {
+        continue;
+      }
+      EnumeratedSymbol enumerated;
+      enumerated.name = symbol.name;
+      enumerated.undecorated_name = elf::demangle(symbol.name);
+      enumerated.rva = symbol.value - entry.elf_image->minimum_load_vaddr();
+      enumerated.size = symbol.size;
+      enumerated.tag = elf::listing_tag(symbol);
+      result.push_back(std::move(enumerated));
+    }
+    std::sort(result.begin(), result.end(),
+              [](const EnumeratedSymbol& left, const EnumeratedSymbol& right) {
+                return left.rva != right.rva ? left.rva < right.rva : left.name < right.name;
+              });
 #else
     static_cast<void>(entry);
 #endif
@@ -433,6 +482,8 @@ class OfflineSymbolizer::Impl {
 #ifdef _WIN32
     DWORD64 dbghelp_base{0};
     bool dbghelp_loaded{false};
+#elif defined(__linux__)
+    std::unique_ptr<elf::ElfImage> elf_image;
 #endif
   };
 
@@ -591,6 +642,53 @@ class OfflineSymbolizer::Impl {
     frame.symbol_name =
         wide_to_utf8(std::wstring_view{symbol->Name, static_cast<std::size_t>(symbol->NameLen)});
     frame.symbol_offset = displacement;
+  }
+#endif
+
+#if defined(__linux__)
+  void register_linux_module(Entry& entry) {
+    if (options_.mode == SymbolResolutionMode::kOff) {
+      entry.result.status = SymbolModuleStatus::kNoSymbols;
+      return;
+    }
+    std::error_code filesystem_error;
+    if (!std::filesystem::is_regular_file(entry.module.image_path, filesystem_error)) {
+      entry.result.status = SymbolModuleStatus::kImageNotFound;
+      entry.result.system_error = filesystem_error
+                                      ? static_cast<std::uint32_t>(filesystem_error.value())
+                                      : static_cast<std::uint32_t>(ENOENT);
+      return;
+    }
+
+    std::unique_ptr<elf::ElfImage> image;
+    try {
+      image = std::make_unique<elf::ElfImage>(entry.module.image_path);
+    } catch (const elf::ElfImageError& error) {
+      entry.result.status = SymbolModuleStatus::kLoadFailed;
+      entry.result.system_error = error.system_error();
+      return;
+    }
+    if (image->has_function_symbols(elf::SymbolTable::kSymtab)) {
+      entry.result.status = SymbolModuleStatus::kSymbolsLoaded;
+    } else if (image->has_function_symbols(elf::SymbolTable::kDynsym)) {
+      entry.result.status = SymbolModuleStatus::kExportsOnly;
+    } else {
+      entry.result.status = SymbolModuleStatus::kNoSymbols;
+    }
+    entry.elf_image = std::move(image);
+  }
+
+  // Trace frames carry absolute runtime addresses; the registered base equals the load bias
+  // plus the minimum PT_LOAD vaddr (see the agent's module tracker), so the link-time lookup
+  // vaddr is the module offset shifted back by that minimum vaddr.
+  static void resolve_linux_symbol(const Entry& entry, ResolvedStackFrame& frame) {
+    const std::uint64_t vaddr = *frame.module_offset + entry.elf_image->minimum_load_vaddr();
+    const std::optional<elf::ElfSymbol> symbol = entry.elf_image->find_function(vaddr);
+    if (!symbol.has_value()) {
+      return;
+    }
+    frame.symbol_name = elf::demangle(symbol->name);
+    frame.symbol_offset = vaddr - symbol->value;
   }
 #endif
 

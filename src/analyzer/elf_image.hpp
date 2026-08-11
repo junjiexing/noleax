@@ -66,8 +66,7 @@ class ElfImage {
 
   // True when the table holds at least one defined function symbol (STT_FUNC/STT_GNU_IFUNC).
   [[nodiscard]] bool has_function_symbols(SymbolTable table) const noexcept {
-    return table == SymbolTable::kSymtab ? !symtab_functions_.empty()
-                                         : !dynsym_functions_.empty();
+    return table == SymbolTable::kSymtab ? !symtab_functions_.empty() : !dynsym_functions_.empty();
   }
 
   // .note.gnu.build-id descriptor bytes; empty when the image carries no build ID.

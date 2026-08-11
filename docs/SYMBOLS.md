@@ -145,3 +145,10 @@ noleax symbols --name "*alloc*" --kind function app.dll
 noleax symbols --format json --output symbols.json app.dll
 noleax symbols --format csv --fields name,rva,kind --output symbols.csv app.dll
 ~~~
+
+## 9. ELF 支持（Linux）
+
+Linux 侧 `noleax symbols` 枚举 ELF64 映像：有 `.symtab` 时枚举全量符号（kind 按
+function/data/other），只有 `.dynsym` 时按 export 兜底（与 Windows 无 PDB 时回退导出表
+同语义）。`noleax.symbols` v1 schema 不变；PE 专有的 timestamp/checksum 字段对 ELF 输出
+`0x0`，`image_base` 为 `0x0`（va 列等于 rva 列）。

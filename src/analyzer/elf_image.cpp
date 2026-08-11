@@ -1,5 +1,6 @@
 #include "elf_image.hpp"
 
+#include <cxxabi.h>
 #include <elf.h>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -9,7 +10,6 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
-#include <cxxabi.h>
 #include <iterator>
 #include <optional>
 #include <string>
@@ -25,9 +25,7 @@ constexpr std::uint32_t kListingTagFunction = 5U;
 constexpr std::uint32_t kListingTagData = 7U;
 constexpr std::uint32_t kListingTagPublicSymbol = 10U;
 
-[[nodiscard]] std::uint32_t current_errno() noexcept {
-  return static_cast<std::uint32_t>(errno);
-}
+[[nodiscard]] std::uint32_t current_errno() noexcept { return static_cast<std::uint32_t>(errno); }
 
 // Positional reader over an open image file. Only the headers, symbol/string tables, and note
 // sections are read; the whole file is never pulled into memory.
@@ -66,8 +64,8 @@ class FileReader {
     auto* output = static_cast<std::byte*>(buffer);
     std::size_t done = 0;
     while (done < count) {
-      const ssize_t chunk = ::pread(fd_, output + done, count - done,
-                                    static_cast<off_t>(offset + done));
+      const ssize_t chunk =
+          ::pread(fd_, output + done, count - done, static_cast<off_t>(offset + done));
       if (chunk < 0) {
         if (errno == EINTR) {
           continue;
@@ -140,21 +138,18 @@ void ensure_table_span(std::uint64_t file_size, std::uint64_t offset, std::uint6
   return {reinterpret_cast<const char*>(begin), static_cast<std::size_t>(length)};
 }
 
-[[nodiscard]] std::vector<ElfSymbol> parse_symbol_table(const FileReader& file,
-                                                        const Elf64_Shdr& table,
-                                                        std::uint64_t section_offset,
-                                                        std::uint64_t section_entry_size,
-                                                        std::uint64_t section_count,
-                                                        SymbolTable origin) {
+[[nodiscard]] std::vector<ElfSymbol> parse_symbol_table(
+    const FileReader& file, const Elf64_Shdr& table, std::uint64_t section_offset,
+    std::uint64_t section_entry_size, std::uint64_t section_count, SymbolTable origin) {
   std::vector<ElfSymbol> result;
   if (table.sh_size == 0U) {
     return result;
   }
-  ensure_table_span(file.size(), table.sh_offset, table.sh_entsize, sizeof(Elf64_Sym),
-                    table.sh_size / table.sh_entsize);
   if (table.sh_entsize < sizeof(Elf64_Sym)) {
     throw ElfImageError{"a symbol table has an invalid entry size"};
   }
+  const std::uint64_t count = table.sh_size / table.sh_entsize;
+  ensure_table_span(file.size(), table.sh_offset, table.sh_entsize, sizeof(Elf64_Sym), count);
   if (table.sh_link >= section_count) {
     throw ElfImageError{"a symbol table links an invalid string table"};
   }
@@ -165,7 +160,6 @@ void ensure_table_span(std::uint64_t file_size, std::uint64_t offset, std::uint6
   }
   const std::vector<std::byte> strings =
       file.read(strings_header.sh_offset, strings_header.sh_size);
-  const std::uint64_t count = table.sh_size / table.sh_entsize;
   const std::vector<std::byte> entries = file.read(table.sh_offset, table.sh_size);
   result.reserve(static_cast<std::size_t>(count));
   for (std::uint64_t index = 0; index < count; ++index) {
@@ -176,8 +170,8 @@ void ensure_table_span(std::uint64_t file_size, std::uint64_t offset, std::uint6
     symbol.value = entry.st_value;
     symbol.size = entry.st_size;
     symbol.section_index = entry.st_shndx;
-    symbol.type = ELF64_ST_TYPE(entry.st_info);
-    symbol.binding = ELF64_ST_BIND(entry.st_info);
+    symbol.type = static_cast<std::uint8_t>(ELF64_ST_TYPE(entry.st_info));
+    symbol.binding = static_cast<std::uint8_t>(ELF64_ST_BIND(entry.st_info));
     symbol.table = origin;
     result.push_back(std::move(symbol));
   }
@@ -232,11 +226,9 @@ void ensure_table_span(std::uint64_t file_size, std::uint64_t offset, std::uint6
 [[nodiscard]] std::optional<ElfSymbol> find_function_in(const std::vector<ElfSymbol>& symbols,
                                                         const std::vector<std::size_t>& functions,
                                                         std::uint64_t vaddr) {
-  const auto first_above =
-      std::upper_bound(functions.begin(), functions.end(), vaddr,
-                       [&symbols](std::uint64_t probe, std::size_t index) {
-                         return probe < symbols[index].value;
-                       });
+  const auto first_above = std::upper_bound(
+      functions.begin(), functions.end(), vaddr,
+      [&symbols](std::uint64_t probe, std::size_t index) { return probe < symbols[index].value; });
   if (first_above == functions.begin()) {
     return std::nullopt;
   }
@@ -271,7 +263,7 @@ void read_build_id_note(const FileReader& file, const Elf64_Shdr& section,
   }
   const std::vector<std::byte> bytes = file.read(section.sh_offset, section.sh_size);
   std::size_t cursor = 0;
-  while (bytes.size() - cursor >= sizeof(Elf64_Nhdr)) {
+  while (cursor <= bytes.size() && bytes.size() - cursor >= sizeof(Elf64_Nhdr)) {
     Elf64_Nhdr header{};
     std::memcpy(&header, bytes.data() + cursor, sizeof(header));
     cursor += sizeof(Elf64_Nhdr);
@@ -282,7 +274,7 @@ void read_build_id_note(const FileReader& file, const Elf64_Shdr& section,
     }
     const bool gnu_name = name_size == 4U && std::memcmp(bytes.data() + cursor, "GNU", 3U) == 0;
     cursor = align4(cursor + name_size);
-    if (descriptor_size > bytes.size() - cursor) {
+    if (cursor > bytes.size() || descriptor_size > bytes.size() - cursor) {
       return;
     }
     if (gnu_name && header.n_type == NT_GNU_BUILD_ID) {

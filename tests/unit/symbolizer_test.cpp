@@ -406,7 +406,7 @@ TEST_CASE("offline symbolizer enumerates nothing without usable symbols",
   CHECK(symbolizer.enumerate_symbols(module.module_id).empty());
 }
 
-#else
+#elif !defined(__linux__)
 
 TEST_CASE("offline symbolizer reports unsupported non-Windows platforms",
           "[analyzer][symbolizer]") {

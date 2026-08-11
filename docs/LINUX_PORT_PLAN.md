@@ -265,6 +265,20 @@ analyzer 三模式可分析。这是 Linux 版第一个用户可用形态。
 
 ### M5 符号化与 `symbols` 命令
 
+> 状态：**已完成**（2026-08-11）。双 preset 303/303；e2e trace 的栈帧解析为
+> `module!symbol+offset`（含主程序真实符号，见下）。
+>
+> 出入与注记：
+> - **后端选型落地为内置 ELF64 符号读取器**（symtab 优先、dynsym 兜底、
+>   `__cxa_demangle` 反修饰），零外部依赖——libdw 只在需要 DWARF 行号时才必要，
+>   而输出模型消费函数级符号，故未引入。
+> - **build-id 落位推迟**：ModuleLoad 记录布局无变量长身份字段，v1 按路径符号化，
+>   身份不匹配检测缺位（如实记录于 SYMBOLIZATION.md §9；记录版本 2 是后续治理项）。
+> - **修了一个真 bug**：agent 此前把主程序记为字面量 `/proc/self/exe`，离线分析时
+>   解析成 noleax 自身映像；现在快照时 readlink 取真实路径。
+> - `noleax symbols` 支持 ELF（schema v1 不变，PE 身份字段输出 0x0）。
+> - debuginfod 不做（本期）。
+
 - `OfflineSymbolizer` Linux 后端：libdw（elfutils）解析 DWARF + dynsym 兜底，
   回退梯语义对齐 [SYMBOLIZATION.md](SYMBOLIZATION.md) 九态（`symbols_loaded` →
   `exports_only` → …）；模块身份校验用 build-id（找不到符号时给出与 PDB 缺失同类

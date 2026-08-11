@@ -33,4 +33,10 @@ if(WIN32)
   target_link_libraries(noleax-analyzer PRIVATE dbghelp)
 endif()
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_sources(noleax-analyzer PRIVATE
+    elf_image.cpp
+  )
+endif()
+
 noleax_set_project_warnings(noleax-analyzer)

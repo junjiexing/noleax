@@ -1,8 +1,10 @@
 #include "noleax/agent/linux/module_tracker.hpp"
 
 #include <link.h>
+#include <unistd.h>
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <string>
 #include <utility>
@@ -18,7 +20,17 @@ struct ModuleIdentity {
 
 // Bounds the module's mapped image as [base, base+size): the span of its PT_LOAD
 // segments relative to the load bias. The main executable arrives with an empty name
-// and is reported through /proc/self/exe.
+// and is reported through the readlink of /proc/self/exe — the trace must carry the
+// target's real path, because the analyzer resolves the symlink against ITS own image.
+[[nodiscard]] std::string main_executable_path() {
+  std::array<char, 4096U> buffer{};
+  const ssize_t length = ::readlink("/proc/self/exe", buffer.data(), buffer.size() - 1U);
+  if (length <= 0) {
+    return "/proc/self/exe";
+  }
+  return std::string{buffer.data(), static_cast<std::size_t>(length)};
+}
+
 [[nodiscard]] bool describe_module(const dl_phdr_info& info, ModuleIdentity& module) {
   std::uint64_t lowest = UINT64_MAX;
   std::uint64_t highest = 0U;
@@ -38,7 +50,7 @@ struct ModuleIdentity {
   if (info.dlpi_name != nullptr && info.dlpi_name[0] != '\0') {
     module.path = info.dlpi_name;
   } else {
-    module.path = "/proc/self/exe";
+    module.path = main_executable_path();
   }
   return true;
 }

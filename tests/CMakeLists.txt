@@ -100,6 +100,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     unit/linux_memory_snapshot_test.cpp
     unit/linux_module_tracker_test.cpp
     unit/linux_stack_capture_test.cpp
+    unit/linux_symbolizer_test.cpp
+  )
+  target_include_directories(noleax-unit-tests PRIVATE "${PROJECT_SOURCE_DIR}/src/analyzer")
+  add_dependencies(noleax-unit-tests noleax-agent)
+  target_compile_definitions(noleax-unit-tests PRIVATE
+    NOLEAX_TEST_AGENT_PATH="$<TARGET_FILE:noleax-agent>"
   )
 
   add_executable(noleax-linux-stack-capture-probe

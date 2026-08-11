@@ -117,3 +117,27 @@ Windows 组件测试使用带完整 PDB 和导出函数的专用 DLL，覆盖：
 - Debug/Release 构建。
 
 符号化不替代 hook 安全测试；符号查询始终位于离线 analyzer，不能在 hook 热路径中调用。
+
+## 9. Linux 后端（ELF 符号）
+
+> 状态：已实现（Linux 移植 M5）。后端为内置 ELF64 符号读取器
+> （`src/analyzer/elf_image.cpp`），无外部依赖；`unsupported_platform` 不再出现于
+> Linux 录制的 trace。
+
+- 覆盖：`.symtab` 全量符号表优先（`symbols_loaded`）；只有 `.dynsym` 时导出符号兜底
+  （`exports_only`）；两者皆无（strip 彻底）为 `no_symbols`。DWARF 行号不在本期——输出
+  模型消费的是函数级 `module!symbol+offset`，dynsym/symtab 已够。
+- 地址换算：agent 记录的模块基址 = load_bias + min(PT_LOAD p_vaddr)，后端查表用
+  `绝对地址 - base + min_vaddr`；RVA 输出为 `st_value - min_vaddr`。PIE 主程序与共享库
+  同一公式。
+- 名称：C++ 符号经 `abi::__cxa_demangle` 反修饰（对齐 Windows 的 UnDecorateSymbolName
+  行为）；同名别名（如 `__libc_malloc`/`malloc`）按"尺寸包含优先、非局部绑定优先、
+  名字典序"确定性选择。
+- 身份校验：v1 按 trace 记录的**路径**打开映像；ELF build-id 的落位（ModuleLoad 记录
+  版本 2）是后续的格式治理项——当前没有身份不匹配检测，分析他机/他构建的模块时结果
+  可能张冠李戴，与 PDB 缺失场景同级对待。`image_identity_mismatch`/
+  `pdb_identity_mismatch` 在 Linux 后端不产生。
+- `--symbol-server`/`srv*` 与 `_NT_SYMBOL_PATH` 回退是 Windows 概念，Linux 后端忽略；
+  `--symbol-path` 保留本地路径语义。debuginfod 本期不做。
+- 主程序模块路径：agent 快照时 readlink `/proc/self/exe` 取真实路径（M5 修正——否则
+  分析进程会把 `/proc/self/exe` 解析成 noleax 自身映像）。
