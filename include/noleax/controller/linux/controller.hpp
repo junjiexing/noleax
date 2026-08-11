@@ -51,6 +51,9 @@ class CaptureSession final {
 
   [[nodiscard]] static CaptureSession launch(const LaunchOptions& launch,
                                              const CaptureOptions& capture);
+  // Attaches to a running process via ptrace injection (docs/LINUX_PTRACE_INJECTION.md).
+  [[nodiscard]] static CaptureSession attach(std::uint32_t process_id,
+                                             const CaptureOptions& capture);
 
   [[nodiscard]] noleax::ipc::CaptureStatus query_status();
   // StopCapture + FinalizeHooks handshake; idempotent after the first success.

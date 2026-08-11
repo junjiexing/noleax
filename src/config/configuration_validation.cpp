@@ -400,9 +400,15 @@ void validate_attach(const Configuration& configuration, const Configuration& de
   if (!configuration.target.pid.value.has_value() || *configuration.target.pid.value == 0U) {
     fail("target.pid", "must be greater than zero for attach");
   }
-  if (configuration.injection.method.value != InjectionMethod::kRemoteThread &&
-      configuration.injection.method.value != InjectionMethod::kThreadHijack) {
-    fail("injection.method", "attach supports remote-thread and thread-hijack");
+  const auto attach_method = configuration.injection.method.value;
+  const bool attach_default_preload =
+      attach_method == InjectionMethod::kLdPreload &&
+      configuration.injection.method.source == ValueSource::kDefault;
+  if (attach_method != InjectionMethod::kRemoteThread &&
+      attach_method != InjectionMethod::kThreadHijack &&
+      attach_method != InjectionMethod::kPtrace && !attach_default_preload) {
+    fail("injection.method",
+         "attach supports remote-thread and thread-hijack on Windows, ptrace on Linux");
   }
   validate_common_capture(configuration);
   validate_custom_hooks(configuration);

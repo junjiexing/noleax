@@ -17,6 +17,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_sources(noleax-controller PRIVATE
     linux/controller.cpp
     linux/diagnostics.cpp
+    linux/ptrace_injector.cpp
   )
 else()
   target_sources(noleax-controller PRIVATE

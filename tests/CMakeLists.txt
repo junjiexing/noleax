@@ -213,6 +213,30 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     TIMEOUT 60
   )
 
+  add_executable(noleax-linux-ptrace-injector-test
+    integration/linux_ptrace_injector_test.cpp
+  )
+  target_link_libraries(noleax-linux-ptrace-injector-test PRIVATE
+    Catch2::Catch2WithMain
+    noleax::analyzer
+    noleax::controller
+    noleax::core
+    noleax::ipc
+  )
+  noleax_set_project_warnings(noleax-linux-ptrace-injector-test)
+  add_dependencies(noleax-linux-ptrace-injector-test noleax noleax-agent)
+  target_compile_definitions(noleax-linux-ptrace-injector-test PRIVATE
+    NOLEAX_AGENT_PATH="$<TARGET_FILE:noleax-agent>"
+    NOLEAX_CLI_PATH="$<TARGET_FILE:noleax>"
+  )
+  add_test(NAME controller.linux-ptrace-attach
+    COMMAND noleax-linux-ptrace-injector-test
+  )
+  set_tests_properties(controller.linux-ptrace-attach PROPERTIES
+    TIMEOUT 120
+    RUN_SERIAL TRUE
+  )
+
   add_test(NAME agent.linux-stack-capture-probe
     COMMAND noleax-linux-stack-capture-probe
   )

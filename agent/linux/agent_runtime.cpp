@@ -504,18 +504,17 @@ void serve_session(SocketChannel channel, LinuxCaptureRuntime& runtime,
   }
 }
 
-// Runs on the constructor thread. Returns false when the session never started.
-bool session_bootstrap(const BootstrapEnvironment& environment) {
-  std::array<std::byte, 16U> token{};
-  if (!decode_session_token(environment.session_token_hex, token)) {
-    return false;
-  }
+// Runs on the constructor thread (launch) or a dedicated worker (attach). Returns false
+// when the session never started.
+bool session_bootstrap(std::string_view socket_name_without_nul,
+                       const std::array<std::byte, 16U>& token, std::uint32_t controller_pid,
+                       std::uint32_t connect_timeout_ms) {
   std::string socket_name{"\0", 1U};
-  socket_name += environment.socket_name;
+  socket_name += socket_name_without_nul;
 
-  SocketChannel channel = SocketChannel::connect(
-      socket_name, std::chrono::milliseconds{environment.connect_timeout_ms});
-  if (channel.server_process_id() != environment.controller_pid) {
+  SocketChannel channel =
+      SocketChannel::connect(socket_name, std::chrono::milliseconds{connect_timeout_ms});
+  if (channel.server_process_id() != controller_pid) {
     return false;
   }
 
@@ -536,8 +535,7 @@ bool session_bootstrap(const BootstrapEnvironment& environment) {
   hello_message.payload = noleax::ipc::encode_agent_hello(hello);
   channel.send(hello_message, 5s);
 
-  const noleax::ipc::Message start =
-      channel.receive(std::chrono::milliseconds{environment.connect_timeout_ms});
+  const noleax::ipc::Message start = channel.receive(std::chrono::milliseconds{connect_timeout_ms});
   if (start.type != MessageType::kStartCapture) {
     delete runtime;
     return false;
@@ -676,7 +674,12 @@ __attribute__((constructor)) void noleax_agent_linux_init() {
   }
   try {
     if (has_session) {
-      static_cast<void>(session_bootstrap(environment));
+      std::array<std::byte, 16U> token{};
+      if (decode_session_token(environment.session_token_hex, token)) {
+        static_cast<void>(session_bootstrap(environment.socket_name, token,
+                                            environment.controller_pid,
+                                            environment.connect_timeout_ms));
+      }
     } else {
       static_cast<void>(standalone_bootstrap(environment.standalone_config_path));
     }
@@ -687,3 +690,37 @@ __attribute__((constructor)) void noleax_agent_linux_init() {
 }
 
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// attach bootstrap export (called by the controller's ptrace injector)
+// ---------------------------------------------------------------------------
+
+extern "C" __attribute__((visibility("default"))) std::uint32_t noleax_agent_attach_bootstrap(
+    const noleax::agent::linux::AttachBootstrapParameters* parameters) noexcept {
+  if (parameters == nullptr ||
+      parameters->structure_size != sizeof(noleax::agent::linux::AttachBootstrapParameters) ||
+      parameters->version != noleax::agent::linux::kAttachBootstrapVersion) {
+    return 1U;
+  }
+  if (bootstrap_started.exchange(true, std::memory_order_acq_rel)) {
+    return 2U;  // already bootstrapped (e.g. agent was preloaded too)
+  }
+  try {
+    const std::string_view socket_name{
+        parameters->socket_name,
+        strnlen(parameters->socket_name, noleax::agent::linux::kAttachSocketNameCapacity)};
+    std::thread([socket_name = std::string{socket_name}, token = parameters->session_token,
+                 pid = parameters->controller_process_id,
+                 timeout = parameters->connect_timeout_ms]() mutable {
+      // The worker runs outside any guarded caller: a dead controller socket or any
+      // other failure must never terminate the attached target.
+      try {
+        static_cast<void>(session_bootstrap(socket_name, token, pid, timeout));
+      } catch (...) {
+      }
+    }).detach();
+    return 0U;
+  } catch (...) {
+    return 3U;
+  }
+}

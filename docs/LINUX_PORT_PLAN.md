@@ -294,6 +294,23 @@ analyzer 三模式可分析。这是 Linux 版第一个用户可用形态。
 
 ### M6 attach：`ptrace` 注入
 
+> 状态：**已完成**（2026-08-11）。双 preset 304/304；CLI attach 实测退出码 2
+> （盲期语义）、duration 到点停止后目标继续运行。
+>
+> 出入与注记：
+> - 注入为三段式：全线程 SEIZE/INTERRUPT → 安全点选线（syscall 阻塞优先，ld.so 内
+>   RIP 排除）→ 借用 libc syscall gadget 分配 stub 页，两段调用（dlopen →
+>   `noleax_agent_attach_bootstrap`）。线程上下文全恢复。
+> - **实测抓到一个内核语义坑**：syscall 阻塞线程的 `rax=-ERESTART_RESTARTBLOCK`
+>   会让内核在恢复时把 RIP 回退 2 字节，stub 从错误位置执行；改向时写
+>   `orig_rax=-1` 解决（LINUX_PTRACE_INJECTION.md §3）。
+> - attach bootstrap ABI：`AttachBootstrapParameters`（socket 名/token/pid/超时）
+>   写入 stub 页；agent worker 吞掉所有会话异常（控制器死亡不得终止目标）。
+> - 默认方法在 attach 下自动升级 ptrace（显式写 ld-preload 报错）；非子进程目标
+>   用 `/proc/<pid>` 存在性探测退出。
+> - 已知边界：stub 页保留一页、FP/向量态不保存、initial-exec TLS 依赖盈余区——
+>   均写入文档 §5。
+
 - `PTRACE_SEIZE` + 注入 `dlopen(agent.so)` 调用 stub（等价 thread-hijack 的形态）：
   线程选择规则（RIP 须在可恢复点、避开 ld.so 与 malloc 临界区，对齐
   [THREAD_HIJACK_INJECTION.md](THREAD_HIJACK_INJECTION.md) 的事故教训）、

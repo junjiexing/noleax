@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "noleax/agent/linux/bootstrap.hpp"
+#include "noleax/controller/linux/ptrace_injector.hpp"
 #include "noleax/ipc/linux/unix_socket.hpp"
 #include "noleax/version.hpp"
 
@@ -202,44 +203,83 @@ class CaptureSession::Impl {
     }
 
     try {
-      channel_.emplace(server_->accept(capture.timeout));
-      server_.reset();  // single-shot session: no further accepts
-
-      noleax::ipc::Message hello = channel_->receive(capture.timeout);
-      if (hello.type != MessageType::kAgentHello) {
-        throw ControllerError{"agent did not start the session with a hello"};
-      }
-      const auto hello_payload = noleax::ipc::decode_agent_hello(hello.payload);
-      if (hello_payload.session_token != token_ ||
-          hello_payload.agent_abi_version != noleax::kAgentAbiVersion ||
-          hello_payload.pointer_width != sizeof(void*) ||
-          hello_payload.architecture != noleax::ipc::Architecture::kX64) {
-        throw ControllerError{"agent hello failed validation"};
-      }
-      agent_thread_id_ = hello_payload.worker_thread_id;
-      if (channel_->client_process_id() != process_id_) {
-        throw ControllerError{"agent connection did not come from the launched target"};
-      }
-
-      noleax::ipc::Message start;
-      start.type = MessageType::kStartCapture;
-      start.request_id = hello.request_id;
-      start.payload = noleax::ipc::encode_start_capture(capture.start);
-      channel_->send(start, capture.timeout);
-      noleax::ipc::Message ready = channel_->receive(capture.timeout);
-      if (ready.type == MessageType::kError) {
-        const auto error = noleax::ipc::decode_error_response(ready.payload);
-        throw ControllerError{"agent failed to start the capture: " + error.message,
-                              error.error_code};
-      }
-      if (ready.type != MessageType::kCaptureReady) {
-        throw ControllerError{"agent did not signal capture ready"};
-      }
+      complete_handshake(capture);
     } catch (const noleax::ipc::linux::SocketError& error) {
       throw ControllerError{std::string{"agent session failed: "} + error.what(),
                             error.system_error()};
     } catch (const noleax::ipc::ProtocolError& error) {
       throw ControllerError{std::string{"agent protocol violation: "} + error.what()};
+    }
+  }
+
+  // Attach path: inject the agent into a running process and let its attach bootstrap
+  // call back over the session socket.
+  Impl(std::uint32_t process_id, const CaptureOptions& capture) {
+    if (capture.agent_path.empty()) {
+      throw ControllerError{"agent path must not be empty", EINVAL};
+    }
+    token_ = make_session_token();
+    server_.emplace(noleax::ipc::linux::make_socket_name(token_));
+    process_id_ = process_id;
+
+    noleax::agent::linux::AttachBootstrapParameters parameters;
+    parameters.controller_process_id = static_cast<std::uint32_t>(::getpid());
+    parameters.connect_timeout_ms = static_cast<std::uint32_t>(capture.timeout.count());
+    const std::string socket_name = noleax::ipc::linux::make_socket_name(token_);
+    const std::string_view socket_env = std::string_view{socket_name}.substr(1U);
+    if (socket_env.size() >= noleax::agent::linux::kAttachSocketNameCapacity) {
+      throw ControllerError{"session socket name is too long", ENAMETOOLONG};
+    }
+    std::memcpy(parameters.socket_name, socket_env.data(), socket_env.size());
+    parameters.session_token = token_;
+
+    std::vector<std::byte> parameter_bytes(sizeof(parameters));
+    std::memcpy(parameter_bytes.data(), &parameters, sizeof(parameters));
+    PtraceInjector::inject(process_id, capture.agent_path, parameter_bytes);
+
+    try {
+      complete_handshake(capture);
+    } catch (const noleax::ipc::linux::SocketError& error) {
+      throw ControllerError{std::string{"agent session failed: "} + error.what(),
+                            error.system_error()};
+    } catch (const noleax::ipc::ProtocolError& error) {
+      throw ControllerError{std::string{"agent protocol violation: "} + error.what()};
+    }
+  }
+
+  void complete_handshake(const CaptureOptions& capture) {
+    channel_.emplace(server_->accept(capture.timeout));
+    server_.reset();  // single-shot session: no further accepts
+
+    noleax::ipc::Message hello = channel_->receive(capture.timeout);
+    if (hello.type != MessageType::kAgentHello) {
+      throw ControllerError{"agent did not start the session with a hello"};
+    }
+    const auto hello_payload = noleax::ipc::decode_agent_hello(hello.payload);
+    if (hello_payload.session_token != token_ ||
+        hello_payload.agent_abi_version != noleax::kAgentAbiVersion ||
+        hello_payload.pointer_width != sizeof(void*) ||
+        hello_payload.architecture != noleax::ipc::Architecture::kX64) {
+      throw ControllerError{"agent hello failed validation"};
+    }
+    agent_thread_id_ = hello_payload.worker_thread_id;
+    if (channel_->client_process_id() != process_id_) {
+      throw ControllerError{"agent connection did not come from the target process"};
+    }
+
+    noleax::ipc::Message start;
+    start.type = MessageType::kStartCapture;
+    start.request_id = hello.request_id;
+    start.payload = noleax::ipc::encode_start_capture(capture.start);
+    channel_->send(start, capture.timeout);
+    noleax::ipc::Message ready = channel_->receive(capture.timeout);
+    if (ready.type == MessageType::kError) {
+      const auto error = noleax::ipc::decode_error_response(ready.payload);
+      throw ControllerError{"agent failed to start the capture: " + error.message,
+                            error.error_code};
+    }
+    if (ready.type != MessageType::kCaptureReady) {
+      throw ControllerError{"agent did not signal capture ready"};
     }
   }
 
@@ -307,7 +347,16 @@ class CaptureSession::Impl {
         if (errno == EINTR) {
           continue;
         }
-        throw ControllerError{"waitpid failed", static_cast<std::uint32_t>(errno)};
+        if (errno == ECHILD) {
+          // Attached targets are not our children: watch the process directory instead.
+          const std::string proc_dir = "/proc/" + std::to_string(process_id_);
+          if (::access(proc_dir.c_str(), F_OK) != 0) {
+            target_exited_ = true;
+            return true;
+          }
+        } else {
+          throw ControllerError{"waitpid failed", static_cast<std::uint32_t>(errno)};
+        }
       }
       if (Clock::now() >= deadline) {
         return false;
@@ -352,6 +401,10 @@ CaptureSession& CaptureSession::operator=(CaptureSession&& other) noexcept = def
 
 CaptureSession CaptureSession::launch(const LaunchOptions& launch, const CaptureOptions& capture) {
   return CaptureSession{std::make_unique<Impl>(launch, capture)};
+}
+
+CaptureSession CaptureSession::attach(std::uint32_t process_id, const CaptureOptions& capture) {
+  return CaptureSession{std::make_unique<Impl>(process_id, capture)};
 }
 
 noleax::ipc::CaptureStatus CaptureSession::query_status() {

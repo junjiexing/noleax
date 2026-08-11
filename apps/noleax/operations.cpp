@@ -1229,7 +1229,9 @@ class InterruptHandlerGuard final {
     milliseconds += 1ms;
   }
   capture.timeout = milliseconds;
-  capture.start.capture_kind = noleax::ipc::CaptureKind::kLaunch;
+  capture.start.capture_kind = *configuration.operation.value == noleax::config::Operation::kAttach
+                                   ? noleax::ipc::CaptureKind::kAttach
+                                   : noleax::ipc::CaptureKind::kLaunch;
   capture.start.hook_profile = linux_hook_profile(configuration.capture.hook_profile.value);
   capture.start.compression = linux_compression_codec(configuration.trace.compression.value);
   capture.start.maximum_stack_depth = configuration.capture.max_stack_depth.value;
@@ -1288,14 +1290,26 @@ class InterruptHandlerGuard final {
 }
 
 [[nodiscard]] int execute_capture(const noleax::config::Configuration& configuration) {
-  if (*configuration.operation.value != noleax::config::Operation::kRun) {
-    throw ApplicationError{5, "attach is not implemented on Linux yet (port milestone M6)"};
+  const auto operation = *configuration.operation.value;
+  const bool is_attach = operation == noleax::config::Operation::kAttach;
+  const auto method = configuration.injection.method.value;
+  const bool method_is_default =
+      configuration.injection.method.source == noleax::config::ValueSource::kDefault;
+  if (!is_attach && method != noleax::config::InjectionMethod::kLdPreload) {
+    throw ApplicationError{5, "injection method '" +
+                                  std::string{noleax::config::enum_value_name(method)} +
+                                  "' is not supported on Linux; use ld-preload"};
   }
-  if (configuration.injection.method.value != noleax::config::InjectionMethod::kLdPreload) {
-    throw ApplicationError{
-        5, "injection method '" +
-               std::string{noleax::config::enum_value_name(configuration.injection.method.value)} +
-               "' is not supported on Linux; use ld-preload"};
+  // Attach has no env channel, so ld-preload cannot apply; a default-valued method
+  // upgrades to ptrace automatically, an explicit one is a user error.
+  if (is_attach && method == noleax::config::InjectionMethod::kLdPreload && !method_is_default) {
+    throw ApplicationError{5, "ld-preload cannot attach to a running process; use ptrace"};
+  }
+  if (is_attach && method != noleax::config::InjectionMethod::kLdPreload &&
+      method != noleax::config::InjectionMethod::kPtrace) {
+    throw ApplicationError{5, "injection method '" +
+                                  std::string{noleax::config::enum_value_name(method)} +
+                                  "' is not supported for attach on Linux; use ptrace"};
   }
 
   const std::filesystem::path trace_path =
@@ -1304,13 +1318,18 @@ class InterruptHandlerGuard final {
   const auto capture = linux_capture_options(configuration, trace_path);
   InterruptHandlerGuard interrupts;
   try {
-    noleax::controller::linux::LaunchOptions launch;
-    launch.executable = *configuration.target.path.value;
-    launch.arguments = configuration.target.args.value;
-    launch.working_directory =
-        configuration.target.working_directory.value.value_or(launch.executable.parent_path());
-
-    auto session = noleax::controller::linux::CaptureSession::launch(launch, capture);
+    std::optional<noleax::controller::linux::CaptureSession> session;
+    if (is_attach) {
+      session.emplace(noleax::controller::linux::CaptureSession::attach(
+          *configuration.target.pid.value, capture));
+    } else {
+      noleax::controller::linux::LaunchOptions launch;
+      launch.executable = *configuration.target.path.value;
+      launch.arguments = configuration.target.args.value;
+      launch.working_directory =
+          configuration.target.working_directory.value.value_or(launch.executable.parent_path());
+      session.emplace(noleax::controller::linux::CaptureSession::launch(launch, capture));
+    }
 
     // Wait for the target exit, the capture duration, or Ctrl+C (detach), whichever
     // comes first. On duration the controller drives the stop/finalize handshake; the
@@ -1322,7 +1341,7 @@ class InterruptHandlerGuard final {
             ? std::chrono::steady_clock::now() + *configuration.capture.duration.value
             : std::chrono::steady_clock::time_point::max();
     for (;;) {
-      if (session.wait_for_target(50ms)) {
+      if (session->wait_for_target(50ms)) {
         target_exited = true;
         break;
       }
@@ -1331,15 +1350,16 @@ class InterruptHandlerGuard final {
         break;
       }
       if (std::chrono::steady_clock::now() >= deadline) {
-        static_cast<void>(session.stop());
+        static_cast<void>(session->stop());
         break;
       }
     }
 
-    return print_capture_summary(
-        trace_path, session.process_id(), target_exited,
-        target_exited ? std::optional<std::uint32_t>{session.target_exit_code()} : std::nullopt,
-        detached);
+    return print_capture_summary(trace_path, session->process_id(), target_exited,
+                                 target_exited && !is_attach
+                                     ? std::optional<std::uint32_t>{session->target_exit_code()}
+                                     : std::nullopt,
+                                 detached);
   } catch (const ApplicationError&) {
     throw;
   } catch (const std::exception& error) {

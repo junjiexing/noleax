@@ -56,6 +56,7 @@ enum class InjectionMethod : std::uint8_t {
   kEntrypointCode,
   kStaticPePatch,
   kLdPreload,
+  kPtrace,
 };
 
 enum class HookProfile : std::uint8_t {
@@ -243,6 +244,7 @@ struct EnumTraits<InjectionMethod> {
       NamedEnumValue{std::string_view{"entrypoint-code"}, InjectionMethod::kEntrypointCode},
       NamedEnumValue{std::string_view{"static-pe-patch"}, InjectionMethod::kStaticPePatch},
       NamedEnumValue{std::string_view{"ld-preload"}, InjectionMethod::kLdPreload},
+      NamedEnumValue{std::string_view{"ptrace"}, InjectionMethod::kPtrace},
   };
 };
 
@@ -255,8 +257,7 @@ struct EnumTraits<HookProfile> {
                      HookProfile::kWindowsVirtualMemory},
       NamedEnumValue{std::string_view{"windows-native"}, HookProfile::kWindowsNative},
       NamedEnumValue{std::string_view{"linux-glibc-heap"}, HookProfile::kLinuxGlibcHeap},
-      NamedEnumValue{std::string_view{"linux-virtual-memory"},
-                     HookProfile::kLinuxVirtualMemory},
+      NamedEnumValue{std::string_view{"linux-virtual-memory"}, HookProfile::kLinuxVirtualMemory},
       NamedEnumValue{std::string_view{"linux-native"}, HookProfile::kLinuxNative},
   };
 };
