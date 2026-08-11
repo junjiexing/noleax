@@ -371,6 +371,12 @@ class LinuxCaptureRuntime {
   }
 
   // Target-exit finalize: first caller wins; every later exit-path call chains through.
+  // Graceful drain only — never uninstall hooks or shut the backend down here: this
+  // runs inside replacement_exit/replacement_exit_group, and the call to the original
+  // exit trampoline happens after this returns, so tearing the backend down would free
+  // that trampoline out from under the caller. The process is exiting anyway, so
+  // leaving the patches installed is harmless (mirrors the Windows exit-hook path,
+  // which also finalizes gracefully without physical teardown).
   void finalize_on_exit() noexcept {
     bool expected = false;
     if (!exit_finalize_started.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
@@ -380,7 +386,7 @@ class LinuxCaptureRuntime {
     // allocations during the writer join must not be recorded.
     const noleax::agent::InternalThreadScope internal_scope;
     try {
-      finalize();
+      drain();
     } catch (...) {
     }
   }
