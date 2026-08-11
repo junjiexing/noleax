@@ -76,8 +76,8 @@ void write_file(const std::filesystem::path& path, std::string_view contents = {
   return normalized;
 }
 
-[[nodiscard]] std::string replace_all(std::string value, std::string_view from,
-                                      std::string_view to) {
+[[maybe_unused]] [[nodiscard]] std::string replace_all(std::string value, std::string_view from,
+                                                       std::string_view to) {
   std::string::size_type position = 0U;
   while ((position = value.find(from, position)) != std::string::npos) {
     value.replace(position, from.size(), to);
