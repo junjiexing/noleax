@@ -52,6 +52,7 @@
 #include "noleax/controller/windows/pe_patch.hpp"
 #else
 #include "noleax/controller/linux/controller.hpp"
+#include "noleax/controller/linux/diagnostics.hpp"
 #endif
 
 namespace noleax::app {
@@ -1346,8 +1347,22 @@ class InterruptHandlerGuard final {
   }
 }
 
-[[nodiscard]] int execute_doctor(const noleax::config::Configuration&) {
-  unsupported("doctor is not implemented on this platform");
+[[nodiscard]] int execute_doctor(const noleax::config::Configuration& configuration) {
+  noleax::controller::linux::DoctorOptions options;
+  options.agent_path = configuration.injection.agent_path.value;
+  options.target_path = configuration.target.path.value;
+  options.process_id = configuration.target.pid.value;
+  options.injection_method =
+      std::string{noleax::config::enum_value_name(configuration.injection.method.value)};
+  const auto report = noleax::controller::linux::run_doctor(options);
+  noleax::controller::linux::write_doctor_report(std::cout, report);
+  if (report.has_error_category(noleax::controller::linux::DiagnosticCategory::kPermission)) {
+    return 3;
+  }
+  if (report.has_error_category(noleax::controller::linux::DiagnosticCategory::kUnsupported)) {
+    return 5;
+  }
+  return report.has_errors() ? 1 : 0;
 }
 
 #endif

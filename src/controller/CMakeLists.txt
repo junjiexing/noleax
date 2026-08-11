@@ -16,6 +16,7 @@ if(WIN32)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_sources(noleax-controller PRIVATE
     linux/controller.cpp
+    linux/diagnostics.cpp
   )
 else()
   target_sources(noleax-controller PRIVATE
