@@ -48,16 +48,22 @@ namespace {
 }
 
 [[nodiscard]] bool is_agent_module_name(std::string_view module_name) {
-  constexpr std::string_view kAgentName{"noleax-agent.dll"};
+  constexpr std::string_view kAgentNames[] = {"noleax-agent.dll", "noleax-agent.so"};
   const std::size_t separator = module_name.find_last_of("/\\");
   const std::string_view basename =
       separator == std::string_view::npos ? module_name : module_name.substr(separator + 1U);
-  return basename.size() == kAgentName.size() &&
-         std::equal(
-             basename.begin(), basename.end(), kAgentName.begin(), [](char left, char right) {
-               return (left >= 'A' && left <= 'Z' ? static_cast<char>(left - 'A' + 'a') : left) ==
-                      right;
-             });
+  for (const std::string_view agent_name : kAgentNames) {
+    if (basename.size() == agent_name.size() &&
+        std::equal(basename.begin(), basename.end(), agent_name.begin(),
+                   [](char left, char right) {
+                     return (left >= 'A' && left <= 'Z'
+                                 ? static_cast<char>(left - 'A' + 'a')
+                                 : left) == right;
+                   })) {
+      return true;
+    }
+  }
+  return false;
 }
 
 [[nodiscard]] std::filesystem::path utf8_path(std::string_view value) {
