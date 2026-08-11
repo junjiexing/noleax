@@ -36217,8 +36217,11 @@ hoox_memory_patch_code_pages (HxPtrArray * sorted_addresses,
                              HooxMemoryPatchPagesApplyFunc apply,
                              hx_pointer apply_data)
 {
+  /* The retry budget matters only to the guard variants: Windows retries the
+   * suspend-and-scan, Linux retries a failed peer park (transient under load,
+   * e.g. a CPU-starved thread missing its signal window). */
   return hoox_memory_patch_code_pages_guarded (sorted_addresses, coalesce,
-      apply, apply_data, NULL, 0, 0);
+      apply, apply_data, NULL, 0, 100);
 }
 
 /**
@@ -36471,19 +36474,21 @@ cleanup:
       for (;;)
       {
         suspend_op.park = hoox_peer_park_begin ();
-        if (suspend_op.park == NULL)
+        if (suspend_op.park != NULL)
         {
-          result = FALSE;
-          goto resume_threads;
-        }
-        if (hoox_peer_park_all_clear_of (suspend_op.park,
-              (const HooxPeerParkRange *) guard_ranges, num_guard_ranges))
-          break;
+          if (hoox_peer_park_all_clear_of (suspend_op.park,
+                (const HooxPeerParkRange *) guard_ranges, num_guard_ranges))
+            break;
 
-        /* A parked peer still sits inside the bytes we are about to write;
-         * release, let it move on, and park again, with a bounded budget. */
-        hoox_peer_park_end (suspend_op.park);
-        suspend_op.park = NULL;
+          /* A parked peer still sits inside the bytes we are about to write;
+           * release, let it move on, and park again. */
+          hoox_peer_park_end (suspend_op.park);
+          suspend_op.park = NULL;
+        }
+        /* A failed park (NULL) is usually transient too: a CPU-starved peer
+         * missed its signal window, or a concurrent patch held the park lock.
+         * Both get the same bounded retry as a peer caught in a guard range;
+         * a genuinely unparkable thread (signal blocked) still fails closed. */
         if (max_guard_attempts == 0)
         {
           result = FALSE;
