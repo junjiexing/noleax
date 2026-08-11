@@ -204,3 +204,23 @@ cmake --build --preset windows-x64-release
 ctest --preset windows-x64-debug -R "windows-native-profile|rtl-heap-trace-writer|trace-writer" --output-on-failure
 ctest --preset windows-x64-release -R "windows-native-profile|rtl-heap-trace-writer|trace-writer" --output-on-failure
 ~~~
+
+## 8. Linux writer 注记（M3/M4）
+
+Linux writer（`agent/linux/trace_writer.cpp`）复用同一套中性机制（队列排水、代际配对、
+栈字典、Loss、统计对账、1 KiB 尾预留），平台特有处如下：
+
+- **事件来源**：glibc heap 组（malloc 族）与 VM 组（mmap/munmap/mremap）共享一个事件
+  队列；自定义 hook 事件经 `api_id >= 0x1000` 进入同一排水循环。
+- **VM 记录映射**：匿名 mmap → VmAllocate；文件映射（fd ≥ 0）→ Map；munmap 按存活映射
+  的类型匹配 VmFree（带 release 位）或 Unmap；mremap 原地扩保留 mapping_id，迁移展开为
+  VmFree+VmAllocate 记录对——**wire 序列与逐 API 统计按记录计数**（一次迁移调用产生两条
+  记录），hook 侧以 `paired_records` 计数补偿对账。
+- **统计口径**：finalize 时从 hook 侧取权威计数快照（`counter_source`），`filtered`
+  事件（capture.min_size）不进队列也能入账；对账不变式精确成立。
+- **模块跟踪**：轮询代际（dl_iterate_phdr diff），详见 MODULE_TRACKING.md §6。
+- **内存快照**：`/proc/self/status` 计数器 + `/proc/self/maps` 遍历，字段映射见
+  memory_snapshot.hpp 头注（VmRSS→working_set、VmHWM→peak、RssAnon→private、
+  VmSize→commit；`---p` → Reserve、可执行文件映射 → Image、POSIX PROT 位进 protect）。
+- **scope**：launch → `started_at_process_start`；attach → `preexisting_allocations_unknown`
+  （退出码 2 经 analyzer 的 completeness 推导）。
