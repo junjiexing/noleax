@@ -232,11 +232,28 @@ void validate_window_bound(const std::optional<WindowBound>& bound, std::string_
 }
 
 void validate_custom_hook_role(const CustomHookRole& role, std::string_view key, bool required) {
-  const std::uint32_t locators = (role.export_name.has_value() ? 1U : 0U) +
-                                 (role.pdb_symbol.has_value() ? 1U : 0U) +
-                                 (role.rva.has_value() ? 1U : 0U);
+#if defined(_WIN32)
+  if (role.symbol.has_value()) {
+    fail(key,
+         "_sym symbol locators are only supported on Linux; use an export name, a _pdb "
+         "symbol, or an _rva");
+  }
+#else
+  if (role.pdb_symbol.has_value()) {
+    fail(key,
+         "_pdb symbol locators are only supported on Windows; use an export name, a _sym "
+         "symbol, or an _rva");
+  }
+#endif
+  const std::uint32_t locators =
+      (role.export_name.has_value() ? 1U : 0U) + (role.pdb_symbol.has_value() ? 1U : 0U) +
+      (role.symbol.has_value() ? 1U : 0U) + (role.rva.has_value() ? 1U : 0U);
   if (locators > 1U) {
+#if defined(_WIN32)
     fail(key, "accepts exactly one of an export name, a _pdb symbol, or an _rva");
+#else
+    fail(key, "accepts exactly one of an export name, a _sym symbol, or an _rva");
+#endif
   }
   if (required && locators == 0U) {
     fail(key, "is required");
@@ -246,6 +263,9 @@ void validate_custom_hook_role(const CustomHookRole& role, std::string_view key,
   }
   if (role.pdb_symbol.has_value() && role.pdb_symbol->empty()) {
     fail(key, "PDB symbol must not be empty");
+  }
+  if (role.symbol.has_value() && role.symbol->empty()) {
+    fail(key, "symbol must not be empty");
   }
 }
 

@@ -23,6 +23,7 @@
 #include <unistd.h>
 
 #include <csignal>
+#include <cstdio>
 #include <ctime>
 #endif
 
@@ -51,6 +52,7 @@
 #include "noleax/controller/windows/diagnostics.hpp"
 #include "noleax/controller/windows/pe_patch.hpp"
 #else
+#include "elf_image.hpp"
 #include "noleax/controller/linux/controller.hpp"
 #include "noleax/controller/linux/diagnostics.hpp"
 #endif
@@ -1218,6 +1220,152 @@ class InterruptHandlerGuard final {
   throw ApplicationError{5, "compression codec is not supported by the Linux agent"};
 }
 
+// ---- custom hook symbol resolution (controller side: *_sym ELF locators become RVAs) ----
+
+[[noreturn]] void custom_hook_resolution_error(std::string_view message) {
+  throw ApplicationError{3, std::string{message}};
+}
+
+[[nodiscard]] bool needs_symbol_resolution(const noleax::config::CustomHook& hook) noexcept {
+  return hook.alloc.symbol.has_value() || hook.realloc.symbol.has_value() ||
+         hook.free.symbol.has_value();
+}
+
+// Finds an already-loaded module in the attach target by exact maps basename, anchored at
+// the file-offset-0 mapping (mirrors the Windows remote module search).
+[[nodiscard]] std::filesystem::path find_attach_module_path(std::uint32_t pid,
+                                                            const std::string& module) {
+  const std::string maps_path = "/proc/" + std::to_string(pid) + "/maps";
+  std::ifstream input{maps_path};
+  if (!input) {
+    custom_hook_resolution_error("cannot read " + maps_path + " to locate custom hook module '" +
+                                 module + "'");
+  }
+  std::string line;
+  while (std::getline(input, line)) {
+    unsigned long long start = 0U;
+    unsigned long long end = 0U;
+    unsigned long long offset = 0U;
+    int consumed = 0;
+    if (std::sscanf(line.c_str(), "%llx-%llx %*4s %llx %*s %*u%n", &start, &end, &offset,
+                    &consumed) != 3 ||
+        offset != 0U) {
+      continue;
+    }
+    const std::string_view rest = std::string_view{line}.substr(static_cast<std::size_t>(consumed));
+    const std::size_t first = rest.find_first_not_of(' ');
+    if (first == std::string_view::npos) {
+      continue;
+    }
+    const std::string_view path = rest.substr(first);
+    const std::size_t slash = path.rfind('/');
+    if (path.substr(slash == std::string_view::npos ? 0U : slash + 1U) == module) {
+      return std::filesystem::path{std::string{path}};
+    }
+  }
+  custom_hook_resolution_error("custom hook module '" + module + "' is not loaded in process " +
+                               std::to_string(pid));
+}
+
+// Locates the on-disk image of a custom hook module: an absolute or relative path is used
+// as given (relative to the working directory); a bare name is found beside the target
+// executable for run, or among the attach target's loaded modules.
+[[nodiscard]] std::filesystem::path locate_custom_hook_module(
+    const noleax::config::Configuration& configuration, const noleax::config::CustomHook& hook) {
+  const std::string& module = hook.module;
+  if (module.find('/') != std::string::npos) {
+    return noleax::config::normalize_path(module, std::filesystem::current_path());
+  }
+  if (*configuration.operation.value == noleax::config::Operation::kAttach) {
+    return find_attach_module_path(*configuration.target.pid.value, module);
+  }
+  std::error_code error;
+  const std::filesystem::path sibling = configuration.target.path.value->parent_path() / module;
+  if (std::filesystem::is_regular_file(sibling, error) && !error) {
+    return sibling;
+  }
+  custom_hook_resolution_error("cannot locate custom hook module '" + module +
+                               "' beside the target executable");
+}
+
+[[nodiscard]] noleax::ipc::CustomHookSpec resolve_custom_hook(
+    const noleax::config::Configuration& configuration, const noleax::config::CustomHook& hook) {
+  noleax::ipc::CustomHookSpec spec;
+  spec.module = hook.module;
+  spec.size_arg = hook.size_arg;
+  spec.ptr_arg = hook.ptr_arg;
+  spec.result_arg = hook.result_arg;
+  spec.count_arg = hook.count_arg;
+  spec.free_size_arg = hook.free_size_arg;
+  spec.calloc = hook.kind == noleax::config::CustomHookKind::kCalloc;
+  spec.forced = hook.forced;
+  // Round up so a sub-millisecond wait still polls once.
+  spec.wait_module_ms =
+      static_cast<std::uint64_t>((hook.wait_module.count() + 999'999) / 1'000'000);
+  spec.label = noleax::config::custom_hook_label(hook);
+
+  const auto map_role = [](const noleax::config::CustomHookRole& role) {
+    noleax::ipc::CustomHookRoleSpec mapped;
+    if (role.export_name.has_value()) {
+      mapped.locator = noleax::ipc::CustomHookLocator::kExport;
+      mapped.export_name = *role.export_name;
+    } else if (role.rva.has_value()) {
+      mapped.locator = noleax::ipc::CustomHookLocator::kRva;
+      mapped.rva = *role.rva;
+    }
+    return mapped;
+  };
+  spec.alloc = map_role(hook.alloc);
+  spec.realloc = map_role(hook.realloc);
+  spec.free = map_role(hook.free);
+
+  if (!needs_symbol_resolution(hook)) {
+    return spec;
+  }
+  const std::filesystem::path module_path = locate_custom_hook_module(configuration, hook);
+  std::optional<noleax::analyzer::elf::ElfImage> image;
+  try {
+    image.emplace(module_path);
+  } catch (const noleax::analyzer::elf::ElfImageError& error) {
+    custom_hook_resolution_error("cannot read custom hook module image '" +
+                                 noleax::config::path_to_utf8(module_path) + "': " + error.what());
+  }
+  const auto resolve_role = [&hook, &image](const noleax::config::CustomHookRole& role,
+                                            const char* role_name,
+                                            noleax::ipc::CustomHookRoleSpec& target) {
+    if (!role.symbol.has_value()) {
+      return;
+    }
+    const std::optional<noleax::analyzer::elf::ElfSymbol> symbol = image->find_symbol(*role.symbol);
+    if (!symbol.has_value()) {
+      custom_hook_resolution_error("custom hook " + std::string{role_name} + " symbol '" +
+                                   *role.symbol + "' was not found in module '" + hook.module +
+                                   "' (no such ELF symtab/dynsym symbol)");
+    }
+    if (symbol->value < image->minimum_load_vaddr()) {
+      custom_hook_resolution_error("custom hook " + std::string{role_name} + " symbol '" +
+                                   *role.symbol + "' in module '" + hook.module +
+                                   "' is not a loadable address");
+    }
+    target.locator = noleax::ipc::CustomHookLocator::kRva;
+    target.rva = symbol->value - image->minimum_load_vaddr();
+  };
+  resolve_role(hook.alloc, "alloc", spec.alloc);
+  resolve_role(hook.realloc, "realloc", spec.realloc);
+  resolve_role(hook.free, "free", spec.free);
+  return spec;
+}
+
+[[nodiscard]] std::vector<noleax::ipc::CustomHookSpec> resolve_custom_hooks(
+    const noleax::config::Configuration& configuration) {
+  std::vector<noleax::ipc::CustomHookSpec> specs;
+  specs.reserve(configuration.custom_hooks.value.size());
+  for (const auto& hook : configuration.custom_hooks.value) {
+    specs.push_back(resolve_custom_hook(configuration, hook));
+  }
+  return specs;
+}
+
 [[nodiscard]] noleax::controller::linux::CaptureOptions linux_capture_options(
     const noleax::config::Configuration& configuration, const std::filesystem::path& trace_path) {
   noleax::controller::linux::CaptureOptions capture;
@@ -1248,6 +1396,7 @@ class InterruptHandlerGuard final {
   const auto trace_utf8 = std::filesystem::absolute(trace_path).generic_u8string();
   capture.start.trace_path_utf8 = std::string{trace_utf8.begin(), trace_utf8.end()};
   capture.start.unload_on_stop = configuration.injection.unload_on_stop.value;
+  capture.start.custom_hooks = resolve_custom_hooks(configuration);
   return capture;
 }
 

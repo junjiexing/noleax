@@ -119,14 +119,19 @@ enum class CustomHookKind : std::uint8_t {
 };
 
 // One function role of a custom hook declaration. At most one locator is set; a role with no
-// locator is undeclared (valid only for realloc).
+// locator is undeclared (valid only for realloc). export_name is a dynamic-export symbol the
+// agent resolves in the target, pdb_symbol a Windows PDB symbol the controller bakes to an
+// RVA, symbol a Linux ELF symtab/dynsym symbol the controller resolves to an RVA, and rva a
+// raw module-relative offset.
 struct CustomHookRole {
   std::optional<std::string> export_name;
   std::optional<std::string> pdb_symbol;
+  std::optional<std::string> symbol;
   std::optional<std::uint64_t> rva;
 
   [[nodiscard]] bool declared() const noexcept {
-    return export_name.has_value() || pdb_symbol.has_value() || rva.has_value();
+    return export_name.has_value() || pdb_symbol.has_value() || symbol.has_value() ||
+           rva.has_value();
   }
 
   bool operator==(const CustomHookRole&) const = default;

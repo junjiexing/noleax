@@ -277,6 +277,7 @@ void assign_custom_hook_role(config::CustomHookRole& role, std::string_view key,
     return;
   }
   const std::string pdb_suffix{"_pdb"};
+  const std::string sym_suffix{"_sym"};
   const std::string rva_suffix{"_rva"};
   if (key.size() > pdb_suffix.size() &&
       key.compare(key.size() - pdb_suffix.size(), pdb_suffix.size(), pdb_suffix) == 0) {
@@ -284,6 +285,14 @@ void assign_custom_hook_role(config::CustomHookRole& role, std::string_view key,
       custom_hook_error("duplicate key '" + std::string{key} + "'");
     }
     role.pdb_symbol = std::string{value};
+    return;
+  }
+  if (key.size() > sym_suffix.size() &&
+      key.compare(key.size() - sym_suffix.size(), sym_suffix.size(), sym_suffix) == 0) {
+    if (role.symbol.has_value()) {
+      custom_hook_error("duplicate key '" + std::string{key} + "'");
+    }
+    role.symbol = std::string{value};
     return;
   }
   if (key.size() > rva_suffix.size() &&
@@ -317,7 +326,7 @@ void assign_custom_hook_role(config::CustomHookRole& role, std::string_view key,
 
 // Parses "module.dll:alloc=fn,free=fn2[,realloc=fn3][,size_arg=1][,ptr_arg=0][,result_arg=0]
 // [,kind=calloc][,count_arg=0][,free_size_arg=1][,forced=true][,wait_module=10s]
-// [,alloc_rva=0x1234][,alloc_pdb=mod!sym]".
+// [,alloc_rva=0x1234][,alloc_pdb=mod!sym][,alloc_sym=fn4]".
 [[nodiscard]] config::CustomHook parse_custom_hook_spec(std::string_view spec) {
   const std::size_t colon = spec.find(':');
   if (colon == std::string_view::npos || colon == 0U || colon + 1U == spec.size()) {

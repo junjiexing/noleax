@@ -613,15 +613,20 @@ void load_custom_hook_role(const toml::table& table, std::string_view role_name,
                            CustomHookRole& role) {
   const std::string export_key{role_name};
   const std::string pdb_key = export_key + "_pdb";
+  const std::string sym_key = export_key + "_sym";
   const std::string rva_key = export_key + "_rva";
   const std::string export_full_key = std::string{"custom_hooks."} + export_key;
   const std::string pdb_full_key = std::string{"custom_hooks."} + pdb_key;
+  const std::string sym_full_key = std::string{"custom_hooks."} + sym_key;
   const std::string rva_full_key = std::string{"custom_hooks."} + rva_key;
   if (const auto* node = optional_node(table, export_key)) {
     role.export_name = read_string(*node, export_full_key, "--custom-hook");
   }
   if (const auto* node = optional_node(table, pdb_key)) {
     role.pdb_symbol = read_string(*node, pdb_full_key, "--custom-hook");
+  }
+  if (const auto* node = optional_node(table, sym_key)) {
+    role.symbol = read_string(*node, sym_full_key, "--custom-hook");
   }
   if (const auto* node = optional_node(table, rva_key)) {
     role.rva = read_rva(*node, rva_full_key, "--custom-hook");
@@ -633,11 +638,18 @@ void load_custom_hook_role(const toml::table& table, std::string_view role_name,
 }
 
 [[nodiscard]] CustomHook load_custom_hook(const toml::table& table) {
-  constexpr std::array allowed{
-      "module",          "alloc",          "alloc_pdb", "alloc_rva",     "realloc",  "realloc_pdb",
-      "realloc_rva",     "free",           "free_pdb",  "free_rva",      "size_arg", "ptr_arg",
-      "result_arg",      "kind",           "count_arg", "free_size_arg", "forced",   "wait_module",
-      "image_timestamp", "image_checksum", "image_size"};
+  constexpr std::array allowed{"module",         "alloc",
+                               "alloc_pdb",      "alloc_sym",
+                               "alloc_rva",      "realloc",
+                               "realloc_pdb",    "realloc_sym",
+                               "realloc_rva",    "free",
+                               "free_pdb",       "free_sym",
+                               "free_rva",       "size_arg",
+                               "ptr_arg",        "result_arg",
+                               "kind",           "count_arg",
+                               "free_size_arg",  "forced",
+                               "wait_module",    "image_timestamp",
+                               "image_checksum", "image_size"};
   reject_unknown_keys(table, allowed, "custom_hooks");
 
   CustomHook hook;

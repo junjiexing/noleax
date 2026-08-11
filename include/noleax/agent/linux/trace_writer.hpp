@@ -12,7 +12,9 @@
 
 #include "noleax/agent/linux/heap_event.hpp"
 #include "noleax/agent/linux/module_tracker.hpp"
+#include "noleax/ipc/protocol.hpp"
 #include "noleax/trace/completeness.hpp"
+#include "noleax/trace/custom_hook.hpp"
 #include "noleax/trace/identifiers.hpp"
 #include "noleax/trace/trace_reader.hpp"
 #include "noleax/trace/trace_writer.hpp"
@@ -35,7 +37,7 @@ struct LinuxTraceWriterApiCounterSnapshot {
 
 // Linux counterpart of RtlAllocateHeapTraceWriterOptions (docs/LINUX_PORT_PLAN.md M3/M4),
 // covering the glibc heap and virtual memory (mmap/munmap/mremap) event families plus the
-// periodic memory samplers; custom-hook knobs arrive with M7 and the glibc heap has no
+// periodic memory samplers and the M7 custom hook points; the glibc heap has no
 // heap-lifecycle family.
 struct LinuxTraceWriterOptions {
   noleax::trace::TraceWriterOptions trace;
@@ -63,6 +65,11 @@ struct LinuxTraceWriterOptions {
   // so an honest filtered_before_queue and the observed side of the reconciliation
   // come from this snapshot. Unset: statistics derive from drained events only.
   std::function<std::vector<LinuxTraceWriterApiCounterSnapshot>()> counter_source;
+  // Declared custom hook points (M7), in declaration order: point i owns api_id
+  // noleax::trace::kCustomHookApiIdBase + i. The writer emits one CustomHookDefinition
+  // record per point in the metadata chunk and drains the points' queued events;
+  // install failures are reported separately through note_custom_hook_failures().
+  std::vector<noleax::ipc::CustomHookSpec> custom_hooks;
 };
 
 enum class LinuxTraceWriterStatus : std::uint8_t {
@@ -123,6 +130,11 @@ class LinuxTraceWriter final {
   LinuxTraceWriter& operator=(LinuxTraceWriter&&) = delete;
 
   void begin_capture();
+  // Records custom hook points that failed to install. The failures land in the metadata
+  // chunk (next to the CustomHookDefinition records) and mark the trace completeness issue;
+  // the capture itself continues with the hooks that did install. Call after hook
+  // installation, before begin_capture().
+  void note_custom_hook_failures(std::vector<noleax::trace::CustomHookFailure> failures);
   [[nodiscard]] LinuxTraceWriterResult finish();
   // Finalizes the trace on the calling thread when the worker can no longer run
   // (process teardown). Runs the final drain inline without joining or waking the

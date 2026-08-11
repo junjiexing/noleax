@@ -25,6 +25,9 @@ void apply_override(Setting<T>& setting, const SettingOverride<T>& override_valu
   if (role.export_name.has_value()) {
     return *role.export_name;
   }
+  if (role.symbol.has_value()) {
+    return *role.symbol;
+  }
   if (role.pdb_symbol.has_value()) {
     const std::size_t separator = role.pdb_symbol->find('!');
     return separator == std::string::npos ? *role.pdb_symbol

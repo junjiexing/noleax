@@ -189,6 +189,9 @@ void append_custom_hook_role(std::string& output, std::string_view role_name,
   if (role.pdb_symbol.has_value()) {
     append_setting(output, std::string{role_name} + "_pdb", quote_toml(*role.pdb_symbol), source);
   }
+  if (role.symbol.has_value()) {
+    append_setting(output, std::string{role_name} + "_sym", quote_toml(*role.symbol), source);
+  }
   if (role.rva.has_value()) {
     append_setting(output, std::string{role_name} + "_rva", quote_toml(format_rva(*role.rva)),
                    source);

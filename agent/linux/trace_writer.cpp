@@ -1,11 +1,11 @@
-// Linux in-process trace writer (docs/LINUX_PORT_PLAN.md M3/M4): drains the shared glibc
+// Linux in-process trace writer (docs/LINUX_PORT_PLAN.md M3/M4/M7): drains the shared glibc
 // heap + virtual memory event queue plus the poll-based module tracker on an internal
 // worker thread and writes a bounded .nlx trace through the platform-neutral noleax::trace
 // library. Mirrors the Windows RtlAllocateHeapTraceWriter architecture and invariants,
-// scoped to the two built-in event families plus the /proc memory samplers; custom-hook
-// records arrive with M7 and the glibc heap has no heap-lifecycle family. heap_handle is
-// always 0 and heap_id stays invalid in allocation records (the wire model only requires
-// heap_id for HeapCreate).
+// scoped to the two built-in event families, the /proc memory samplers, and the custom
+// hook points declared in LinuxTraceWriterOptions::custom_hooks (M7; the glibc heap has no
+// heap-lifecycle family). heap_handle is always 0 and heap_id stays invalid in allocation
+// records (the wire model only requires heap_id for HeapCreate).
 
 #include "noleax/agent/linux/trace_writer.hpp"
 
@@ -36,7 +36,9 @@
 #include "noleax/agent/linux/memory_snapshot.hpp"
 #include "noleax/agent/linux/stack_capture.hpp"
 #include "noleax/agent/windows/stack_dictionary.hpp"
+#include "noleax/ipc/protocol.hpp"
 #include "noleax/trace/completeness.hpp"
+#include "noleax/trace/custom_hook.hpp"
 #include "noleax/trace/event.hpp"
 #include "noleax/trace/module.hpp"
 #include "noleax/trace/record_codec.hpp"
@@ -61,6 +63,10 @@ constexpr std::size_t kMaximumStackDefinitionRecordSize =
 constexpr std::size_t kMaximumModuleLoadRecordSize = 8U * 1024U;
 constexpr std::size_t kMaximumEventAdditionSize = 152U + 56U;
 constexpr std::uint64_t kMinimumTerminalReserveSize = 1024U;
+// Terminal tail when no custom hooks are declared: the statistics chunk's 48-byte per-API
+// records cover the built-in registry only. Each declared custom hook point adds one more
+// per-API record, and validate_options extends the reserve by exactly that amount.
+constexpr std::uint64_t kTerminalReservePerCustomHook = 48U;
 constexpr std::uint64_t kMaximumTerminalTailSize =
     (noleax::trace::kChunkHeaderSize + 3U * 56U) +
     (noleax::trace::kChunkHeaderSize + 8U + 80U + kLinuxHookRegistry.size() * 48U) +
@@ -134,6 +140,9 @@ static_assert(kMaximumTerminalTailSize <= kMinimumTerminalReserveSize);
       options.memory_map_interval < std::chrono::nanoseconds::zero()) {
     throw std::invalid_argument{"trace writer memory snapshot intervals must not be negative"};
   }
+  if (options.custom_hooks.size() > noleax::ipc::kMaximumCustomHooks) {
+    throw std::invalid_argument{"trace writer declares too many custom hook points"};
+  }
   if (options.chunk_target_size == 0U ||
       options.chunk_target_size > options.trace.max_uncompressed_chunk_size) {
     throw std::invalid_argument{"trace writer chunk target is out of range"};
@@ -157,9 +166,28 @@ static_assert(kMaximumTerminalTailSize <= kMinimumTerminalReserveSize);
     throw std::invalid_argument{
         "trace writer stored chunk size cannot hold the largest compressed chunk"};
   }
-  options.trace.reserved_tail_size =
-      (std::max)(options.trace.reserved_tail_size, kMinimumTerminalReserveSize);
+  options.trace.reserved_tail_size = (std::max)(
+      options.trace.reserved_tail_size,
+      kMinimumTerminalReserveSize + options.custom_hooks.size() * kTerminalReservePerCustomHook);
   return options;
+}
+
+// The writer derives the CustomHookDefinition records from the declared specs: point i owns
+// api_id kCustomHookApiIdBase + i, exactly like the Windows CustomSymbolHooks constructor.
+[[nodiscard]] std::vector<noleax::trace::CustomHookDefinition> make_custom_hook_definitions(
+    const std::vector<noleax::ipc::CustomHookSpec>& specs) {
+  std::vector<noleax::trace::CustomHookDefinition> definitions;
+  definitions.reserve(specs.size());
+  for (std::size_t index = 0U; index < specs.size(); ++index) {
+    noleax::trace::CustomHookDefinition definition;
+    definition.api_id =
+        noleax::trace::kCustomHookApiIdBase + static_cast<noleax::trace::ApiId>(index);
+    definition.module_name = specs[index].module;
+    definition.label = specs[index].label;
+    noleax::trace::validate_custom_hook_definition(definition);
+    definitions.push_back(std::move(definition));
+  }
+  return definitions;
 }
 
 void checked_add(std::uint64_t& value, std::uint64_t addition, const char* subject) {
@@ -261,12 +289,14 @@ class LinuxTraceWriter::Implementation final {
       : event_queue_{validate_event_queue(event_queue)},
         module_tracker_{module_tracker},
         options_{validate_options(options)},
+        custom_definitions_{make_custom_hook_definitions(options_.custom_hooks)},
         output_{open_trace_output(output_path)},
         monotonic_origin_{options_.monotonic_origin != 0U ? options_.monotonic_origin
                                                           : monotonic_now_ns()},
         dictionary_{options_.stack_dictionary_capacity},
         writer_{output_, make_file_header(options_, monotonic_origin_), options_.trace},
-        completeness_{options_.capture_scope} {
+        completeness_{options_.capture_scope},
+        api_counters_{kLinuxHookRegistry.size() + custom_definitions_.size()} {
     module_payload_.reserve(options_.chunk_target_size);
     stack_payload_.reserve(options_.chunk_target_size);
     event_payload_.reserve(options_.chunk_target_size);
@@ -293,6 +323,25 @@ class LinuxTraceWriter::Implementation final {
     write_metadata();
     capture_begun_ = true;
     state_changed_.notify_all();
+  }
+
+  // Records custom hook points that failed to install. The failures land in the metadata
+  // chunk (next to the CustomHookDefinition records) and mark the trace completeness issue;
+  // the capture itself continues with the hooks that did install. Call after hook
+  // installation, before begin_capture().
+  void note_custom_hook_failures(std::vector<noleax::trace::CustomHookFailure> failures) {
+    std::scoped_lock lock{state_mutex_};
+    if (capture_begun_) {
+      throw std::logic_error{"custom hook failures must be noted before capture begins"};
+    }
+    if (failures.empty()) {
+      return;
+    }
+    for (const auto& failure : failures) {
+      noleax::trace::validate_custom_hook_failure(failure);
+    }
+    completeness_.mark_custom_hook_install_failed();
+    custom_hook_failures_ = std::move(failures);
   }
 
   void request_stop() noexcept {
@@ -377,6 +426,14 @@ class LinuxTraceWriter::Implementation final {
     std::vector<std::byte> payload;
     noleax::trace::append_capture_scope_record(payload, options_.capture_scope,
                                                options_.maximum_record_size);
+    for (const noleax::trace::CustomHookDefinition& definition : custom_definitions_) {
+      noleax::trace::append_custom_hook_definition_record(payload, definition,
+                                                          options_.maximum_record_size);
+    }
+    for (const noleax::trace::CustomHookFailure& failure : custom_hook_failures_) {
+      noleax::trace::append_custom_hook_failure_record(payload, failure,
+                                                       options_.maximum_record_size);
+    }
     noleax::trace::ChunkDescriptor descriptor;
     descriptor.type = noleax::trace::ChunkType::kMetadata;
     descriptor.codec = options_.compression;
@@ -687,10 +744,19 @@ class LinuxTraceWriter::Implementation final {
       throw std::invalid_argument{"raw Linux heap event result is inconsistent"};
     }
     const LinuxHookRegistryEntry* const hook = find_linux_hook(raw_event.api_id);
-    if (hook == nullptr) {
+    const bool custom_event = hook == nullptr;
+    if (custom_event && !is_declared_custom_api(raw_event.api_id)) {
       throw std::invalid_argument{"raw Linux heap event carries an unknown API ID"};
     }
-    if (expected_operation(hook->logical_api) != raw_event.operation) {
+    if (custom_event) {
+      // Custom hook points produce only the three heap operations; the per-operation
+      // invariants below are shared with the built-in heap events.
+      if (raw_event.operation != LinuxHeapEventOperation::kAllocate &&
+          raw_event.operation != LinuxHeapEventOperation::kReallocate &&
+          raw_event.operation != LinuxHeapEventOperation::kFree) {
+        throw std::invalid_argument{"raw custom hook event operation is not supported"};
+      }
+    } else if (expected_operation(hook->logical_api) != raw_event.operation) {
       throw std::invalid_argument{"raw Linux heap event operation does not match its API"};
     }
     switch (raw_event.operation) {
@@ -774,11 +840,30 @@ class LinuxTraceWriter::Implementation final {
     throw std::invalid_argument{"raw captured stack encoding is invalid"};
   }
 
-  [[nodiscard]] noleax::trace::AllocationId make_allocation_id() {
-    if (next_allocation_id_ == std::numeric_limits<std::uint64_t>::max()) {
-      throw std::overflow_error{"allocation ID space is exhausted"};
+  [[nodiscard]] bool is_declared_custom_api(noleax::trace::ApiId api_id) const noexcept {
+    if (api_id < noleax::trace::kCustomHookApiIdBase) {
+      return false;
     }
-    return noleax::trace::AllocationId{next_allocation_id_++};
+    return static_cast<std::size_t>(api_id - noleax::trace::kCustomHookApiIdBase) <
+           custom_definitions_.size();
+  }
+
+  [[nodiscard]] noleax::trace::AllocationId make_allocation_id(noleax::trace::ApiId api_id) {
+    if (api_id < noleax::trace::kCustomHookApiIdBase) {
+      if (next_allocation_id_ == std::numeric_limits<std::uint64_t>::max()) {
+        throw std::overflow_error{"allocation ID space is exhausted"};
+      }
+      return noleax::trace::AllocationId{next_allocation_id_++};
+    }
+    // Custom hook allocations live in their own ID space: (api_id << 40) | counter, with
+    // the counter per hook point starting at one (mirrors the Windows writer); matching
+    // frees and reallocations pass the stamped id through the live map unchanged.
+    std::uint64_t& counter = custom_allocation_counters_[api_id];
+    if (counter >= (std::uint64_t{1U} << 40U)) {
+      throw std::overflow_error{"custom hook allocation ID space is exhausted"};
+    }
+    ++counter;
+    return noleax::trace::AllocationId{(static_cast<std::uint64_t>(api_id) << 40U) | counter};
   }
 
   [[nodiscard]] noleax::trace::MappingId create_virtual_mapping(std::uint64_t base,
@@ -918,7 +1003,7 @@ class LinuxTraceWriter::Implementation final {
       allocation.requested_size = raw_event.requested_size;
       allocation.result_address = raw_event.result_address;
       if (succeeded) {
-        allocation.allocation_id = make_allocation_id();
+        allocation.allocation_id = make_allocation_id(raw_event.api_id);
         live_allocations_.insert_or_assign(raw_event.result_address, allocation.allocation_id);
       }
       event.payload = allocation;
@@ -941,7 +1026,7 @@ class LinuxTraceWriter::Implementation final {
             // realloc(p, 0) frees the old generation and returns NULL.
             reallocation.effect = noleax::trace::ReallocationEffect::kFreed;
           } else {
-            reallocation.new_allocation_id = make_allocation_id();
+            reallocation.new_allocation_id = make_allocation_id(raw_event.api_id);
             reallocation.effect = noleax::trace::ReallocationEffect::kNewGeneration;
             live_allocations_.insert_or_assign(raw_event.result_address,
                                                reallocation.new_allocation_id);
@@ -950,7 +1035,7 @@ class LinuxTraceWriter::Implementation final {
           event.header.status = unmatched_status(raw_event.address);
           if (raw_event.result_address != 0U) {
             // realloc(NULL, n) allocates a fresh generation with no old one.
-            reallocation.new_allocation_id = make_allocation_id();
+            reallocation.new_allocation_id = make_allocation_id(raw_event.api_id);
             reallocation.effect = noleax::trace::ReallocationEffect::kNewGeneration;
             live_allocations_.insert_or_assign(raw_event.result_address,
                                                reallocation.new_allocation_id);
@@ -1362,6 +1447,9 @@ class LinuxTraceWriter::Implementation final {
     for (const LinuxHookRegistryEntry& entry : kLinuxHookRegistry) {
       statistics.per_api.push_back({entry.api_id, 0U, 0U, 0U, 0U, 0U});
     }
+    for (const noleax::trace::CustomHookDefinition& definition : custom_definitions_) {
+      statistics.per_api.push_back({definition.api_id, 0U, 0U, 0U, 0U, 0U});
+    }
     write_terminal_records(statistics);
   }
 
@@ -1423,17 +1511,21 @@ class LinuxTraceWriter::Implementation final {
     if (options_.counter_source) {
       counter_snapshots = options_.counter_source();
     }
-    for (std::size_t index = 0U; index < kLinuxHookRegistry.size(); ++index) {
+    for (std::size_t index = 0U; index < api_counters_.size(); ++index) {
       const ApiCounters& counters = api_counters_[index];
+      const noleax::trace::ApiId api_id =
+          index < kLinuxHookRegistry.size()
+              ? kLinuxHookRegistry[index].api_id
+              : custom_definitions_[index - kLinuxHookRegistry.size()].api_id;
       const LinuxTraceWriterApiCounterSnapshot* snapshot = nullptr;
       for (const auto& candidate : counter_snapshots) {
-        if (candidate.api_id == kLinuxHookRegistry[index].api_id) {
+        if (candidate.api_id == api_id) {
           snapshot = &candidate;
           break;
         }
       }
       noleax::trace::ApiStatistics api;
-      api.api_id = kLinuxHookRegistry[index].api_id;
+      api.api_id = api_id;
       if (snapshot != nullptr) {
         api.observed_calls = snapshot->recordable_calls;
         api.successful_operations = snapshot->successful_calls;
@@ -1551,10 +1643,19 @@ class LinuxTraceWriter::Implementation final {
     result_.memory_map_records = memory_map_records_;
   }
 
-  [[nodiscard]] static std::size_t hook_api_index(noleax::trace::ApiId api_id) {
+  // Per-API counter slots: the built-in registry entries first, then one slot per declared
+  // custom hook point in declaration order.
+  [[nodiscard]] std::size_t hook_api_index(noleax::trace::ApiId api_id) const {
     for (std::size_t index = 0U; index < kLinuxHookRegistry.size(); ++index) {
       if (kLinuxHookRegistry[index].api_id == api_id) {
         return index;
+      }
+    }
+    if (api_id >= noleax::trace::kCustomHookApiIdBase) {
+      const std::size_t custom_index =
+          static_cast<std::size_t>(api_id - noleax::trace::kCustomHookApiIdBase);
+      if (custom_index < custom_definitions_.size()) {
+        return kLinuxHookRegistry.size() + custom_index;
       }
     }
     throw std::invalid_argument{"raw Linux heap event carries an unknown API ID"};
@@ -1571,6 +1672,7 @@ class LinuxTraceWriter::Implementation final {
   LinuxHeapEventQueue& event_queue_;
   LinuxModuleTracker& module_tracker_;
   const LinuxTraceWriterOptions options_;
+  const std::vector<noleax::trace::CustomHookDefinition> custom_definitions_;
   std::ofstream output_;
   const std::uint64_t monotonic_origin_;
   NormalizedStackDictionary dictionary_;
@@ -1586,7 +1688,9 @@ class LinuxTraceWriter::Implementation final {
   std::map<std::uint64_t, LiveModule> live_modules_;
   std::map<std::uint64_t, LiveMapping> live_vm_mappings_;
   std::map<std::uint64_t, LiveMapping> live_section_mappings_;
-  std::array<ApiCounters, kLinuxHookRegistry.size()> api_counters_{};
+  std::vector<ApiCounters> api_counters_;
+  std::unordered_map<noleax::trace::ApiId, std::uint64_t> custom_allocation_counters_;
+  std::vector<noleax::trace::CustomHookFailure> custom_hook_failures_;
   std::thread worker_;
   mutable std::mutex state_mutex_;
   std::condition_variable state_changed_;
@@ -1648,6 +1752,11 @@ LinuxTraceWriter::LinuxTraceWriter(LinuxHeapEventQueue& event_queue,
 LinuxTraceWriter::~LinuxTraceWriter() = default;
 
 void LinuxTraceWriter::begin_capture() { implementation_->begin_capture(); }
+
+void LinuxTraceWriter::note_custom_hook_failures(
+    std::vector<noleax::trace::CustomHookFailure> failures) {
+  implementation_->note_custom_hook_failures(std::move(failures));
+}
 
 LinuxTraceWriterResult LinuxTraceWriter::finish() { return implementation_->finish(); }
 

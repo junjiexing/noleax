@@ -306,6 +306,108 @@ TEST_CASE("custom hook label prefers the alloc symbol and falls back to module+R
   CHECK(noleax::config::custom_hook_label(hook) == "myalloc.dll+0x12340");
 }
 
+TEST_CASE("TOML custom_hooks parse _sym symbol locators", "[config][toml][custom-hook]") {
+  TemporaryDirectory temporary;
+  const auto config_path = temporary.path() / "noleax.toml";
+  write_file(config_path, R"toml(schema_version = 1
+
+[[custom_hooks]]
+module = "libmyalloc.so"
+alloc_sym = "my_malloc"
+realloc_sym = "my_realloc"
+free_sym = "my_free"
+)toml");
+
+  const auto overrides = noleax::config::load_toml_config(config_path);
+  REQUIRE(overrides.custom_hooks.specified);
+  REQUIRE(overrides.custom_hooks.value.size() == 1U);
+  const auto& hook = overrides.custom_hooks.value.at(0U);
+  CHECK(hook.module == "libmyalloc.so");
+  CHECK(hook.alloc.symbol == "my_malloc");
+  CHECK(hook.realloc.symbol == "my_realloc");
+  CHECK(hook.free.symbol == "my_free");
+  CHECK(hook.alloc.declared());
+  CHECK_FALSE(hook.alloc.export_name.has_value());
+  CHECK_FALSE(hook.alloc.rva.has_value());
+}
+
+TEST_CASE("custom hook _sym locators are gated by platform", "[config][custom-hook]") {
+  TemporaryDirectory temporary;
+  const auto target = temporary.path() / "target.exe";
+  write_file(target);
+  auto configuration = run_configuration(target);
+
+  noleax::config::CustomHook sym_hook;
+  sym_hook.module = "libmyalloc.so";
+  sym_hook.alloc.symbol = "my_malloc";
+  sym_hook.free.symbol = "my_free";
+
+#if defined(_WIN32)
+  // _sym locators are Linux-only.
+  configuration.custom_hooks.value = {sym_hook};
+  CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
+                  noleax::config::ConfigError);
+#else
+  // A _sym declaration validates on Linux.
+  configuration.custom_hooks.value = {sym_hook};
+  CHECK_NOTHROW(noleax::config::validate_configuration(configuration));
+
+  // _pdb locators are Windows-only.
+  auto pdb_hook = sym_hook;
+  pdb_hook.alloc.symbol.reset();
+  pdb_hook.alloc.pdb_symbol = "myalloc!internal_alloc";
+  configuration.custom_hooks.value = {pdb_hook};
+  CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
+                  noleax::config::ConfigError);
+
+  // Still at most one locator per role across all four kinds.
+  auto mixed = sym_hook;
+  mixed.alloc.rva = 0x1000U;
+  configuration.custom_hooks.value = {mixed};
+  CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
+                  noleax::config::ConfigError);
+
+  // The _sym symbol name must not be empty.
+  auto empty = sym_hook;
+  empty.alloc.symbol = std::string{};
+  configuration.custom_hooks.value = {empty};
+  CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
+                  noleax::config::ConfigError);
+#endif
+}
+
+TEST_CASE("effective TOML serializes and round-trips _sym locators",
+          "[config][toml][custom-hook]") {
+  TemporaryDirectory temporary;
+  auto configuration = noleax::config::make_default_configuration();
+  configuration.operation.value = noleax::config::Operation::kDoctor;
+
+  noleax::config::CustomHook hook;
+  hook.module = "libmyalloc.so";
+  hook.alloc.symbol = "my_malloc";
+  hook.free.symbol = "my_free";
+  configuration.custom_hooks.value = {hook};
+  configuration.custom_hooks.source = noleax::config::ValueSource::kCommandLine;
+
+  const auto serialized = noleax::config::serialize_effective_config(configuration);
+  CHECK(serialized.find("alloc_sym = \"my_malloc\"") != std::string::npos);
+  CHECK(serialized.find("free_sym = \"my_free\"") != std::string::npos);
+
+  const auto path = temporary.path() / "effective.toml";
+  write_file(path, serialized);
+  const auto overrides = noleax::config::load_toml_config(path);
+  REQUIRE(overrides.custom_hooks.specified);
+  REQUIRE(overrides.custom_hooks.value.size() == 1U);
+  CHECK(overrides.custom_hooks.value.at(0U) == hook);
+}
+
+TEST_CASE("custom hook label uses the _sym symbol name", "[config][custom-hook]") {
+  auto hook = export_hook();
+  hook.alloc.export_name.reset();
+  hook.alloc.symbol = "internal_malloc";
+  CHECK(noleax::config::custom_hook_label(hook) == "internal_malloc");
+}
+
 TEST_CASE("parse_rva accepts hexadecimal and decimal and rejects invalid input",
           "[config][custom-hook]") {
   CHECK(noleax::config::parse_rva("0x12340") == 0x12340U);

@@ -1,9 +1,9 @@
-// Probe for the Linux in-process trace writer (docs/LINUX_PORT_PLAN.md M3/M4): synthesizes
+// Probe for the Linux in-process trace writer (docs/LINUX_PORT_PLAN.md M3/M4/M7): synthesizes
 // a scripted glibc heap + virtual memory event set through LinuxTraceWriter and validates
 // the resulting .nlx trace by reading it back with the platform-neutral trace reader plus
 // the analyzer's event-stream invariants and generation tracker. Standalone main, exit 0/1.
 //
-// Six phases:
+// Seven phases:
 //   1. clean launch-scope capture: allocation/reallocation/free generation pairing,
 //      unmatched and failed calls, multi-chunk flushing, completeness mask 0;
 //   2. lossy capture: a failed stack capture (inline LossRecord), a backwards
@@ -15,7 +15,10 @@
 //      in-place growth, an mremap move (free + allocate pair), a failed mmap, and an
 //      unmatched munmap, with generation pairing through the analyzer;
 //   6. memory samplers: tiny snapshot intervals produce kMemory chunks with plausible
-//      counters and a non-empty region map.
+//      counters and a non-empty region map;
+//   7. custom hooks: two declared points emit CustomHookDefinition records, one noted
+//      install failure emits a CustomHookFailure record and sets completeness bit 10, and
+//      the points' events decode with namespaced allocation ids.
 //
 // With an argument, phases 5 and 6 also copy their traces into that directory (for manual
 // CLI cross-checks).
@@ -48,7 +51,9 @@
 #include "noleax/agent/windows/stack_dictionary.hpp"
 #include "noleax/analyzer/event_stream.hpp"
 #include "noleax/analyzer/generation_tracker.hpp"
+#include "noleax/ipc/protocol.hpp"
 #include "noleax/trace/completeness.hpp"
+#include "noleax/trace/custom_hook.hpp"
 #include "noleax/trace/event.hpp"
 #include "noleax/trace/memory_snapshot.hpp"
 #include "noleax/trace/module.hpp"
@@ -1151,6 +1156,177 @@ bool phase6(const std::filesystem::path& keep_dir) {
   return true;
 }
 
+// Phase 7: custom hooks (M7). Two declared points produce CustomHookDefinition records in
+// the metadata chunk; one install failure noted before begin_capture produces a
+// CustomHookFailure record right after them and sets completeness bit 10
+// (custom_hook_install_failed). The points' queued events decode as AllocationEvent/
+// FreeEvent with per-point namespaced allocation ids ((api_id << 40) | counter) that pass
+// through the live map into the matching free.
+bool phase7() {
+  std::printf("phase 7: custom hooks\n");
+  const std::filesystem::path path = probe_path("p7");
+  const std::uint64_t origin = monotonic_now_ns();
+  const std::uint64_t thread_id = this_thread_id();
+
+  constexpr noleax::trace::ApiId kHookA = noleax::trace::kCustomHookApiIdBase;
+  constexpr noleax::trace::ApiId kHookB = noleax::trace::kCustomHookApiIdBase + 1U;
+  constexpr std::uint64_t kP1 = 0x5000'1000'1000ULL;
+  constexpr std::uint64_t kP2 = 0x5000'1000'2000ULL;
+  constexpr auto kAllocate = LinuxHeapEventOperation::kAllocate;
+  constexpr auto kFree = LinuxHeapEventOperation::kFree;
+  constexpr auto kSuccess = LinuxHeapEventStatus::kSuccess;
+  constexpr auto kFailure = LinuxHeapEventStatus::kFailure;
+
+  LinuxTraceWriterResult result;
+  {
+    LinuxHeapEventQueue queue{1024U};
+    LinuxModuleTracker tracker{origin};
+    LinuxTraceWriterOptions options = launch_options(origin);
+    noleax::ipc::CustomHookSpec hook_a;
+    hook_a.module = "liba.so";
+    hook_a.alloc.locator = noleax::ipc::CustomHookLocator::kExport;
+    hook_a.alloc.export_name = "a_malloc";
+    hook_a.free.locator = noleax::ipc::CustomHookLocator::kExport;
+    hook_a.free.export_name = "a_free";
+    hook_a.label = "a_malloc";
+    noleax::ipc::CustomHookSpec hook_b;
+    hook_b.module = "libb.so";
+    hook_b.alloc.locator = noleax::ipc::CustomHookLocator::kRva;
+    hook_b.alloc.rva = 0x12340U;
+    hook_b.free.locator = noleax::ipc::CustomHookLocator::kRva;
+    hook_b.free.rva = 0x12580U;
+    hook_b.label = "libb.so+0x12340";
+    options.custom_hooks = {hook_a, hook_b};
+    LinuxTraceWriter writer{queue, tracker, path, options};
+
+    noleax::trace::CustomHookFailure failure;
+    failure.module = "libmissing.so";
+    failure.role = noleax::trace::CustomHookFailureRole::kPoint;
+    failure.reason = noleax::trace::CustomHookFailureReason::kModuleNotLoaded;
+    failure.detail = "module never loaded";
+    writer.note_custom_hook_failures({failure});
+    writer.begin_capture();
+
+    const EventSpec script[] = {
+        {kHookA, kAllocate, kSuccess, 0x80U, 0U, 0U, 0U, kP1, 0U},
+        {kHookA, kFree, kSuccess, 0U, 0U, 0U, kP1, 0U, 0U},
+        {kHookB, kAllocate, kSuccess, 0x40U, 0U, 0U, 0U, kP2, 0U},
+        {kHookA, kAllocate, kFailure, 1ULL << 40U, 0U, 0U, 0U, 0U, ENOMEM},
+    };
+    constexpr std::size_t kEventCount = sizeof(script) / sizeof(script[0]);
+
+    const std::uint64_t base = monotonic_now_ns();
+    for (std::size_t index = 0U; index < kEventCount; ++index) {
+      const std::uint64_t ticks = base + (index + 1U) * 1'000U;
+      if (!push_event(queue, make_event(script[index], ticks, thread_id))) {
+        std::printf("FAIL: phase 7 event queue push %zu\n", index);
+        return false;
+      }
+    }
+    result = writer.finish();
+  }
+
+  check(result.status == LinuxTraceWriterStatus::kComplete, "phase 7 status is complete");
+  check_common_result(result, path);
+  check(result.trace_dropped_events == 0U, "phase 7 has no trace drops");
+  check(result.completeness_mask ==
+            static_cast<std::uint32_t>(noleax::trace::CompletenessIssue::kCustomHookInstallFailed),
+        "phase 7 completeness carries only custom hook install failure");
+
+  const Readback readback = read_trace(path);
+  check_common_readback(readback, origin);
+  check(readback.stream.event_count == 4U, "phase 7 decoded every event");
+  check(readback.stream.loss_record_count == 0U, "phase 7 has no Loss records");
+  check(
+      readback.stream.completeness.has(noleax::trace::CompletenessIssue::kCustomHookInstallFailed),
+      "phase 7 decoded completeness reports the install failure");
+
+  const auto& definitions = readback.stream.custom_hooks;
+  check(definitions.size() == 2U, "phase 7 wrote two CustomHookDefinition records");
+  if (definitions.size() == 2U) {
+    check(definitions[0].api_id == kHookA && definitions[0].module_name == "liba.so" &&
+              definitions[0].label == "a_malloc",
+          "phase 7 first definition is the export-located point");
+    check(definitions[1].api_id == kHookB && definitions[1].module_name == "libb.so" &&
+              definitions[1].label == "libb.so+0x12340",
+          "phase 7 second definition is the rva-located point");
+  }
+  const auto& failures = readback.stream.custom_hook_failures;
+  check(failures.size() == 1U, "phase 7 wrote one CustomHookFailure record");
+  if (failures.size() == 1U) {
+    check(failures[0].module == "libmissing.so" &&
+              failures[0].role == noleax::trace::CustomHookFailureRole::kPoint &&
+              failures[0].reason == noleax::trace::CustomHookFailureReason::kModuleNotLoaded &&
+              failures[0].detail == "module never loaded",
+          "phase 7 failure record round-trips");
+  }
+
+  constexpr std::uint64_t kIdA1 = (std::uint64_t{kHookA} << 40U) | 1U;
+  constexpr std::uint64_t kIdB1 = (std::uint64_t{kHookB} << 40U) | 1U;
+  using noleax::trace::EventStatus;
+  const auto& events = readback.events;
+  if (events.size() == 4U) {
+    const auto* alloc_a = std::get_if<noleax::trace::AllocationEvent>(&events[0].payload);
+    check(alloc_a != nullptr && events[0].header.api_id == kHookA &&
+              events[0].header.status == EventStatus::kSuccess &&
+              alloc_a->requested_size == 0x80U && alloc_a->result_address == kP1 &&
+              alloc_a->heap_handle == 0U && !alloc_a->heap_id.is_valid() &&
+              alloc_a->allocation_id.is_valid() && alloc_a->allocation_id.value() == kIdA1,
+          "phase 7 custom allocation carries the namespaced allocation id");
+    const auto* free_a = std::get_if<noleax::trace::FreeEvent>(&events[1].payload);
+    check(free_a != nullptr && events[1].header.api_id == kHookA &&
+              events[1].header.status == EventStatus::kSuccess && free_a->address == kP1 &&
+              free_a->allocation_id.is_valid() && free_a->allocation_id.value() == kIdA1,
+          "phase 7 custom free passes the stamped allocation id through");
+    const auto* alloc_b = std::get_if<noleax::trace::AllocationEvent>(&events[2].payload);
+    check(alloc_b != nullptr && events[2].header.api_id == kHookB &&
+              alloc_b->allocation_id.is_valid() && alloc_b->allocation_id.value() == kIdB1 &&
+              alloc_a != nullptr && alloc_b->allocation_id != alloc_a->allocation_id,
+          "phase 7 the second point stamps its own id namespace");
+    const auto* failed = std::get_if<noleax::trace::AllocationEvent>(&events[3].payload);
+    check(failed != nullptr && events[3].header.api_id == kHookA &&
+              events[3].header.status == EventStatus::kFailure &&
+              events[3].header.system_error.domain == noleax::trace::SystemErrorDomain::kPosix &&
+              events[3].header.system_error.code == static_cast<std::uint64_t>(ENOMEM) &&
+              !failed->allocation_id.is_valid(),
+          "phase 7 failed custom allocation carries the posix error and no generation");
+  }
+
+  // Generation pairing: two custom allocations created, one freed, one left live.
+  check(readback.generations_created == 2U && readback.generations_ended == 1U &&
+            readback.generations_live == 1U && readback.orphaned_ends == 0U,
+        "phase 7 custom generations pair up");
+
+  if (readback.stream.statistics.has_value()) {
+    const noleax::trace::CaptureStatistics& statistics = *readback.stream.statistics;
+    check(statistics.observed_calls == 4U && statistics.successful_operations == 3U &&
+              statistics.failed_operations == 1U,
+          "phase 7 statistics cover the custom events");
+    bool saw_hook_a = false;
+    bool saw_hook_b = false;
+    for (const noleax::trace::ApiStatistics& api : statistics.per_api) {
+      if (api.api_id == kHookA) {
+        saw_hook_a = true;
+        check(api.observed_calls == 3U && api.successful_operations == 2U &&
+                  api.failed_operations == 1U,
+              "phase 7 per-API statistics for the first point");
+      }
+      if (api.api_id == kHookB) {
+        saw_hook_b = true;
+        check(api.observed_calls == 1U && api.successful_operations == 1U,
+              "phase 7 per-API statistics for the second point");
+      }
+    }
+    check(saw_hook_a && saw_hook_b, "phase 7 statistics list both custom points");
+  }
+  check(result.per_api.size() == noleax::agent::linux::kLinuxHookRegistry.size() + 2U,
+        "phase 7 per-API result covers the registry plus the custom points");
+
+  std::error_code error;
+  std::filesystem::remove(path, error);
+  return true;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1168,6 +1344,7 @@ int main(int argc, char** argv) {
     ok = phase4() && ok;
     ok = phase5(keep_dir) && ok;
     ok = phase6(keep_dir) && ok;
+    ok = phase7() && ok;
   } catch (const std::exception& error) {
     std::printf("FAIL: unexpected exception: %s\n", error.what());
     ok = false;

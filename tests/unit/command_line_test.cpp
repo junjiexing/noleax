@@ -372,6 +372,28 @@ TEST_CASE("run and attach CLI parse --custom-hook declarations", "[cli][config][
   CHECK(attached.overrides.custom_hooks.value.size() == 1U);
 }
 
+TEST_CASE("custom-hook CLI parses _sym symbol locators", "[cli][config][custom-hook]") {
+  const auto current_directory = std::filesystem::current_path();
+
+  const auto parsed =
+      parse({"run", "--custom-hook",
+             "libmyalloc.so:alloc_sym=my_malloc,realloc_sym=my_realloc,free_sym=my_free", "app"},
+            current_directory);
+  REQUIRE(parsed.overrides.custom_hooks.specified);
+  REQUIRE(parsed.overrides.custom_hooks.value.size() == 1U);
+  const auto& hook = parsed.overrides.custom_hooks.value.at(0U);
+  CHECK(hook.module == "libmyalloc.so");
+  CHECK(hook.alloc.symbol == "my_malloc");
+  CHECK(hook.realloc.symbol == "my_realloc");
+  CHECK(hook.free.symbol == "my_free");
+  CHECK_FALSE(hook.alloc.export_name.has_value());
+
+  // Duplicate _sym keys are rejected.
+  CHECK_THROWS_AS(parse({"run", "--custom-hook", "m.so:alloc_sym=a,alloc_sym=b,free=f", "app"},
+                        current_directory),
+                  noleax::config::ConfigError);
+}
+
 TEST_CASE("custom-hook CLI rejects malformed specs and other subcommands",
           "[cli][config][custom-hook]") {
   const auto current_directory = std::filesystem::current_path();
