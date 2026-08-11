@@ -80,3 +80,43 @@ TEST_CASE("linux end-to-end run captures an analyzable trace", "[linux][e2e]") {
   std::filesystem::remove(events_out);
   std::filesystem::remove(leaks_out);
 }
+
+TEST_CASE("linux end-to-end native profile captures VM events and memory snapshots",
+          "[linux][e2e]") {
+  const auto stamp = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+  const std::filesystem::path trace =
+      std::filesystem::temp_directory_path() / ("noleax-e2e-vm-" + stamp + ".nlx");
+  const std::filesystem::path events_out =
+      std::filesystem::temp_directory_path() / ("noleax-e2e-vm-events-" + stamp + ".txt");
+  const std::filesystem::path memory_out =
+      std::filesystem::temp_directory_path() / ("noleax-e2e-vm-memory-" + stamp + ".txt");
+
+  const CommandResult run =
+      run_shell("\"" NOLEAX_CLI_PATH "\" run --hook-profile linux-native --trace \"" +
+                trace.string() + "\" -- \"" NOLEAX_WORKLOAD_PATH "\"");
+  REQUIRE(run.exit_code == 0);
+
+  const CommandResult events =
+      run_shell("\"" NOLEAX_CLI_PATH "\" analyze --mode events \"" + trace.string() + "\" > \"" +
+                events_out.string() + "\" 2>&1");
+  REQUIRE(events.exit_code == 0);
+  const std::string events_output = read_all(events_out);
+  INFO(events_output);
+  CHECK(events_output.find("mmap") != std::string::npos);
+  CHECK(events_output.find("munmap") != std::string::npos);
+  CHECK(events_output.find("mremap") != std::string::npos);
+
+  const CommandResult memory =
+      run_shell("\"" NOLEAX_CLI_PATH "\" analyze --mode memory \"" + trace.string() + "\" > \"" +
+                memory_out.string() + "\" 2>&1");
+  REQUIRE(memory.exit_code == 0);
+  const std::string memory_output = read_all(memory_out);
+  INFO(memory_output);
+  CHECK(memory_output.find("snapshots:") != std::string::npos);
+  CHECK(memory_output.find("working-set=") != std::string::npos);
+  CHECK(memory_output.find("regions=") != std::string::npos);
+
+  std::filesystem::remove(trace);
+  std::filesystem::remove(events_out);
+  std::filesystem::remove(memory_out);
+}

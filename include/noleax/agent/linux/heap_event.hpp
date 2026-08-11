@@ -36,7 +36,9 @@ enum class LinuxHeapEventStatus : std::uint8_t {
 //               offset, result_address = mapped base on success
 //   kVmUnmap:   address = range start, requested_size = length
 //   kVmRemap:   address = old range start, requested_size = old size, count = new size,
-//               map_flags = flags, result_address = new base on success
+//               map_flags = flags, result_address = new base on success, alignment =
+//               requested new address when MREMAP_FIXED is set (the only case the
+//               variadic fifth argument is semantically defined), 0 otherwise
 // operation_result carries errno on failure (and the posix_memalign return code, which
 // does not set errno); it is zero on success.
 struct LinuxHeapEvent {

@@ -33,15 +33,20 @@ struct LinuxTraceWriterApiCounterSnapshot {
   std::uint64_t dropped_events{0U};
 };
 
-// Linux counterpart of RtlAllocateHeapTraceWriterOptions (docs/LINUX_PORT_PLAN.md M3),
-// scoped to the single glibc heap event family: no heap lifecycle, VM, custom-hook, or
-// memory sampler knobs yet (M4+).
+// Linux counterpart of RtlAllocateHeapTraceWriterOptions (docs/LINUX_PORT_PLAN.md M3/M4),
+// covering the glibc heap and virtual memory (mmap/munmap/mremap) event families plus the
+// periodic memory samplers; custom-hook knobs arrive with M7 and the glibc heap has no
+// heap-lifecycle family.
 struct LinuxTraceWriterOptions {
   noleax::trace::TraceWriterOptions trace;
   noleax::trace::CompressionCodec compression{noleax::trace::CompressionCodec::kLz4};
   // Launch capture passes {true, false}; the conservative default is attach-shaped.
   noleax::trace::CaptureScope capture_scope{false, true};
   std::chrono::nanoseconds flush_interval{250'000'000};
+  // Periodic memory snapshots (M4): sampled on the writer thread from /proc/self and
+  // written as kMemory chunks. A zero interval disables that sampler.
+  std::chrono::nanoseconds memory_counters_interval{0};
+  std::chrono::nanoseconds memory_map_interval{0};
   std::size_t chunk_target_size{64U * 1024U};
   std::size_t stack_dictionary_capacity{16'384U};
   std::uint32_t maximum_record_size{noleax::trace::kDefaultMaximumRecordSize};
@@ -91,16 +96,21 @@ struct LinuxTraceWriterResult {
   std::uint64_t module_notification_drops{0U};
   std::uint64_t bytes_written{0U};
   std::uint32_t completeness_mask{0U};
+  // kMemory chunks written by the periodic samplers and the records they carried.
+  std::uint64_t memory_chunks{0U};
+  std::uint64_t memory_counters_records{0U};
+  std::uint64_t memory_map_records{0U};
   bool statistics_written{false};
   bool end_of_trace_written{false};
   std::string error_message;
 };
 
-// Drains the shared glibc heap event queue and the poll-based module tracker on an
-// internal worker thread and writes a bounded .nlx trace through the platform-neutral
-// noleax::trace library. Construction requires an initialized hook guard runtime and a
-// not-yet-recording producer side, exactly like the Windows writer; the caller stops
-// the hooks (logical stop plus in-flight barrier) before finish()/finish_after_worker_exit().
+// Drains the shared glibc heap + virtual memory event queue and the poll-based module
+// tracker on an internal worker thread and writes a bounded .nlx trace through the
+// platform-neutral noleax::trace library. Construction requires an initialized hook guard
+// runtime and a not-yet-recording producer side, exactly like the Windows writer; the
+// caller stops the hooks (logical stop plus in-flight barrier) before
+// finish()/finish_after_worker_exit().
 class LinuxTraceWriter final {
  public:
   LinuxTraceWriter(LinuxHeapEventQueue& event_queue, LinuxModuleTracker& module_tracker,

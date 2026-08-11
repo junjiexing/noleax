@@ -1,16 +1,24 @@
-// Probe for the Linux in-process trace writer (docs/LINUX_PORT_PLAN.md M3): synthesizes
-// a scripted glibc heap event set through LinuxTraceWriter and validates the resulting
-// .nlx trace by reading it back with the platform-neutral trace reader plus the
-// analyzer's event-stream invariants and generation tracker. Standalone main, exit 0/1.
+// Probe for the Linux in-process trace writer (docs/LINUX_PORT_PLAN.md M3/M4): synthesizes
+// a scripted glibc heap + virtual memory event set through LinuxTraceWriter and validates
+// the resulting .nlx trace by reading it back with the platform-neutral trace reader plus
+// the analyzer's event-stream invariants and generation tracker. Standalone main, exit 0/1.
 //
-// Three phases:
+// Six phases:
 //   1. clean launch-scope capture: allocation/reallocation/free generation pairing,
 //      unmatched and failed calls, multi-chunk flushing, completeness mask 0;
 //   2. lossy capture: a failed stack capture (inline LossRecord), a backwards
 //      timestamp (clamp), and a disabled stack (no loss, no stack_id);
 //   3. file-limit capture: trace-full drop accounting and the terminal reserve;
 //   4. queue-full capture: a pre-begin queue overflow surfaces as a finalize-time
-//      queue-full Loss record plus the event-loss completeness bit.
+//      queue-full Loss record plus the event-loss completeness bit;
+//   5. virtual memory events: anonymous mmap/munmap, file-backed map/unmap, mremap
+//      in-place growth, an mremap move (free + allocate pair), a failed mmap, and an
+//      unmatched munmap, with generation pairing through the analyzer;
+//   6. memory samplers: tiny snapshot intervals produce kMemory chunks with plausible
+//      counters and a non-empty region map.
+//
+// With an argument, phases 5 and 6 also copy their traces into that directory (for manual
+// CLI cross-checks).
 
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -21,6 +29,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -41,6 +50,7 @@
 #include "noleax/analyzer/generation_tracker.hpp"
 #include "noleax/trace/completeness.hpp"
 #include "noleax/trace/event.hpp"
+#include "noleax/trace/memory_snapshot.hpp"
 #include "noleax/trace/module.hpp"
 #include "noleax/trace/stack.hpp"
 #include "noleax/trace/wire_format.hpp"
@@ -105,6 +115,12 @@ struct EventSpec {
   std::uint64_t address{0U};
   std::uint64_t result_address{0U};
   std::uint32_t operation_result{0U};
+  // Virtual memory arguments (mmap/munmap/mremap); zero for the heap family.
+  std::uint64_t requested_address{0U};
+  std::uint64_t protection{0U};
+  std::uint64_t map_flags{0U};
+  std::uint64_t section_handle{0U};
+  std::uint64_t section_offset{0U};
 };
 
 [[nodiscard]] LinuxHeapEvent make_event(const EventSpec& spec, std::uint64_t ticks,
@@ -121,9 +137,27 @@ struct EventSpec {
   event.api_id = spec.api_id;
   event.operation = spec.operation;
   event.status = spec.status;
+  event.requested_address = spec.requested_address;
+  event.protection = spec.protection;
+  event.map_flags = spec.map_flags;
+  event.section_handle = spec.section_handle;
+  event.section_offset = spec.section_offset;
   event.stack = capture_probe_stack();
   return event;
 }
+
+struct GenerationNote {
+  noleax::analyzer::GenerationKind kind;
+  std::uint64_t address;
+  std::uint64_t size;
+};
+
+struct EndedGenerationNote {
+  noleax::analyzer::GenerationKind kind;
+  noleax::analyzer::GenerationEndReason reason;
+  std::uint64_t address;
+  std::uint64_t size;
+};
 
 struct Readback {
   noleax::analyzer::EventStreamResult stream;
@@ -131,10 +165,15 @@ struct Readback {
   std::vector<noleax::trace::LossRecord> losses;
   std::vector<noleax::trace::ModuleLoad> module_loads;
   std::vector<noleax::trace::StackDefinition> stacks;
+  std::vector<noleax::trace::MemoryCounters> memory_counters;
+  std::vector<noleax::trace::MemoryMap> memory_maps;
+  std::vector<GenerationNote> generations_created_log;
+  std::vector<EndedGenerationNote> generations_ended_log;
   std::uint64_t generations_created{0U};
   std::uint64_t generations_ended{0U};
   std::uint64_t generations_live{0U};
   std::uint64_t orphaned_ends{0U};
+  std::uint64_t orphaned_mapping_ends{0U};
 };
 
 [[nodiscard]] Readback read_trace(const std::filesystem::path& path) {
@@ -143,7 +182,19 @@ struct Readback {
     throw std::runtime_error{"cannot open the trace for reading"};
   }
   Readback readback;
-  noleax::analyzer::GenerationTracker generations;
+  noleax::analyzer::GenerationCallbacks generation_callbacks;
+  generation_callbacks.on_created =
+      [&readback](const noleax::analyzer::MemoryGeneration& generation) {
+        readback.generations_created_log.push_back(
+            GenerationNote{generation.kind, generation.address, generation.size});
+      };
+  generation_callbacks.on_ended = [&readback](const noleax::analyzer::MemoryGeneration& generation,
+                                              noleax::analyzer::GenerationEndReason reason,
+                                              const noleax::trace::Event&) {
+    readback.generations_ended_log.push_back(
+        EndedGenerationNote{generation.kind, reason, generation.address, generation.size});
+  };
+  noleax::analyzer::GenerationTracker generations{generation_callbacks};
   noleax::analyzer::EventStreamCallbacks callbacks;
   callbacks.on_module_load = [&readback](const noleax::trace::ModuleLoad& load) {
     readback.module_loads.push_back(load);
@@ -158,17 +209,41 @@ struct Readback {
   callbacks.on_loss = [&readback](const noleax::trace::LossRecord& loss) {
     readback.losses.push_back(loss);
   };
+  callbacks.on_memory_counters = [&readback](const noleax::trace::MemoryCounters& counters) {
+    readback.memory_counters.push_back(counters);
+  };
+  callbacks.on_memory_map = [&readback](const noleax::trace::MemoryMap& map) {
+    readback.memory_maps.push_back(map);
+  };
   readback.stream = noleax::analyzer::analyze_event_stream(input, callbacks);
   readback.generations_created = generations.created_count();
   readback.generations_ended = generations.ended_count();
   readback.generations_live = generations.live_count();
   readback.orphaned_ends = generations.orphaned_allocation_end_count();
+  readback.orphaned_mapping_ends = generations.orphaned_mapping_end_count();
   return readback;
 }
 
 [[nodiscard]] std::filesystem::path probe_path(const char* phase) {
   return std::filesystem::temp_directory_path() /
          ("noleax-linux-trace-writer-probe-" + std::to_string(::getpid()) + "-" + phase + ".nlx");
+}
+
+// Phases 5 and 6 leave a copy of their trace behind when the probe is given a directory,
+// so the traces can be cross-checked with the real CLI.
+void keep_trace(const std::filesystem::path& path, const std::filesystem::path& keep_dir,
+                const char* name) {
+  if (keep_dir.empty()) {
+    return;
+  }
+  std::error_code error;
+  std::filesystem::create_directories(keep_dir, error);
+  std::filesystem::copy_file(path, keep_dir / name,
+                             std::filesystem::copy_options::overwrite_existing, error);
+  if (error) {
+    std::printf("FAIL: cannot keep trace %s\n", name);
+    ++g_failures;
+  }
 }
 
 [[nodiscard]] LinuxTraceWriterOptions launch_options(std::uint64_t monotonic_origin) {
@@ -709,19 +784,387 @@ bool phase4() {
   return true;
 }
 
+// Phase 5: virtual memory events. The script exercises an anonymous mmap/munmap pair, a
+// file-backed map/unmap pair, mremap in-place growth (same mapping_id, grown generation),
+// an mremap move (a VmFree + VmAllocate record pair from one raw event), a failed mmap,
+// and an unmatched munmap; generation kinds and end reasons are asserted through the
+// analyzer's GenerationTracker.
+bool phase5(const std::filesystem::path& keep_dir) {
+  std::printf("phase 5: virtual memory events\n");
+  const std::filesystem::path path = probe_path("p5");
+  const std::uint64_t origin = monotonic_now_ns();
+  const std::uint64_t thread_id = this_thread_id();
+
+  constexpr std::uint64_t kV1 = 0x7000'0001'0000ULL;
+  constexpr std::uint64_t kS1 = 0x7000'0002'0000ULL;
+  constexpr std::uint64_t kV2 = 0x7000'0003'0000ULL;
+  constexpr std::uint64_t kStray = 0x7000'DEAD'0000ULL;
+  constexpr std::uint64_t kAnonymous = std::numeric_limits<std::uint64_t>::max();
+  constexpr std::uint32_t kRelease = 0x8000U;
+
+  using noleax::agent::linux::kMmapApiId;
+  using noleax::agent::linux::kMremapApiId;
+  using noleax::agent::linux::kMunmapApiId;
+  constexpr auto kVmAllocate = LinuxHeapEventOperation::kVmAllocate;
+  constexpr auto kVmUnmap = LinuxHeapEventOperation::kVmUnmap;
+  constexpr auto kVmRemap = LinuxHeapEventOperation::kVmRemap;
+  constexpr auto kFailure = LinuxHeapEventStatus::kFailure;
+
+  EventSpec mmap_anon{kMmapApiId, kVmAllocate};
+  mmap_anon.requested_size = 0x4000U;
+  mmap_anon.protection = 0x3U;  // PROT_READ | PROT_WRITE
+  mmap_anon.map_flags = 0x22U;  // MAP_PRIVATE | MAP_ANONYMOUS
+  mmap_anon.section_handle = kAnonymous;
+  mmap_anon.result_address = kV1;
+
+  EventSpec mmap_file{kMmapApiId, kVmAllocate};
+  mmap_file.requested_size = 0x2000U;
+  mmap_file.protection = 0x1U;    // PROT_READ
+  mmap_file.map_flags = 0x2U;     // MAP_PRIVATE
+  mmap_file.section_handle = 7U;  // a real fd
+  mmap_file.section_offset = 0x1000U;
+  mmap_file.result_address = kS1;
+
+  EventSpec remap_grow{kMremapApiId, kVmRemap};
+  remap_grow.address = kV1;
+  remap_grow.requested_size = 0x4000U;  // old size
+  remap_grow.count = 0x8000U;           // new size
+  remap_grow.map_flags = 0x1U;          // MREMAP_MAYMOVE
+  remap_grow.result_address = kV1;      // grew in place
+
+  EventSpec remap_move{kMremapApiId, kVmRemap};
+  remap_move.address = kV1;
+  remap_move.requested_size = 0x8000U;
+  remap_move.count = 0x10000U;
+  remap_move.map_flags = 0x1U;
+  remap_move.result_address = kV2;  // moved
+
+  EventSpec mmap_fail{kMmapApiId, kVmAllocate, kFailure};
+  mmap_fail.requested_size = 1ULL << 40U;
+  mmap_fail.protection = 0x3U;
+  mmap_fail.map_flags = 0x22U;
+  mmap_fail.section_handle = kAnonymous;
+  mmap_fail.operation_result = ENOMEM;
+
+  EventSpec munmap_v2{kMunmapApiId, kVmUnmap};
+  munmap_v2.address = kV2;
+  munmap_v2.requested_size = 0x10000U;
+
+  EventSpec munmap_s1{kMunmapApiId, kVmUnmap};
+  munmap_s1.address = kS1;
+  munmap_s1.requested_size = 0x2000U;
+
+  EventSpec munmap_stray{kMunmapApiId, kVmUnmap};
+  munmap_stray.address = kStray;
+  munmap_stray.requested_size = 0x1000U;
+
+  const EventSpec script[] = {mmap_anon, mmap_file, remap_grow, remap_move,
+                              mmap_fail, munmap_v2, munmap_s1,  munmap_stray};
+  constexpr std::size_t kRawCount = sizeof(script) / sizeof(script[0]);
+  constexpr std::size_t kEventCount = kRawCount + 1U;  // the moved mremap emits a pair
+
+  LinuxTraceWriterResult result;
+  {
+    LinuxHeapEventQueue queue{1024U};
+    LinuxModuleTracker tracker{origin};
+    LinuxTraceWriter writer{queue, tracker, path, launch_options(origin)};
+    writer.begin_capture();
+
+    const std::uint64_t base = monotonic_now_ns();
+    for (std::size_t index = 0U; index < kRawCount; ++index) {
+      const std::uint64_t ticks = base + (index + 1U) * 1'000U;
+      if (!push_event(queue, make_event(script[index], ticks, thread_id))) {
+        std::printf("FAIL: phase 5 event queue push %zu\n", index);
+        return false;
+      }
+    }
+    result = writer.finish();
+  }
+
+  check(result.status == LinuxTraceWriterStatus::kComplete, "phase 5 status is complete");
+  check_common_result(result, path);
+  check(result.trace_dropped_events == 0U, "phase 5 has no trace drops");
+  check(result.timestamp_adjustments == 0U, "phase 5 has no timestamp adjustments");
+  check(result.completeness_mask == 0U, "phase 5 completeness mask is zero");
+  check(result.statistics.observed_calls == kEventCount,
+        "phase 5 observed calls count the mremap pair as two records");
+
+  const Readback readback = read_trace(path);
+  check_common_readback(readback, origin);
+  check(readback.stream.event_count == kEventCount, "phase 5 decoded every wire event");
+  check(readback.stream.loss_record_count == 0U, "phase 5 has no Loss records");
+  check(readback.stream.completeness.mask() == 0U, "phase 5 decoded completeness is complete");
+  check(readback.stream.end_of_trace.has_value() &&
+            readback.stream.end_of_trace->final_sequence == noleax::trace::Sequence{kEventCount},
+        "phase 5 EndOfTrace final sequence covers the pair");
+
+  using noleax::trace::EventStatus;
+  using noleax::trace::SystemErrorDomain;
+  const auto& events = readback.events;
+  if (events.size() == kEventCount) {
+    for (std::size_t index = 0U; index < kEventCount; ++index) {
+      check(events[index].header.sequence == noleax::trace::Sequence{index + 1U},
+            "phase 5 wire sequences are contiguous");
+    }
+    const auto pid = static_cast<std::uint64_t>(::getpid());
+
+    const auto* anon_mmap = std::get_if<noleax::trace::VmAllocateEvent>(&events[0].payload);
+    check(anon_mmap != nullptr && events[0].header.api_id == kMmapApiId &&
+              events[0].header.status == EventStatus::kSuccess &&
+              anon_mmap->target.scope == noleax::trace::ProcessMemoryScope::kCurrentProcess &&
+              anon_mmap->target.process_id == pid && anon_mmap->requested_base == 0U &&
+              anon_mmap->result_base == kV1 && anon_mmap->requested_size == 0x4000U &&
+              anon_mmap->result_size == 0x4000U && anon_mmap->mapping_base == kV1 &&
+              anon_mmap->mapping_size == 0x4000U && anon_mmap->allocation_type == 0x22U &&
+              anon_mmap->protection == 0x3U && anon_mmap->mapping_id.is_valid(),
+          "phase 5 anonymous mmap is a VmAllocate generation");
+
+    const auto* file_map = std::get_if<noleax::trace::MapEvent>(&events[1].payload);
+    check(file_map != nullptr && events[1].header.api_id == kMmapApiId &&
+              events[1].header.status == EventStatus::kSuccess && file_map->section_handle == 7U &&
+              file_map->section_offset == 0x1000U && file_map->result_base == kS1 &&
+              file_map->view_size == 0x2000U && file_map->protection == 0x1U &&
+              file_map->mapping_id.is_valid() && anon_mmap != nullptr &&
+              file_map->mapping_id != anon_mmap->mapping_id,
+          "phase 5 file-backed mmap is a Map generation");
+
+    const auto* grow = std::get_if<noleax::trace::VmAllocateEvent>(&events[2].payload);
+    check(grow != nullptr && events[2].header.api_id == kMremapApiId &&
+              events[2].header.status == EventStatus::kSuccess && anon_mmap != nullptr &&
+              grow->mapping_id == anon_mmap->mapping_id && grow->result_base == kV1 &&
+              grow->mapping_base == kV1 && grow->mapping_size == 0x8000U &&
+              grow->requested_size == 0x8000U && grow->result_size == 0x8000U,
+          "phase 5 in-place mremap keeps the mapping id and grows the generation");
+
+    const auto* move_free = std::get_if<noleax::trace::VmFreeEvent>(&events[3].payload);
+    const auto* move_alloc = std::get_if<noleax::trace::VmAllocateEvent>(&events[4].payload);
+    check(move_free != nullptr && move_alloc != nullptr &&
+              events[3].header.api_id == kMremapApiId && events[4].header.api_id == kMremapApiId &&
+              events[3].header.status == EventStatus::kSuccess &&
+              events[4].header.status == EventStatus::kSuccess && anon_mmap != nullptr &&
+              move_free->mapping_id == anon_mmap->mapping_id && move_free->base == kV1 &&
+              move_free->region_size == 0x8000U && move_free->free_type == kRelease &&
+              move_alloc->mapping_id.is_valid() &&
+              move_alloc->mapping_id != anon_mmap->mapping_id && move_alloc->result_base == kV2 &&
+              move_alloc->mapping_base == kV2 && move_alloc->mapping_size == 0x10000U &&
+              move_alloc->requested_size == 0x10000U && move_alloc->result_size == 0x10000U &&
+              events[3].header.stack_id == events[4].header.stack_id &&
+              events[3].header.stack_id.is_valid(),
+          "phase 5 moved mremap is a release-free + allocate pair");
+
+    const auto* failed_mmap = std::get_if<noleax::trace::VmAllocateEvent>(&events[5].payload);
+    check(failed_mmap != nullptr && events[5].header.api_id == kMmapApiId &&
+              events[5].header.status == EventStatus::kFailure &&
+              events[5].header.system_error.domain == SystemErrorDomain::kPosix &&
+              events[5].header.system_error.code == static_cast<std::uint64_t>(ENOMEM) &&
+              failed_mmap->result_base == 0U && !failed_mmap->mapping_id.is_valid(),
+          "phase 5 failed mmap carries the posix error and no generation");
+
+    const auto* free_v2 = std::get_if<noleax::trace::VmFreeEvent>(&events[6].payload);
+    check(free_v2 != nullptr && events[6].header.api_id == kMunmapApiId &&
+              events[6].header.status == EventStatus::kSuccess && move_alloc != nullptr &&
+              free_v2->mapping_id == move_alloc->mapping_id && free_v2->base == kV2 &&
+              free_v2->region_size == 0x10000U && free_v2->free_type == kRelease,
+          "phase 5 munmap of an anonymous mapping is a release VmFree");
+
+    const auto* unmap_s1 = std::get_if<noleax::trace::UnmapEvent>(&events[7].payload);
+    check(unmap_s1 != nullptr && events[7].header.api_id == kMunmapApiId &&
+              events[7].header.status == EventStatus::kSuccess && file_map != nullptr &&
+              unmap_s1->mapping_id == file_map->mapping_id && unmap_s1->base == kS1,
+          "phase 5 munmap of a file-backed view is an Unmap");
+
+    const auto* stray = std::get_if<noleax::trace::VmFreeEvent>(&events[8].payload);
+    check(stray != nullptr && events[8].header.status == EventStatus::kUnmatched &&
+              !stray->mapping_id.is_valid() && stray->base == kStray &&
+              stray->free_type == kRelease,
+          "phase 5 unmatched munmap carries no mapping id");
+  }
+
+  if (readback.stream.statistics.has_value()) {
+    const noleax::trace::CaptureStatistics& statistics = *readback.stream.statistics;
+    check(statistics.observed_calls == kEventCount, "phase 5 statistics observed");
+    check(statistics.successful_operations == kEventCount - 1U, "phase 5 statistics successful");
+    check(statistics.failed_operations == 1U, "phase 5 statistics failed");
+    for (const noleax::trace::ApiStatistics& api : statistics.per_api) {
+      if (api.api_id == kMmapApiId) {
+        check(api.observed_calls == 3U && api.successful_operations == 2U &&
+                  api.failed_operations == 1U,
+              "phase 5 mmap statistics");
+      }
+      if (api.api_id == kMunmapApiId) {
+        check(api.observed_calls == 3U && api.successful_operations == 3U,
+              "phase 5 munmap statistics");
+      }
+      if (api.api_id == kMremapApiId) {
+        // Two raw mremap calls; the moved one wrote two records.
+        check(api.observed_calls == 3U && api.successful_operations == 3U,
+              "phase 5 mremap statistics count the pair");
+      }
+    }
+  }
+
+  // Generation pairing through the analyzer: two virtual allocations and one mapped view
+  // created, all three ended, nothing live, nothing orphaned.
+  using noleax::analyzer::GenerationEndReason;
+  using noleax::analyzer::GenerationKind;
+  check(readback.generations_created == 3U && readback.generations_ended == 3U &&
+            readback.generations_live == 0U,
+        "phase 5 mapping generations pair up");
+  check(readback.orphaned_ends == 0U && readback.orphaned_mapping_ends == 0U,
+        "phase 5 has no orphaned generation ends");
+  const auto& created = readback.generations_created_log;
+  check(created.size() == 3U && created[0].kind == GenerationKind::kVirtualAllocation &&
+            created[0].address == kV1 && created[0].size == 0x4000U &&
+            created[1].kind == GenerationKind::kMappedView && created[1].address == kS1 &&
+            created[1].size == 0x2000U && created[2].kind == GenerationKind::kVirtualAllocation &&
+            created[2].address == kV2 && created[2].size == 0x10000U,
+        "phase 5 created generations carry the expected kinds and ranges");
+  const auto& ended = readback.generations_ended_log;
+  check(ended.size() == 3U && ended[0].kind == GenerationKind::kVirtualAllocation &&
+            ended[0].reason == GenerationEndReason::kVirtualFreed && ended[0].address == kV1 &&
+            ended[0].size == 0x8000U,
+        "phase 5 the moved mremap ends the in-place-grown generation");
+  check(ended.size() == 3U && ended[1].kind == GenerationKind::kVirtualAllocation &&
+            ended[1].reason == GenerationEndReason::kVirtualFreed && ended[1].address == kV2 &&
+            ended[1].size == 0x10000U,
+        "phase 5 munmap ends the moved generation");
+  check(ended.size() == 3U && ended[2].kind == GenerationKind::kMappedView &&
+            ended[2].reason == GenerationEndReason::kUnmapped && ended[2].address == kS1,
+        "phase 5 munmap ends the mapped view");
+
+  keep_trace(path, keep_dir, "phase5-vm.nlx");
+  std::error_code error;
+  std::filesystem::remove(path, error);
+  return true;
+}
+
+// Phase 6: the memory samplers. One-millisecond intervals produce a baseline sample at
+// capture start, periodic samples while the capture idles, and a final sample at
+// finalize; the decoded counters must be plausible and the region map non-empty.
+bool phase6(const std::filesystem::path& keep_dir) {
+  std::printf("phase 6: memory samplers\n");
+  const std::filesystem::path path = probe_path("p6");
+  const std::uint64_t origin = monotonic_now_ns();
+  const std::uint64_t thread_id = this_thread_id();
+  constexpr std::uint64_t kC1 = 0x5000'00C1'0000ULL;
+
+  LinuxTraceWriterResult result;
+  {
+    LinuxHeapEventQueue queue{1024U};
+    LinuxModuleTracker tracker{origin};
+    LinuxTraceWriterOptions options = launch_options(origin);
+    options.memory_counters_interval = std::chrono::milliseconds{1};
+    options.memory_map_interval = std::chrono::milliseconds{1};
+    LinuxTraceWriter writer{queue, tracker, path, options};
+    writer.begin_capture();
+
+    const std::uint64_t base = monotonic_now_ns();
+    EventSpec spec{noleax::agent::linux::kMallocApiId,
+                   LinuxHeapEventOperation::kAllocate,
+                   LinuxHeapEventStatus::kSuccess,
+                   0x40U,
+                   0U,
+                   0U,
+                   0U,
+                   kC1,
+                   0U};
+    if (!push_event(queue, make_event(spec, base + 1'000U, thread_id))) {
+      std::printf("FAIL: phase 6 push 1\n");
+      return false;
+    }
+    EventSpec free_spec{noleax::agent::linux::kFreeApiId,
+                        LinuxHeapEventOperation::kFree,
+                        LinuxHeapEventStatus::kSuccess,
+                        0U,
+                        0U,
+                        0U,
+                        kC1,
+                        0U,
+                        0U};
+    if (!push_event(queue, make_event(free_spec, base + 2'000U, thread_id))) {
+      std::printf("FAIL: phase 6 push 2\n");
+      return false;
+    }
+    // Let a few sampler ticks elapse beyond the baseline and final samples.
+    std::this_thread::sleep_for(std::chrono::milliseconds{30});
+    result = writer.finish();
+  }
+
+  check(result.status == LinuxTraceWriterStatus::kComplete, "phase 6 status is complete");
+  check_common_result(result, path);
+  check(result.completeness_mask == 0U, "phase 6 completeness mask is zero");
+  check(result.memory_chunks >= 2U, "phase 6 wrote at least the baseline and final memory chunks");
+  check(result.memory_counters_records >= 2U, "phase 6 wrote memory counters records");
+  check(result.memory_map_records >= 2U, "phase 6 wrote memory map records");
+  check(result.memory_counters_records == result.memory_map_records,
+        "phase 6 both samplers tick together");
+
+  const Readback readback = read_trace(path);
+  check_common_readback(readback, origin);
+  check(readback.stream.event_count == 2U, "phase 6 decoded the two events");
+  check(readback.stream.memory_counters_count == result.memory_counters_records,
+        "phase 6 counters records round-trip");
+  check(readback.stream.memory_map_count == result.memory_map_records,
+        "phase 6 map records round-trip");
+  check(readback.memory_counters.size() >= 2U, "phase 6 decoded counters records");
+  check(readback.memory_maps.size() >= 2U, "phase 6 decoded map records");
+
+  bool counters_plausible = !readback.memory_counters.empty();
+  std::uint64_t previous_ticks = 0U;
+  for (const noleax::trace::MemoryCounters& counters : readback.memory_counters) {
+    counters_plausible = counters_plausible && counters.monotonic_ticks >= origin &&
+                         counters.monotonic_ticks >= previous_ticks &&
+                         counters.working_set_bytes > 0U &&
+                         counters.peak_working_set_bytes >= counters.working_set_bytes &&
+                         counters.private_bytes > 0U && counters.commit_bytes > 0U;
+    previous_ticks = counters.monotonic_ticks;
+  }
+  check(counters_plausible, "phase 6 counters are plausible and ordered");
+
+  bool maps_plausible = !readback.memory_maps.empty();
+  previous_ticks = 0U;
+  for (const noleax::trace::MemoryMap& map : readback.memory_maps) {
+    std::uint64_t listed_committed = 0U;
+    for (const noleax::trace::MemoryMapRegion& region : map.regions) {
+      if (region.state == noleax::trace::MemoryRegionState::kCommit) {
+        listed_committed += region.size;
+      }
+    }
+    maps_plausible = maps_plausible && map.monotonic_ticks >= origin &&
+                     map.monotonic_ticks >= previous_ticks && map.regions.size() >= 2U &&
+                     map.committed_bytes > 0U && map.committed_bytes >= listed_committed &&
+                     map.largest_free_bytes <= map.free_bytes;
+    previous_ticks = map.monotonic_ticks;
+  }
+  check(maps_plausible, "phase 6 memory maps are plausible and ordered");
+
+  check(readback.generations_created == 1U && readback.generations_ended == 1U &&
+            readback.generations_live == 0U,
+        "phase 6 heap generations pair up");
+
+  keep_trace(path, keep_dir, "phase6-memory.nlx");
+  std::error_code error;
+  std::filesystem::remove(path, error);
+  return true;
+}
+
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
   if (!noleax::agent::acquire_hook_guard_runtime()) {
     std::printf("FAIL: hook guard runtime is unavailable\n");
     return 1;
   }
+  const std::filesystem::path keep_dir =
+      argc > 1 ? std::filesystem::path{argv[1]} : std::filesystem::path{};
   bool ok = true;
   try {
     ok = phase1() && ok;
     ok = phase2() && ok;
     ok = phase3() && ok;
     ok = phase4() && ok;
+    ok = phase5(keep_dir) && ok;
+    ok = phase6(keep_dir) && ok;
   } catch (const std::exception& error) {
     std::printf("FAIL: unexpected exception: %s\n", error.what());
     ok = false;

@@ -42,6 +42,7 @@
 #include "noleax/agent/linux/glibc_heap_hooks.hpp"
 #include "noleax/agent/linux/module_tracker.hpp"
 #include "noleax/agent/linux/trace_writer.hpp"
+#include "noleax/agent/linux/virtual_memory_hooks.hpp"
 #include "noleax/config/config_io.hpp"
 #include "noleax/config/configuration.hpp"
 #include "noleax/ipc/linux/unix_socket.hpp"
@@ -181,9 +182,13 @@ class LinuxCaptureRuntime {
   // Runs on the constructor thread (loader-lock discipline, see the file header).
   [[nodiscard]] bool start(const noleax::ipc::StartCaptureRequest& request,
                            const std::array<std::byte, 16U>& session_id) {
-    if (request.hook_profile != noleax::ipc::HookProfile::kLinuxGlibcHeap) {
-      start_error_ = noleax::ipc::ErrorResponse{
-          5U, 0U, "only the linux-glibc-heap hook profile is supported on Linux"};
+    const bool want_heap = request.hook_profile == noleax::ipc::HookProfile::kLinuxGlibcHeap ||
+                           request.hook_profile == noleax::ipc::HookProfile::kLinuxNative;
+    const bool want_vm = request.hook_profile == noleax::ipc::HookProfile::kLinuxVirtualMemory ||
+                         request.hook_profile == noleax::ipc::HookProfile::kLinuxNative;
+    if (!want_heap && !want_vm) {
+      start_error_ =
+          noleax::ipc::ErrorResponse{5U, 0U, "unsupported hook profile for the Linux agent"};
       return false;
     }
     state_ = noleax::ipc::AgentState::kStarting;
@@ -197,8 +202,24 @@ class LinuxCaptureRuntime {
         std::uint64_t{2U}, request.buffer_size / sizeof(noleax::agent::linux::LinuxHeapEvent));
     const auto capacity =
         static_cast<std::size_t>(std::bit_floor((std::min)(requested, kMaximumCapacity)));
-    hooks_ = std::make_unique<noleax::agent::linux::GlibcHeapHooks>(
-        *backend_, capacity, request.maximum_stack_depth, request.minimum_capture_size);
+    if (want_heap) {
+      heap_hooks_ = std::make_unique<noleax::agent::linux::GlibcHeapHooks>(
+          *backend_, capacity, request.maximum_stack_depth, request.minimum_capture_size);
+    }
+    if (want_vm) {
+      // linux-native merges both families into the heap-owned queue (the owner coordinates
+      // queue lifecycle, mirroring the Windows profile orchestration).
+      if (heap_hooks_ != nullptr) {
+        vm_hooks_ = std::make_unique<noleax::agent::linux::VirtualMemoryHooks>(
+            *backend_, heap_hooks_->event_queue(), request.maximum_stack_depth,
+            request.minimum_capture_size);
+      } else {
+        vm_hooks_ = std::make_unique<noleax::agent::linux::VirtualMemoryHooks>(
+            *backend_, capacity, request.maximum_stack_depth, request.minimum_capture_size);
+      }
+    }
+    noleax::agent::linux::LinuxHeapEventQueue& event_queue =
+        heap_hooks_ != nullptr ? heap_hooks_->event_queue() : vm_hooks_->event_queue();
 
     noleax::agent::linux::LinuxTraceWriterOptions writer_options;
     writer_options.compression = wire_compression(request.compression);
@@ -206,6 +227,10 @@ class LinuxCaptureRuntime {
     writer_options.trace.zstd_level = request.compression_level;
     writer_options.flush_interval =
         std::chrono::nanoseconds{static_cast<std::int64_t>(request.flush_interval_ns)};
+    writer_options.memory_counters_interval =
+        std::chrono::nanoseconds{static_cast<std::int64_t>(request.memory_counters_interval_ns)};
+    writer_options.memory_map_interval =
+        std::chrono::nanoseconds{static_cast<std::int64_t>(request.memory_map_interval_ns)};
     writer_options.capture_scope =
         noleax::trace::CaptureScope{request.capture_kind == noleax::ipc::CaptureKind::kLaunch,
                                     request.capture_kind != noleax::ipc::CaptureKind::kLaunch};
@@ -214,11 +239,20 @@ class LinuxCaptureRuntime {
     writer_options.utc_origin_ns = utc_now_ns();
     writer_options.counter_source = [this] { return counter_snapshot(); };
     writer_ = std::make_unique<noleax::agent::linux::LinuxTraceWriter>(
-        hooks_->event_queue(), *tracker_, request.trace_path_utf8, writer_options);
+        event_queue, *tracker_, request.trace_path_utf8, writer_options);
 
-    if (!hooks_->install()) {
+    if (heap_hooks_ != nullptr && !heap_hooks_->install()) {
       start_error_ =
           noleax::ipc::ErrorResponse{3U, 0U, "failed to install the linux-glibc-heap hooks"};
+      state_ = noleax::ipc::AgentState::kFailed;
+      return false;
+    }
+    if (vm_hooks_ != nullptr && !vm_hooks_->install()) {
+      if (heap_hooks_ != nullptr) {
+        static_cast<void>(heap_hooks_->uninstall());
+      }
+      start_error_ =
+          noleax::ipc::ErrorResponse{3U, 0U, "failed to install the linux-virtual-memory hooks"};
       state_ = noleax::ipc::AgentState::kFailed;
       return false;
     }
@@ -245,19 +279,21 @@ class LinuxCaptureRuntime {
       status.filtered_calls = result.statistics.filtered_before_queue;
       status.dropped_events = result.statistics.dropped_events;
       status.bytes_written = result.bytes_written;
-    } else if (hooks_ != nullptr) {
-      for (const auto api : {noleax::agent::linux::LinuxLogicalHookApi::kMalloc,
-                             noleax::agent::linux::LinuxLogicalHookApi::kCalloc,
-                             noleax::agent::linux::LinuxLogicalHookApi::kRealloc,
-                             noleax::agent::linux::LinuxLogicalHookApi::kFree,
-                             noleax::agent::linux::LinuxLogicalHookApi::kPosixMemalign,
-                             noleax::agent::linux::LinuxLogicalHookApi::kAlignedAlloc,
-                             noleax::agent::linux::LinuxLogicalHookApi::kMemalign,
-                             noleax::agent::linux::LinuxLogicalHookApi::kReallocarray}) {
-        const auto counters = hooks_->counters(api);
-        status.observed_calls += counters.recordable_calls;
-        status.filtered_calls += counters.filtered_calls;
-        status.dropped_events += counters.dropped_events;
+    } else {
+      for (const auto& entry : noleax::agent::linux::kLinuxHookRegistry) {
+        if (entry.group == noleax::agent::linux::LinuxHookApiGroup::kGlibcHeap &&
+            heap_hooks_ != nullptr) {
+          const auto counters = heap_hooks_->counters(entry.logical_api);
+          status.observed_calls += counters.recordable_calls;
+          status.filtered_calls += counters.filtered_calls;
+          status.dropped_events += counters.dropped_events;
+        } else if (entry.group == noleax::agent::linux::LinuxHookApiGroup::kVirtualMemory &&
+                   vm_hooks_ != nullptr) {
+          const auto counters = vm_hooks_->counters(entry.logical_api);
+          status.observed_calls += counters.recordable_calls;
+          status.filtered_calls += counters.filtered_calls;
+          status.dropped_events += counters.dropped_events;
+        }
       }
       status.written_events = status.observed_calls - status.filtered_calls - status.dropped_events;
     }
@@ -269,7 +305,12 @@ class LinuxCaptureRuntime {
     if (state_ != noleax::ipc::AgentState::kCapturing) {
       return;
     }
-    static_cast<void>(hooks_->stop_recording());
+    if (heap_hooks_ != nullptr) {
+      static_cast<void>(heap_hooks_->stop_recording());
+    }
+    if (vm_hooks_ != nullptr) {
+      static_cast<void>(vm_hooks_->stop_recording());
+    }
     writer_result_ = writer_->finish();
     state_ = noleax::ipc::AgentState::kDrained;
   }
@@ -282,7 +323,12 @@ class LinuxCaptureRuntime {
     if (state_ != noleax::ipc::AgentState::kDrained) {
       return;
     }
-    static_cast<void>(hooks_->uninstall());
+    if (vm_hooks_ != nullptr) {
+      static_cast<void>(vm_hooks_->uninstall());
+    }
+    if (heap_hooks_ != nullptr) {
+      static_cast<void>(heap_hooks_->uninstall());
+    }
     static_cast<void>(backend_->shutdown());
     state_ = noleax::ipc::AgentState::kFinalized;
   }
@@ -322,17 +368,23 @@ class LinuxCaptureRuntime {
   [[nodiscard]] std::vector<noleax::agent::linux::LinuxTraceWriterApiCounterSnapshot>
   counter_snapshot() const {
     std::vector<noleax::agent::linux::LinuxTraceWriterApiCounterSnapshot> snapshots;
-    if (hooks_ == nullptr) {
-      return snapshots;
-    }
-    // Heap group only for the heap profile; the VM group joins here when the
-    // linux-virtual-memory profile lands.
-    for (std::size_t index = 0U; index < noleax::agent::linux::kGlibcHeapHookCount; ++index) {
-      const auto& entry = noleax::agent::linux::kLinuxHookRegistry[index];
-      const auto counters = hooks_->counters(entry.logical_api);
-      snapshots.push_back(noleax::agent::linux::LinuxTraceWriterApiCounterSnapshot{
-          entry.api_id, counters.recordable_calls, counters.successful_calls, counters.failed_calls,
-          counters.filtered_calls, counters.dropped_events});
+    for (const auto& entry : noleax::agent::linux::kLinuxHookRegistry) {
+      if (entry.group == noleax::agent::linux::LinuxHookApiGroup::kGlibcHeap &&
+          heap_hooks_ != nullptr) {
+        const auto counters = heap_hooks_->counters(entry.logical_api);
+        snapshots.push_back(noleax::agent::linux::LinuxTraceWriterApiCounterSnapshot{
+            entry.api_id, counters.recordable_calls, counters.successful_calls,
+            counters.failed_calls, counters.filtered_calls, counters.dropped_events});
+      } else if (entry.group == noleax::agent::linux::LinuxHookApiGroup::kVirtualMemory &&
+                 vm_hooks_ != nullptr) {
+        const auto counters = vm_hooks_->counters(entry.logical_api);
+        // Wire-space statistics: a moved mremap emits a record pair, so the recordable/
+        // successful counts gain one per paired record (see virtual_memory_hooks.hpp).
+        snapshots.push_back(noleax::agent::linux::LinuxTraceWriterApiCounterSnapshot{
+            entry.api_id, counters.recordable_calls + counters.paired_records,
+            counters.successful_calls + counters.paired_records, counters.failed_calls,
+            counters.filtered_calls, counters.dropped_events});
+      }
     }
     return snapshots;
   }
@@ -343,7 +395,8 @@ class LinuxCaptureRuntime {
   static std::atomic<bool> exit_finalize_started;
 
   std::unique_ptr<noleax::agent::HookBackend> backend_;
-  std::unique_ptr<noleax::agent::linux::GlibcHeapHooks> hooks_;
+  std::unique_ptr<noleax::agent::linux::GlibcHeapHooks> heap_hooks_;
+  std::unique_ptr<noleax::agent::linux::VirtualMemoryHooks> vm_hooks_;
   std::unique_ptr<noleax::agent::linux::LinuxModuleTracker> tracker_;
   std::unique_ptr<noleax::agent::linux::LinuxTraceWriter> writer_;
   noleax::agent::linux::LinuxTraceWriterResult writer_result_{};
@@ -570,8 +623,11 @@ bool standalone_bootstrap(const std::string& config_path) {
     std::fprintf(stderr, "noleax-agent: standalone attach is not supported on Linux\n");
     return false;
   }
-  if (configuration.capture.hook_profile.value != noleax::config::HookProfile::kLinuxGlibcHeap) {
-    std::fprintf(stderr, "noleax-agent: standalone requires hook_profile = \"linux-glibc-heap\"\n");
+  const auto standalone_profile = configuration.capture.hook_profile.value;
+  if (standalone_profile != noleax::config::HookProfile::kLinuxGlibcHeap &&
+      standalone_profile != noleax::config::HookProfile::kLinuxVirtualMemory &&
+      standalone_profile != noleax::config::HookProfile::kLinuxNative) {
+    std::fprintf(stderr, "noleax-agent: standalone requires a linux-* hook profile\n");
     return false;
   }
 

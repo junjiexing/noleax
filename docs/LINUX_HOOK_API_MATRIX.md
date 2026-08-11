@@ -82,6 +82,39 @@
 - `capture.min_size` 只过滤创建侧（kAllocate 类），realloc/free 始终记录；被过滤调用
   计入统计但无事件、无 sequence、无调用栈。
 
+## 5. Virtual Memory 组（linux-virtual-memory / linux-native）
+
+### 5.1 mmap（api_id 18）
+
+- 成功：`result_address`=映射基址、`requested_size`=length、`protection`=PROT_* 位、
+  `map_flags`=flags；匿名映射 `section_handle` 记 UINT64_MAX，文件映射记录 fd 与
+  `section_offset`。
+- `MAP_FAILED` 为失败事件，`operation_result`=errno。
+- 创建侧应用 `capture.min_size` 过滤。
+- 代际：匿名映射产生 VmAllocate 记录（新 mapping_id）；文件映射产生 Map 记录。
+- `mmap64` 与 `mmap` 同地址（x86-64 glibc），不单独安装，调用 mmap64 的调用经同地址
+  入口被同一 hook 捕获。
+
+### 5.2 munmap（api_id 19）
+
+- `address`=区间起点、`requested_size`=length；成功按代际配对关闭映射（匿名 → VmFree
+  带 release 位，文件映射 → Unmap），未知区间记 unmatched。
+- 不过滤、始终记录。
+
+### 5.3 mremap（api_id 20）
+
+- `address`=旧区间起点、`requested_size`=旧尺寸、`count`=新尺寸、`map_flags`=flags、
+  `result_address`=新基址。`MREMAP_MAYMOVE` 的第 5 个变参在 flags 命中时读取并记录。
+- 原地增长保留 mapping_id（analyzer 允许同基址扩尺寸）；迁移展开为
+  VmFree（旧 mapping_id）+ VmAllocate（新 mapping_id）记录对。
+- `MAP_FAILED` 为失败事件，不改代际。
+
+### 5.4 组内合同
+
+与 heap 组相同：errno 保存/恢复、恰好一次 original、递归抑制、两阶段停止。
+glibc 分配器自身的 arena 增长（main arena 的 brk、新 arena 的内部 mmap）不经公开
+符号或经递归抑制，不产生事件——进程 RSS 与事件字节数不会逐字节相等，属预期。
+
 ## 5. 验证
 
 逐 API 的合同测试在 `tests/integration/linux_glibc_heap_hooks_probe.cpp`（字段、errno、

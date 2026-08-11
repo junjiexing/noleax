@@ -154,6 +154,21 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     TIMEOUT 60
   )
 
+  add_executable(noleax-linux-virtual-memory-hooks-probe
+    integration/linux_virtual_memory_hooks_probe.cpp
+  )
+  target_link_libraries(noleax-linux-virtual-memory-hooks-probe PRIVATE
+    noleax::hook-backend
+    ${CMAKE_DL_LIBS}
+  )
+  noleax_set_project_warnings(noleax-linux-virtual-memory-hooks-probe)
+  add_test(NAME agent.linux-virtual-memory-hooks-probe
+    COMMAND noleax-linux-virtual-memory-hooks-probe
+  )
+  set_tests_properties(agent.linux-virtual-memory-hooks-probe PROPERTIES
+    TIMEOUT 60
+  )
+
   add_executable(noleax-linux-trace-writer-probe
     integration/linux_trace_writer_probe.cpp
   )

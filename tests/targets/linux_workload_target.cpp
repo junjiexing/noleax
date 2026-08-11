@@ -3,7 +3,9 @@
 // exactly assertable: a fixed number of paired allocations, a fixed set of never-freed
 // blocks, realloc/aligned-family coverage, and a multithreaded burst.
 
+#include <fcntl.h>
 #include <malloc.h>
+#include <sys/mman.h>
 
 #include <atomic>
 #include <cstdio>
@@ -77,6 +79,36 @@ void burst_worker() {
   }
 }
 
+void vm_workload() {
+  // Anonymous mapping, grown in place or moved by mremap, then unmapped.
+  void* region =
+      ::mmap(nullptr, 64U * 1024U, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (region == MAP_FAILED) {
+    return;
+  }
+  escape(region);
+  std::memset(region, 0x77, 4096U);
+  region = ::mremap(region, 64U * 1024U, 256U * 1024U, MREMAP_MAYMOVE);
+  if (region != MAP_FAILED) {
+    escape(region);
+    std::memset(region, 0x78, 4096U);
+    ::munmap(region, 256U * 1024U);
+  }
+
+  // File-backed mapping: this source file read through a view.
+  const int fd = ::open("/proc/self/exe", O_RDONLY);
+  if (fd >= 0) {
+    void* const view = ::mmap(nullptr, 8192U, PROT_READ, MAP_PRIVATE, fd, 0);
+    ::close(fd);
+    if (view != MAP_FAILED) {
+      escape(view);
+      volatile unsigned char first_byte = *static_cast<unsigned char*>(view);
+      static_cast<void>(first_byte);
+      ::munmap(view, 8192U);
+    }
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -87,6 +119,7 @@ int main() {
   retained_workload(retained);
   realloc_workload();
   aligned_workload();
+  vm_workload();
 
   std::thread first{burst_worker};
   std::thread second{burst_worker};

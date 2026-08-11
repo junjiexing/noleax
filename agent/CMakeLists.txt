@@ -24,12 +24,24 @@ if(WIN32)
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # -fno-weak turns vague-linkage (inline/COMDAT) symbols into TU-local ones. The hook
+  # TUs put every replacement plus the shared inline lifecycle helpers into ".nlxhk";
+  # at -O0 that whole section becomes one linkonce group per TU whose signature is the
+  # first helper symbol — identical across hook TUs, so the linker kept one copy and
+  # dropped the other TUs' replacements (undefined weak -> null -> install failure).
+  set_source_files_properties(
+    linux/glibc_heap_hooks.cpp
+    linux/virtual_memory_hooks.cpp
+    PROPERTIES COMPILE_OPTIONS ""
+  )
+
   target_sources(noleax-hook-backend PRIVATE
     linux/glibc_heap_hooks.cpp
     linux/memory_snapshot.cpp
     linux/module_tracker.cpp
     linux/stack_capture.cpp
     linux/trace_writer.cpp
+    linux/virtual_memory_hooks.cpp
     # Platform-neutral code under the windows path; hoisting to the shared namespace is
     # deferred to a Windows-CI-verified change.
     windows/stack_dictionary.cpp

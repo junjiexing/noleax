@@ -292,11 +292,22 @@ namespace {
       continue;
     }
     const char* const name = names.data() + section.sh_name;
-    if (std::memcmp(name, ".nlxhk", sizeof(".nlxhk")) == 0 && (section.sh_flags & SHF_ALLOC) != 0 &&
-        section.sh_size != 0) {
-      region.begin = reinterpret_cast<const void*>(load_bias + section.sh_addr);
-      region.end = static_cast<const std::byte*>(region.begin) + section.sh_size;
-      return region;
+    // Hook code lives in ".nlxhk" (replacements) and ".nlxhk.imm" (shared inline
+    // gate/lifecycle helpers); both need rendezvous coverage. The linker keeps them
+    // adjacent, so one covering range is returned.
+    if (std::strncmp(name, ".nlxhk", 6U) != 0 || (name[6] != '\0' && name[6] != '.')) {
+      continue;
+    }
+    if ((section.sh_flags & SHF_ALLOC) == 0 || section.sh_size == 0) {
+      continue;
+    }
+    const auto* const begin = reinterpret_cast<const std::byte*>(load_bias + section.sh_addr);
+    const auto* const end = begin + section.sh_size;
+    if (region.begin == nullptr || begin < static_cast<const std::byte*>(region.begin)) {
+      region.begin = begin;
+    }
+    if (region.end == nullptr || end > static_cast<const std::byte*>(region.end)) {
+      region.end = end;
     }
   }
   return region;

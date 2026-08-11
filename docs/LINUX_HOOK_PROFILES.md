@@ -29,9 +29,11 @@
 | profile | 逻辑 API |
 |---|---|
 | `linux-glibc-heap` | 10–17（malloc 族全部） |
+| `linux-virtual-memory` | 18–20（mmap/munmap/mremap） |
+| `linux-native` | 两组并集 |
 
-`linux-virtual-memory` 与 `linux-native`（mmap 族及其并集）在 M4 落地，届时 registry 扩展
-api_id 18–20（mmap/munmap/mremap）。
+虚拟内存组的 mmap 语义（匿名/文件映射的记录类型选择、mremap 的代际展开）见
+[LINUX_HOOK_API_MATRIX.md](LINUX_HOOK_API_MATRIX.md) §5。
 
 ## 3. 覆盖语义（与 Windows 的关键差异）
 

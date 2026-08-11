@@ -1,14 +1,16 @@
-// Linux in-process trace writer (docs/LINUX_PORT_PLAN.md M3): drains the shared glibc
-// heap event queue plus the poll-based module tracker on an internal worker thread and
-// writes a bounded .nlx trace through the platform-neutral noleax::trace library.
-// Mirrors the Windows RtlAllocateHeapTraceWriter architecture and invariants, scoped to
-// one queue and one event family: no heap lifecycle, VM/section, custom-hook, or memory
-// sampler records yet (M4+). heap_handle is always 0 and heap_id stays invalid in
-// allocation records (the wire model only requires heap_id for HeapCreate).
+// Linux in-process trace writer (docs/LINUX_PORT_PLAN.md M3/M4): drains the shared glibc
+// heap + virtual memory event queue plus the poll-based module tracker on an internal
+// worker thread and writes a bounded .nlx trace through the platform-neutral noleax::trace
+// library. Mirrors the Windows RtlAllocateHeapTraceWriter architecture and invariants,
+// scoped to the two built-in event families plus the /proc memory samplers; custom-hook
+// records arrive with M7 and the glibc heap has no heap-lifecycle family. heap_handle is
+// always 0 and heap_id stays invalid in allocation records (the wire model only requires
+// heap_id for HeapCreate).
 
 #include "noleax/agent/linux/trace_writer.hpp"
 
 #include <time.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <atomic>
@@ -31,6 +33,7 @@
 
 #include "noleax/agent/hook_guard.hpp"
 #include "noleax/agent/linux/hook_registry.hpp"
+#include "noleax/agent/linux/memory_snapshot.hpp"
 #include "noleax/agent/linux/stack_capture.hpp"
 #include "noleax/agent/windows/stack_dictionary.hpp"
 #include "noleax/trace/completeness.hpp"
@@ -127,6 +130,10 @@ static_assert(kMaximumTerminalTailSize <= kMinimumTerminalReserveSize);
   if (options.flush_interval <= std::chrono::nanoseconds::zero()) {
     throw std::invalid_argument{"trace writer flush interval must be positive"};
   }
+  if (options.memory_counters_interval < std::chrono::nanoseconds::zero() ||
+      options.memory_map_interval < std::chrono::nanoseconds::zero()) {
+    throw std::invalid_argument{"trace writer memory snapshot intervals must not be negative"};
+  }
   if (options.chunk_target_size == 0U ||
       options.chunk_target_size > options.trace.max_uncompressed_chunk_size) {
     throw std::invalid_argument{"trace writer chunk target is out of range"};
@@ -221,6 +228,29 @@ struct LiveModule {
   std::uint64_t base{0U};
   std::uint64_t size{0U};
 };
+
+// A live mapping generation: anonymous mappings live in live_vm_mappings_ (wire
+// VmAllocate/VmFree), file-backed ones in live_section_mappings_ (wire Map/Unmap), keyed
+// by base address exactly like the Windows writer's two maps.
+struct LiveMapping {
+  noleax::trace::MappingId mapping_id;
+  std::uint64_t base{0U};
+  std::uint64_t size{0U};
+};
+
+// munmap always releases its range, so the wire VmFreeEvent carries the same release bit
+// the Windows MEM_RELEASE uses (0x8000): the analyzer's generation tracker keys a full
+// mapping release on exactly this bit.
+constexpr std::uint32_t kVmFreeTypeRelease = 0x00008000U;
+
+// The in-process hooks only ever observe the current process, so every Linux VM event
+// targets it (there is no handle concept for self; the pid identifies the process).
+[[nodiscard]] noleax::trace::ProcessTarget current_process_target() noexcept {
+  noleax::trace::ProcessTarget target;
+  target.scope = noleax::trace::ProcessMemoryScope::kCurrentProcess;
+  target.process_id = static_cast<std::uint64_t>(::getpid());
+  return target;
+}
 
 }  // namespace
 
@@ -409,6 +439,10 @@ class LinuxTraceWriter::Implementation final {
     }
     collect_module_drops();
     auto next_flush = std::chrono::steady_clock::now() + options_.flush_interval;
+    // Both samplers are due immediately: every enabled sampler takes a baseline sample at
+    // capture start.
+    auto next_counters = std::chrono::steady_clock::now();
+    auto next_map = next_counters;
     for (;;) {
       bool drained_event = false;
       // Linux has no in-process loader notification: poll for module changes first so
@@ -432,6 +466,18 @@ class LinuxTraceWriter::Implementation final {
         flush_pending();
         next_flush = now + options_.flush_interval;
       }
+      const bool counters_due =
+          options_.memory_counters_interval.count() > 0 && now >= next_counters;
+      const bool map_due = options_.memory_map_interval.count() > 0 && now >= next_map;
+      if (counters_due || map_due) {
+        capture_memory_snapshot(counters_due, map_due);
+        if (counters_due) {
+          next_counters = now + options_.memory_counters_interval;
+        }
+        if (map_due) {
+          next_map = now + options_.memory_map_interval;
+        }
+      }
       if (!drained_event) {
         std::unique_lock lock{state_mutex_};
         state_changed_.wait_for(lock, kEmptyPollInterval,
@@ -451,7 +497,62 @@ class LinuxTraceWriter::Implementation final {
     collect_queue_drops();
     collect_module_drops();
     flush_pending();
+    // Take one final sample of every enabled sampler on the orderly stop path. The
+    // finish_after_worker_exit() (process teardown) path skips this on purpose: the last
+    // periodic snapshot stands.
+    if (options_.memory_counters_interval.count() > 0 || options_.memory_map_interval.count() > 0) {
+      capture_memory_snapshot(options_.memory_counters_interval.count() > 0,
+                              options_.memory_map_interval.count() > 0);
+    }
     finalize_trace();
+  }
+
+  // Samples the due memory record kinds and writes them as one kMemory chunk (counters
+  // first). Sampling runs on the writer thread (an internal thread), so its own allocations
+  // and API calls are never recorded. A failed or throwing sampler skips its record; a
+  // failed chunk write degrades to the usual file-limit handling. Sampling never aborts
+  // the capture.
+  void capture_memory_snapshot(bool want_counters, bool want_map) noexcept {
+    if (file_limit_reached_) {
+      return;
+    }
+    try {
+      memory_payload_.clear();
+      const std::uint64_t ticks =
+          (std::max)(monotonic_now_ns(), (std::max)(last_memory_ticks_, monotonic_origin_));
+      last_memory_ticks_ = ticks;
+      std::uint64_t counters_records = 0U;
+      std::uint64_t map_records = 0U;
+      if (want_counters) {
+        noleax::trace::MemoryCounters counters;
+        if (capture_memory_counters(counters)) {
+          counters.monotonic_ticks = ticks;
+          noleax::trace::append_memory_counters_record(memory_payload_, counters,
+                                                       options_.maximum_record_size);
+          counters_records = 1U;
+        }
+      }
+      if (want_map) {
+        noleax::trace::MemoryMap map;
+        if (capture_memory_map(map)) {
+          map.monotonic_ticks = ticks;
+          noleax::trace::append_memory_map_record(memory_payload_, map,
+                                                  options_.maximum_record_size);
+          map_records = 1U;
+        }
+      }
+      if (!memory_payload_.empty()) {
+        if (write_data_chunk(noleax::trace::ChunkType::kMemory, memory_payload_)) {
+          checked_add(memory_chunks_, 1U, "memory chunk count overflow");
+          checked_add(memory_counters_records_, counters_records,
+                      "memory counters record count overflow");
+          checked_add(memory_map_records_, map_records, "memory map record count overflow");
+        }
+        memory_payload_.clear();
+      }
+    } catch (...) {
+      memory_payload_.clear();
+    }
   }
 
   void drain_modules_through(std::uint64_t maximum_ticks) {
@@ -614,10 +715,35 @@ class LinuxTraceWriter::Implementation final {
         }
         break;
       case LinuxHeapEventOperation::kVmAllocate:
+        // mmap: requested_address/protection/map_flags/section_handle/section_offset are
+        // free-form arguments; only the size and the result carry invariants.
+        if (raw_event.address != 0U || raw_event.count != 0U || raw_event.alignment != 0U ||
+            (succeeded && raw_event.requested_size == 0U) ||
+            succeeded != (raw_event.result_address != 0U)) {
+          throw std::invalid_argument{"raw mmap event result is inconsistent"};
+        }
+        break;
       case LinuxHeapEventOperation::kVmUnmap:
+        if (raw_event.requested_address != 0U || raw_event.count != 0U ||
+            raw_event.alignment != 0U || raw_event.result_address != 0U ||
+            raw_event.protection != 0U || raw_event.map_flags != 0U ||
+            raw_event.section_handle != 0U || raw_event.section_offset != 0U ||
+            (succeeded && (raw_event.address == 0U || raw_event.requested_size == 0U))) {
+          throw std::invalid_argument{"raw munmap event result is inconsistent"};
+        }
+        break;
       case LinuxHeapEventOperation::kVmRemap:
-        // VM events arrive with the linux-virtual-memory profile work (port M4).
-        throw std::invalid_argument{"virtual memory events are not yet supported"};
+        // mremap: requested_size is the old size, count the new size; the result base is
+        // nonzero exactly on success. alignment carries the requested new address, which
+        // is defined only when MREMAP_FIXED (0x10) is present in map_flags.
+        if (raw_event.requested_address != 0U || raw_event.protection != 0U ||
+            raw_event.section_handle != 0U || raw_event.section_offset != 0U ||
+            (raw_event.alignment != 0U && (raw_event.map_flags & 0x10U) == 0U) ||
+            (succeeded && (raw_event.address == 0U || raw_event.count == 0U)) ||
+            succeeded != (raw_event.result_address != 0U)) {
+          throw std::invalid_argument{"raw mremap event result is inconsistent"};
+        }
+        break;
     }
     if (last_sequence_ == std::numeric_limits<std::uint64_t>::max() ||
         raw_event.queue_sequence != last_sequence_ + 1U) {
@@ -655,6 +781,50 @@ class LinuxTraceWriter::Implementation final {
     return noleax::trace::AllocationId{next_allocation_id_++};
   }
 
+  [[nodiscard]] noleax::trace::MappingId create_virtual_mapping(std::uint64_t base,
+                                                                std::uint64_t size) {
+    if (next_mapping_id_ == std::numeric_limits<std::uint64_t>::max()) {
+      throw std::overflow_error{"mapping ID space is exhausted"};
+    }
+    if (base == 0U || size == 0U || live_vm_mappings_.contains(base)) {
+      throw std::runtime_error{"virtual mapping creation is inconsistent"};
+    }
+    const noleax::trace::MappingId id{next_mapping_id_++};
+    live_vm_mappings_.emplace(base, LiveMapping{id, base, size});
+    return id;
+  }
+
+  [[nodiscard]] noleax::trace::MappingId create_section_mapping(std::uint64_t base,
+                                                                std::uint64_t size) {
+    if (next_mapping_id_ == std::numeric_limits<std::uint64_t>::max()) {
+      throw std::overflow_error{"mapping ID space is exhausted"};
+    }
+    if (base == 0U || size == 0U || live_section_mappings_.contains(base)) {
+      throw std::runtime_error{"section mapping creation is inconsistent"};
+    }
+    const noleax::trace::MappingId id{next_mapping_id_++};
+    live_section_mappings_.emplace(base, LiveMapping{id, base, size});
+    return id;
+  }
+
+  // Contains-lookup over the file-backed views (munmap may name any address inside the
+  // view), mirroring the Windows writer's find_section_mapping.
+  [[nodiscard]] auto find_section_mapping(std::uint64_t address) {
+    if (address == 0U) {
+      return live_section_mappings_.end();
+    }
+    auto candidate = live_section_mappings_.upper_bound(address);
+    if (candidate == live_section_mappings_.begin()) {
+      return live_section_mappings_.end();
+    }
+    --candidate;
+    const LiveMapping& mapping = candidate->second;
+    if (address < mapping.base || address - mapping.base >= mapping.size) {
+      return live_section_mappings_.end();
+    }
+    return candidate;
+  }
+
   [[nodiscard]] noleax::trace::EventStatus unmatched_status(std::uint64_t address) const noexcept {
     return address != 0U && options_.capture_scope.preexisting_allocations_unknown
                ? noleax::trace::EventStatus::kPreexisting
@@ -674,32 +844,47 @@ class LinuxTraceWriter::Implementation final {
 
     const std::size_t api_index = hook_api_index(raw_event.api_id);
     ApiCounters& counters = api_counters_[api_index];
-    if (raw_event.status == LinuxHeapEventStatus::kSuccess) {
-      checked_add(counters.successful, 1U, "successful operation count overflow");
+    const bool succeeded = raw_event.status == LinuxHeapEventStatus::kSuccess;
+    // Wire records per raw event: a successful mremap that moves (or remaps a file-backed
+    // view) decomposes into a free + create record pair; every other event is one record.
+    const std::uint64_t event_records = raw_event.operation == LinuxHeapEventOperation::kVmRemap
+                                            ? remap_event_records(raw_event)
+                                            : 1U;
+    if (succeeded) {
+      checked_add(counters.successful, event_records, "successful operation count overflow");
     } else {
       checked_add(counters.failed, 1U, "failed operation count overflow");
     }
 
+    // Wire sequences: one raw event occupies event_records consecutive values, so the
+    // mremap pair keeps the stream strictly increasing while the queue sequence check
+    // above keeps raw contiguity. Until the first pair, wire sequences equal queue ones.
+    if (event_records - 1U > std::numeric_limits<std::uint64_t>::max() - next_wire_sequence_) {
+      throw std::overflow_error{"event sequence space is exhausted"};
+    }
+    const std::uint64_t wire_begin = next_wire_sequence_;
+    next_wire_sequence_ += event_records;
+    last_wire_sequence_ = next_wire_sequence_ - 1U;
+
     std::optional<noleax::trace::LossRecord> stack_capture_loss;
     if (raw_event.stack.status == StackCaptureStatus::kFailed) {
-      stack_capture_loss = make_stack_capture_loss(raw_event.queue_sequence, normalized_ticks);
+      stack_capture_loss = make_stack_capture_loss(wire_begin, event_records, normalized_ticks);
       checked_add(stack_capture_failures_, 1U, "stack capture failure count overflow");
       completeness_.observe_loss(*stack_capture_loss);
     }
     if (file_limit_reached_) {
-      note_event_trace_drop(raw_event, normalized_ticks);
+      note_event_trace_drop(raw_event, normalized_ticks, wire_begin, event_records);
       return;
     }
 
-    ensure_pending_capacity();
+    ensure_pending_capacity(event_records);
     if (file_limit_reached_) {
-      note_event_trace_drop(raw_event, normalized_ticks);
+      note_event_trace_drop(raw_event, normalized_ticks, wire_begin, event_records);
       return;
     }
 
-    const bool succeeded = raw_event.status == LinuxHeapEventStatus::kSuccess;
     noleax::trace::Event event;
-    event.header.sequence = noleax::trace::Sequence{raw_event.queue_sequence};
+    event.header.sequence = noleax::trace::Sequence{wire_begin};
     event.header.monotonic_ticks = normalized_ticks;
     event.header.thread_id = raw_event.thread_id;
     event.header.api_id = raw_event.api_id;
@@ -773,7 +958,7 @@ class LinuxTraceWriter::Implementation final {
         }
       }
       event.payload = reallocation;
-    } else {
+    } else if (raw_event.operation == LinuxHeapEventOperation::kFree) {
       noleax::trace::FreeEvent free_event;
       free_event.address = raw_event.address;
       if (succeeded) {
@@ -786,17 +971,95 @@ class LinuxTraceWriter::Implementation final {
         }
       }
       event.payload = free_event;
+    } else if (raw_event.operation == LinuxHeapEventOperation::kVmAllocate) {
+      if (raw_event.section_handle == std::numeric_limits<std::uint64_t>::max()) {
+        // Anonymous mmap: one fresh mapping generation per successful call.
+        noleax::trace::VmAllocateEvent allocation;
+        allocation.target = current_process_target();
+        allocation.requested_base = raw_event.requested_address;
+        allocation.result_base = raw_event.result_address;
+        allocation.requested_size = raw_event.requested_size;
+        allocation.allocation_type = static_cast<std::uint32_t>(raw_event.map_flags);
+        allocation.protection = static_cast<std::uint32_t>(raw_event.protection);
+        if (succeeded) {
+          allocation.result_size = raw_event.requested_size;
+          allocation.mapping_id =
+              create_virtual_mapping(raw_event.result_address, raw_event.requested_size);
+          allocation.mapping_base = raw_event.result_address;
+          allocation.mapping_size = raw_event.requested_size;
+        }
+        event.payload = allocation;
+      } else {
+        // File-backed mmap: a section view keyed by its fd and offset.
+        noleax::trace::MapEvent mapping_event;
+        mapping_event.section_handle = raw_event.section_handle;
+        mapping_event.target = current_process_target();
+        mapping_event.result_base = raw_event.result_address;
+        mapping_event.section_offset = raw_event.section_offset;
+        mapping_event.protection = static_cast<std::uint32_t>(raw_event.protection);
+        if (succeeded) {
+          mapping_event.view_size = raw_event.requested_size;
+          mapping_event.mapping_id =
+              create_section_mapping(raw_event.result_address, raw_event.requested_size);
+        }
+        event.payload = mapping_event;
+      }
+    } else if (raw_event.operation == LinuxHeapEventOperation::kVmUnmap) {
+      const auto vm_mapping = live_vm_mappings_.find(raw_event.address);
+      const auto section_mapping = vm_mapping == live_vm_mappings_.end()
+                                       ? find_section_mapping(raw_event.address)
+                                       : live_section_mappings_.end();
+      if (section_mapping != live_section_mappings_.end()) {
+        // File-backed view: a successful munmap unmaps the whole view generation (the
+        // wire model has no partial unmap; the record carries the view base).
+        noleax::trace::UnmapEvent unmap_event;
+        unmap_event.target = current_process_target();
+        unmap_event.base = section_mapping->second.base;
+        if (succeeded) {
+          unmap_event.mapping_id = section_mapping->second.mapping_id;
+          live_section_mappings_.erase(section_mapping);
+        }
+        event.payload = unmap_event;
+      } else {
+        noleax::trace::VmFreeEvent free_event;
+        free_event.target = current_process_target();
+        free_event.base = raw_event.address;
+        free_event.region_size = raw_event.requested_size;
+        free_event.free_type = kVmFreeTypeRelease;
+        if (succeeded) {
+          if (vm_mapping != live_vm_mappings_.end()) {
+            free_event.mapping_id = vm_mapping->second.mapping_id;
+            live_vm_mappings_.erase(vm_mapping);
+          } else {
+            // munmap of a range the capture never saw: no generation change.
+            event.header.status = unmatched_status(raw_event.address);
+          }
+        }
+        event.payload = free_event;
+      }
+    } else if (!succeeded) {
+      // Failed mremap: no generation change; record the attempt as a failed allocation.
+      noleax::trace::VmAllocateEvent allocation;
+      allocation.target = current_process_target();
+      allocation.requested_base = raw_event.address;
+      allocation.requested_size = raw_event.count;
+      allocation.allocation_type = static_cast<std::uint32_t>(raw_event.map_flags);
+      event.payload = allocation;
     }
-    noleax::trace::append_event_record(event_payload_, event, options_.maximum_record_size);
+    if (raw_event.operation != LinuxHeapEventOperation::kVmRemap || !succeeded) {
+      noleax::trace::append_event_record(event_payload_, event, options_.maximum_record_size);
+    } else {
+      append_vm_remap_records(raw_event, event);
+    }
 
     if (pending_event_count_ == 0U) {
-      pending_sequence_begin_ = raw_event.queue_sequence;
+      pending_sequence_begin_ = wire_begin;
       pending_tick_begin_ = normalized_ticks;
     }
-    pending_sequence_end_ = raw_event.queue_sequence;
+    pending_sequence_end_ = last_wire_sequence_;
     pending_tick_end_ = normalized_ticks;
-    checked_add(pending_event_count_, 1U, "pending event count overflow");
-    checked_add(counters.pending, 1U, "pending per-API event count overflow");
+    checked_add(pending_event_count_, event_records, "pending event count overflow");
+    checked_add(counters.pending, event_records, "pending per-API event count overflow");
     checked_add(pending_unique_stacks_, event_unique_stacks, "pending unique stack count overflow");
     checked_add(pending_reused_stacks_, event_reused_stacks, "pending reused stack count overflow");
 
@@ -806,10 +1069,124 @@ class LinuxTraceWriter::Implementation final {
     }
   }
 
-  void ensure_pending_capacity() {
+  // Records a successful mremap emits: an in-place resize of an anonymous or untracked
+  // mapping is a single VmAllocate record; a move (or a file-backed source, whose view
+  // generation the analyzer cannot resize) is a free + create pair.
+  [[nodiscard]] std::uint64_t remap_event_records(const LinuxHeapEvent& raw_event) {
+    if (raw_event.status != LinuxHeapEventStatus::kSuccess) {
+      return 1U;
+    }
+    if (raw_event.result_address != raw_event.address) {
+      return 2U;
+    }
+    const bool anonymous_source = live_vm_mappings_.contains(raw_event.address);
+    const bool section_source = !anonymous_source && find_section_mapping(raw_event.address) !=
+                                                         live_section_mappings_.end();
+    return section_source ? 2U : 1U;
+  }
+
+  // Emits the wire records for a successful mremap; base_event carries the resolved header
+  // (status kSuccess, the interned stack, the first of the allocated wire sequences).
+  void append_vm_remap_records(const LinuxHeapEvent& raw_event,
+                               const noleax::trace::Event& base_event) {
+    const auto vm_source = live_vm_mappings_.find(raw_event.address);
+    const bool has_vm_source = vm_source != live_vm_mappings_.end();
+    const auto section_source =
+        has_vm_source ? live_section_mappings_.end() : find_section_mapping(raw_event.address);
+    const bool has_section_source = section_source != live_section_mappings_.end();
+    const bool in_place = raw_event.result_address == raw_event.address;
+
+    if (!has_section_source && in_place) {
+      // In-place resize: an anonymous generation keeps its mapping_id and grows (the
+      // analyzer's observe_vm_allocate allows same-base growth); an untracked source is
+      // adopted as a fresh generation so its later munmap still pairs.
+      if (has_vm_source) {
+        vm_source->second.size = raw_event.count;
+      }
+      noleax::trace::VmAllocateEvent allocation;
+      allocation.target = current_process_target();
+      allocation.requested_base = raw_event.address;
+      allocation.result_base = raw_event.result_address;
+      allocation.requested_size = raw_event.count;
+      allocation.result_size = raw_event.count;
+      allocation.allocation_type = static_cast<std::uint32_t>(raw_event.map_flags);
+      allocation.mapping_id =
+          has_vm_source ? vm_source->second.mapping_id
+                        : create_virtual_mapping(raw_event.result_address, raw_event.count);
+      allocation.mapping_base = raw_event.result_address;
+      allocation.mapping_size = raw_event.count;
+      noleax::trace::Event update = base_event;
+      if (!has_vm_source && options_.capture_scope.preexisting_allocations_unknown) {
+        update.header.status = noleax::trace::EventStatus::kPreexisting;
+      }
+      update.payload = allocation;
+      noleax::trace::append_event_record(event_payload_, update, options_.maximum_record_size);
+      return;
+    }
+
+    noleax::trace::Event end_event = base_event;
+    if (!has_vm_source && !has_section_source) {
+      // Untracked source range (attach blind spot): the free half pairs with nothing.
+      end_event.header.status = unmatched_status(raw_event.address);
+    }
+    if (has_section_source) {
+      noleax::trace::UnmapEvent unmap_event;
+      unmap_event.target = current_process_target();
+      unmap_event.base = section_source->second.base;
+      unmap_event.mapping_id = section_source->second.mapping_id;
+      live_section_mappings_.erase(section_source);
+      end_event.payload = unmap_event;
+    } else {
+      noleax::trace::VmFreeEvent free_event;
+      free_event.target = current_process_target();
+      free_event.base = raw_event.address;
+      free_event.region_size = raw_event.requested_size;
+      free_event.free_type = kVmFreeTypeRelease;
+      if (has_vm_source) {
+        free_event.mapping_id = vm_source->second.mapping_id;
+        live_vm_mappings_.erase(vm_source);
+      }
+      end_event.payload = free_event;
+    }
+    noleax::trace::append_event_record(event_payload_, end_event, options_.maximum_record_size);
+
+    noleax::trace::Event create_event = base_event;
+    create_event.header.sequence = noleax::trace::Sequence{base_event.header.sequence.value() + 1U};
+    if (!has_vm_source && !has_section_source) {
+      create_event.header.status = options_.capture_scope.preexisting_allocations_unknown
+                                       ? noleax::trace::EventStatus::kPreexisting
+                                       : noleax::trace::EventStatus::kSuccess;
+    }
+    if (has_section_source) {
+      // A remapped file-backed view stays file-backed; the raw event carries no fd or
+      // protection, so the new view records only what mremap reports.
+      noleax::trace::MapEvent map_event;
+      map_event.target = current_process_target();
+      map_event.result_base = raw_event.result_address;
+      map_event.view_size = raw_event.count;
+      map_event.mapping_id = create_section_mapping(raw_event.result_address, raw_event.count);
+      create_event.payload = map_event;
+    } else {
+      noleax::trace::VmAllocateEvent allocation;
+      allocation.target = current_process_target();
+      allocation.requested_base = raw_event.address;
+      allocation.result_base = raw_event.result_address;
+      allocation.requested_size = raw_event.count;
+      allocation.result_size = raw_event.count;
+      allocation.allocation_type = static_cast<std::uint32_t>(raw_event.map_flags);
+      allocation.mapping_id = create_virtual_mapping(raw_event.result_address, raw_event.count);
+      allocation.mapping_base = raw_event.result_address;
+      allocation.mapping_size = raw_event.count;
+      create_event.payload = allocation;
+    }
+    noleax::trace::append_event_record(event_payload_, create_event, options_.maximum_record_size);
+  }
+
+  void ensure_pending_capacity(std::uint64_t event_records) {
     if (pending_event_count_ == 0U) {
       return;
     }
+    const std::uint64_t event_addition = event_records * kMaximumEventAdditionSize;
     const bool stack_would_exceed =
         stack_payload_.size() > options_.chunk_target_size ||
         kMaximumStackDefinitionRecordSize >
@@ -817,9 +1194,8 @@ class LinuxTraceWriter::Implementation final {
                 (std::min)(stack_payload_.size(), options_.chunk_target_size);
     const bool event_would_exceed =
         event_payload_.size() > options_.chunk_target_size ||
-        kMaximumEventAdditionSize >
-            options_.chunk_target_size -
-                (std::min)(event_payload_.size(), options_.chunk_target_size);
+        event_addition > options_.chunk_target_size -
+                             (std::min)(event_payload_.size(), options_.chunk_target_size);
     if (stack_would_exceed || event_would_exceed) {
       flush_pending();
     }
@@ -837,14 +1213,16 @@ class LinuxTraceWriter::Implementation final {
                                                   options_.maximum_record_size);
   }
 
-  [[nodiscard]] noleax::trace::LossRecord make_stack_capture_loss(std::uint64_t sequence,
+  [[nodiscard]] noleax::trace::LossRecord make_stack_capture_loss(std::uint64_t sequence_begin,
+                                                                  std::uint64_t event_records,
                                                                   std::uint64_t ticks) const {
     noleax::trace::LossRecord loss;
     loss.reason = noleax::trace::LossReason::kStackCaptureFailed;
     loss.location = noleax::trace::LossLocation::kAgentQueue;
-    loss.estimated_event_count = 1U;
-    loss.sequence_range = noleax::trace::SequenceRange{noleax::trace::Sequence{sequence},
-                                                       noleax::trace::Sequence{sequence}};
+    loss.estimated_event_count = event_records;
+    loss.sequence_range =
+        noleax::trace::SequenceRange{noleax::trace::Sequence{sequence_begin},
+                                     noleax::trace::Sequence{sequence_begin + event_records - 1U}};
     loss.tick_range = noleax::trace::TickRange{ticks, ticks};
     return loss;
   }
@@ -964,15 +1342,16 @@ class LinuxTraceWriter::Implementation final {
     pending_tick_end_ = 0U;
   }
 
-  void note_event_trace_drop(const LinuxHeapEvent& raw_event, std::uint64_t ticks) {
+  void note_event_trace_drop(const LinuxHeapEvent& raw_event, std::uint64_t ticks,
+                             std::uint64_t wire_begin, std::uint64_t event_records) {
     if (trace_dropped_events_ == 0U) {
-      trace_drop_sequence_begin_ = raw_event.queue_sequence;
+      trace_drop_sequence_begin_ = wire_begin;
       trace_drop_tick_begin_ = ticks;
     }
-    trace_drop_sequence_end_ = raw_event.queue_sequence;
+    trace_drop_sequence_end_ = wire_begin + event_records - 1U;
     trace_drop_tick_end_ = ticks;
-    checked_add(trace_dropped_events_, 1U, "trace drop count overflow");
-    checked_add(api_counters_[hook_api_index(raw_event.api_id)].trace_dropped, 1U,
+    checked_add(trace_dropped_events_, event_records, "trace drop count overflow");
+    checked_add(api_counters_[hook_api_index(raw_event.api_id)].trace_dropped, event_records,
                 "per-API trace drop count overflow");
   }
 
@@ -1138,9 +1517,10 @@ class LinuxTraceWriter::Implementation final {
         write_terminal_chunk(noleax::trace::ChunkType::kStatistics, statistics_payload);
 
     noleax::trace::EndOfTrace end;
-    end.final_sequence = noleax::trace::Sequence{last_sequence_};
+    end.final_sequence = noleax::trace::Sequence{last_wire_sequence_};
     end.final_monotonic_ticks =
-        (std::max)((std::max)(last_ticks_, last_module_ticks_), monotonic_origin_);
+        (std::max)((std::max)((std::max)(last_ticks_, last_module_ticks_), last_memory_ticks_),
+                   monotonic_origin_);
     end.normal_stop = true;
     end.aggregate_completeness = completeness_.report();
     end.aggregate_completeness.remove(noleax::trace::CompletenessIssue::kMissingEndOfTrace);
@@ -1166,6 +1546,9 @@ class LinuxTraceWriter::Implementation final {
     result_.module_unload_records = written_module_unloads_;
     result_.module_notification_drops = module_notification_drops_;
     result_.bytes_written = writer_.bytes_written();
+    result_.memory_chunks = memory_chunks_;
+    result_.memory_counters_records = memory_counters_records_;
+    result_.memory_map_records = memory_map_records_;
   }
 
   [[nodiscard]] static std::size_t hook_api_index(noleax::trace::ApiId api_id) {
@@ -1198,8 +1581,11 @@ class LinuxTraceWriter::Implementation final {
   std::vector<std::byte> module_payload_;
   std::vector<std::byte> stack_payload_;
   std::vector<std::byte> event_payload_;
+  std::vector<std::byte> memory_payload_;
   std::unordered_map<std::uint64_t, noleax::trace::AllocationId> live_allocations_;
   std::map<std::uint64_t, LiveModule> live_modules_;
+  std::map<std::uint64_t, LiveMapping> live_vm_mappings_;
+  std::map<std::uint64_t, LiveMapping> live_section_mappings_;
   std::array<ApiCounters, kLinuxHookRegistry.size()> api_counters_{};
   std::thread worker_;
   mutable std::mutex state_mutex_;
@@ -1217,9 +1603,13 @@ class LinuxTraceWriter::Implementation final {
   LinuxTraceWriterResult result_;
   std::uint64_t next_allocation_id_{1U};
   std::uint64_t next_module_id_{1U};
+  std::uint64_t next_mapping_id_{1U};
+  std::uint64_t next_wire_sequence_{1U};
+  std::uint64_t last_wire_sequence_{0U};
   std::uint64_t last_sequence_{0U};
   std::uint64_t last_ticks_{0U};
   std::uint64_t last_module_ticks_{0U};
+  std::uint64_t last_memory_ticks_{0U};
   std::uint64_t pending_module_loads_{0U};
   std::uint64_t pending_module_unloads_{0U};
   std::uint64_t pending_event_count_{0U};
@@ -1243,6 +1633,9 @@ class LinuxTraceWriter::Implementation final {
   std::uint64_t timestamp_adjustments_{0U};
   std::uint64_t unique_stacks_{0U};
   std::uint64_t reused_stacks_{0U};
+  std::uint64_t memory_chunks_{0U};
+  std::uint64_t memory_counters_records_{0U};
+  std::uint64_t memory_map_records_{0U};
 };
 
 LinuxTraceWriter::LinuxTraceWriter(LinuxHeapEventQueue& event_queue,

@@ -26,23 +26,23 @@ inline std::atomic<std::uint64_t> replacement_gate_waiters{0U};
 // empty before the module reference is released. Keep the section limited to these helpers and
 // the unscoped entry/exit pair below; everything else must stay out to avoid rendezvous false
 // positives from unrelated agent code.
-NOLEAX_HOOK_SECTION_PUSH
+NOLEAX_HOOK_IMM_SECTION_PUSH
 
-NOLEAX_HOOK_SECTION
+NOLEAX_HOOK_IMM_SECTION
 inline void increment_or_terminate(std::atomic<std::uint64_t>& value) noexcept {
   if (value.fetch_add(1U, std::memory_order_seq_cst) == std::numeric_limits<std::uint64_t>::max()) {
     std::terminate();
   }
 }
 
-NOLEAX_HOOK_SECTION
+NOLEAX_HOOK_IMM_SECTION
 inline void decrement_or_terminate(std::atomic<std::uint64_t>& value) noexcept {
   if (value.fetch_sub(1U, std::memory_order_seq_cst) == 0U) {
     std::terminate();
   }
 }
 
-NOLEAX_HOOK_SECTION
+NOLEAX_HOOK_IMM_SECTION
 inline void enter_replacement_gate() noexcept {
   // Read the guard depths through the dedicated probe: it is called only from here, so it can
   // live in ".nlxhk" with the rest of the gate. Calling the shared guard queries instead would
@@ -77,10 +77,10 @@ inline void enter_replacement_gate() noexcept {
   }
 }
 
-NOLEAX_HOOK_SECTION
+NOLEAX_HOOK_IMM_SECTION
 inline void leave_replacement_gate() noexcept { decrement_or_terminate(replacement_active_calls); }
 
-NOLEAX_HOOK_SECTION_POP
+NOLEAX_HOOK_IMM_SECTION_POP
 
 }  // namespace detail
 
@@ -262,9 +262,9 @@ class ReplacementLifecycle final {
   std::atomic<std::uint64_t> recording_in_flight_{0U};
 };
 
-NOLEAX_HOOK_SECTION_PUSH
+NOLEAX_HOOK_IMM_SECTION_PUSH
 
-NOLEAX_HOOK_SECTION
+NOLEAX_HOOK_IMM_SECTION
 inline ReplacementRoute ReplacementLifecycle::enter_unscoped() noexcept {
   detail::enter_replacement_gate();
   const std::uint64_t previous_transition =
@@ -290,7 +290,7 @@ inline ReplacementRoute ReplacementLifecycle::enter_unscoped() noexcept {
   return route;
 }
 
-NOLEAX_HOOK_SECTION
+NOLEAX_HOOK_IMM_SECTION
 inline void ReplacementLifecycle::leave_unscoped(ReplacementRoute route) noexcept {
   if (route == ReplacementRoute::kRecord) {
     const std::uint64_t previous_recording =
@@ -306,6 +306,6 @@ inline void ReplacementLifecycle::leave_unscoped(ReplacementRoute route) noexcep
   detail::leave_replacement_gate();
 }
 
-NOLEAX_HOOK_SECTION_POP
+NOLEAX_HOOK_IMM_SECTION_POP
 
 }  // namespace noleax::agent
