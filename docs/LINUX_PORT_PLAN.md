@@ -238,6 +238,23 @@ analyzer 三模式可分析。这是 Linux 版第一个用户可用形态。
 
 ### M4 `linux-virtual-memory` profile 与内存快照
 
+> 状态：**已完成**（2026-08-11）。双 preset 296/296；native profile e2e 覆盖
+> mmap/munmap/mremap + `--mode memory` 时间序列。
+>
+> 出入与新增注记：
+> - mremap 变参第 5 参仅在 `MREMAP_FIXED` 时有语义（事件如实记录）；迁移展开为
+>   VmFree+VmAllocate 记录对，wire 序列与统计按记录计数（hook 侧带 paired_records）。
+> - 内存快照字段映射：VmRSS/VmHWM/RssAnon/VmSize → working_set/peak/private/commit；
+>   maps 遍历按 `---p` → Reserve、可执行文件映射 → Image、命名/匿名分类，POSIX PROT
+>   位进 protect。analyzer 侧无需改动（memory 模式平台中立）。
+> - **新发现的 ELF 链接陷阱**（已固化进 hook_section.hpp 注释与 HOOK_QUIESCENCE.md §8
+>   应补的位置）：-O0 下多个 hook TU 的 `.nlxhk` 段构成同签名 linkonce 组，链接器去重
+>   会丢弃整个 TU 的替换函数集。解法是门/生命周期 inline 助手移入兄弟节 `.nlxhk.imm`
+>   （跨 TU 内容一致，去重正确），各 TU 替换函数独占签名；region 解析按 `.nlxhk` 前缀
+>   覆盖。这是 Windows 从未暴露的问题类型（MSVC 无 COMDAT 组）。
+> - 内存快照按字段映射语义写入 TRACE_WRITER 待 M8 汇总；部分 munmap 的代际语义简化
+>   （部分解除映射按整段结束）与 analyzer 模型一致，写入 LINUX_HOOK_API_MATRIX §5。
+
 - hook `mmap`、`munmap`、`mremap`：mapping generation（reserve/map/unmap 语义对齐
   Nt 组），`mremap` 对齐 realloc 语义；`linux-native` 并集 profile。
 - 内存快照：`/proc/self/status` 计数器（对齐 PROCESS_MEMORY_COUNTERS 字段映射）、
