@@ -322,6 +322,21 @@ analyzer 三模式可分析。这是 Linux 版第一个用户可用形态。
 
 ### M7 自定义 hook（Linux）
 
+> 状态：**已完成**（2026-08-11）。双 preset 310/310；e2e 以工作负载目标的
+> `my_alloc`/`my_free` 为声明点，leaks 命中两块驻留自定义分配。
+>
+> 出入与注记：
+> - SysV AMD64 参数映射：0–5 读寄存器（rdi/rsi/rdx/rcx/r8/r9），6–7 读入口栈槽；
+>   `result_arg`、calloc 形态（溢出按失败事件）、`free_size_arg`（读但不入线——
+>   FreeEvent 无尺寸字段，与 Windows §10.4 一致）。
+> - 定位器：`alloc`/`free`/`realloc` 为 dynsym 导出（agent 进程内解析磁盘 ELF），
+>   `*_rva` 为模块相对偏移，新增 `*_sym`（任意 symtab/dynsym 符号，controller 侧
+>   解析为偏移）；`*_pdb` 为 Windows 专用，平台校验各自拒绝另一侧拼法。
+> - 分配 id 由 **writer 侧**按 `(api_id<<40)|counter` 命名空间盖印（事件 POD 无 id
+>   字段）；失败降级（CustomHookFailure + completeness bit 10）完整复用。
+> - PE 身份校验（image_identity）在 Linux 无对应物，忽略并文档化；build-id 烘焙合同
+>   与 ELF 静态补丁同属后续项。
+
 - 声明模型不变（TOML/CLI 声明第三方分配器的 alloc/realloc/free 角色）。
 - locator 三件套换 ELF 体系：dynsym 导出名（agent 进程内读）、DWARF 符号
   （controller 侧 libdw 解析为文件偏移）、裸文件偏移；standalone baking 合同改为

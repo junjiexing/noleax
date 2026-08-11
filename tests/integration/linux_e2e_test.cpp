@@ -120,3 +120,32 @@ TEST_CASE("linux end-to-end native profile captures VM events and memory snapsho
   std::filesystem::remove(events_out);
   std::filesystem::remove(memory_out);
 }
+
+TEST_CASE("linux end-to-end custom hooks capture a declared allocator", "[linux][e2e]") {
+  const auto stamp = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+  const std::filesystem::path trace =
+      std::filesystem::temp_directory_path() / ("noleax-e2e-custom-" + stamp + ".nlx");
+  const std::filesystem::path leaks_out =
+      std::filesystem::temp_directory_path() / ("noleax-e2e-custom-leaks-" + stamp + ".txt");
+
+  const std::string run_command =
+      "\"" NOLEAX_CLI_PATH
+      "\" run --hook-profile linux-glibc-heap --custom-hook "
+      "\"noleax-linux-workload-target:alloc=my_alloc,free=my_free\" --trace \"" +
+      trace.string() + "\" -- \"" NOLEAX_WORKLOAD_PATH "\"";
+  const CommandResult run = run_shell(run_command);
+  REQUIRE(run.exit_code == 0);
+
+  const CommandResult leaks =
+      run_shell("\"" NOLEAX_CLI_PATH "\" analyze --mode leaks --api my_alloc \"" + trace.string() +
+                "\" > \"" + leaks_out.string() + "\" 2>&1");
+  REQUIRE(leaks.exit_code == 0);
+  const std::string leaks_output = read_all(leaks_out);
+  INFO(leaks_output);
+  // The two blocks allocated through the custom allocator and retained until exit.
+  CHECK(leaks_output.find("size=2048B") != std::string::npos);
+  CHECK(leaks_output.find("size=3072B") != std::string::npos);
+
+  std::filesystem::remove(trace);
+  std::filesystem::remove(leaks_out);
+}

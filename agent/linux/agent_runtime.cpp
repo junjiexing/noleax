@@ -39,6 +39,7 @@
 #include "noleax/agent/hook_backend.hpp"
 #include "noleax/agent/hook_guard.hpp"
 #include "noleax/agent/linux/bootstrap.hpp"
+#include "noleax/agent/linux/custom_symbol_hooks.hpp"
 #include "noleax/agent/linux/glibc_heap_hooks.hpp"
 #include "noleax/agent/linux/module_tracker.hpp"
 #include "noleax/agent/linux/trace_writer.hpp"
@@ -238,6 +239,7 @@ class LinuxCaptureRuntime {
     writer_options.monotonic_origin = origin;
     writer_options.utc_origin_ns = utc_now_ns();
     writer_options.counter_source = [this] { return counter_snapshot(); };
+    writer_options.custom_hooks = request.custom_hooks;
     writer_ = std::make_unique<noleax::agent::linux::LinuxTraceWriter>(
         event_queue, *tracker_, request.trace_path_utf8, writer_options);
 
@@ -255,6 +257,15 @@ class LinuxCaptureRuntime {
           noleax::ipc::ErrorResponse{3U, 0U, "failed to install the linux-virtual-memory hooks"};
       state_ = noleax::ipc::AgentState::kFailed;
       return false;
+    }
+    if (!request.custom_hooks.empty()) {
+      // Per-point best effort: failures degrade into the trace (CustomHookFailure records
+      // + completeness bit 10), never fail the capture.
+      custom_hooks_ = std::make_unique<noleax::agent::linux::LinuxCustomSymbolHooks>(
+          *backend_, event_queue, request.custom_hooks, request.maximum_stack_depth,
+          request.minimum_capture_size);
+      static_cast<void>(custom_hooks_->install());
+      writer_->note_custom_hook_failures(custom_hooks_->failures());
     }
     install_exit_hooks();
 
@@ -295,6 +306,14 @@ class LinuxCaptureRuntime {
           status.dropped_events += counters.dropped_events;
         }
       }
+      if (custom_hooks_ != nullptr) {
+        for (std::size_t index = 0U; index < custom_hooks_->point_count(); ++index) {
+          const auto counters = custom_hooks_->counters(index);
+          status.observed_calls += counters.recordable_calls;
+          status.filtered_calls += counters.filtered_calls;
+          status.dropped_events += counters.dropped_events;
+        }
+      }
       status.written_events = status.observed_calls - status.filtered_calls - status.dropped_events;
     }
     return status;
@@ -311,6 +330,9 @@ class LinuxCaptureRuntime {
     if (vm_hooks_ != nullptr) {
       static_cast<void>(vm_hooks_->stop_recording());
     }
+    if (custom_hooks_ != nullptr) {
+      static_cast<void>(custom_hooks_->stop_recording());
+    }
     writer_result_ = writer_->finish();
     state_ = noleax::ipc::AgentState::kDrained;
   }
@@ -322,6 +344,9 @@ class LinuxCaptureRuntime {
     }
     if (state_ != noleax::ipc::AgentState::kDrained) {
       return;
+    }
+    if (custom_hooks_ != nullptr) {
+      static_cast<void>(custom_hooks_->uninstall());
     }
     if (vm_hooks_ != nullptr) {
       static_cast<void>(vm_hooks_->uninstall());
@@ -386,6 +411,15 @@ class LinuxCaptureRuntime {
             counters.filtered_calls, counters.dropped_events});
       }
     }
+    if (custom_hooks_ != nullptr) {
+      for (std::size_t index = 0U; index < custom_hooks_->point_count(); ++index) {
+        const auto counters = custom_hooks_->counters(index);
+        snapshots.push_back(noleax::agent::linux::LinuxTraceWriterApiCounterSnapshot{
+            custom_hooks_->point_api_id(index), counters.recordable_calls,
+            counters.successful_calls, counters.failed_calls, counters.filtered_calls,
+            counters.dropped_events});
+      }
+    }
     return snapshots;
   }
 
@@ -397,6 +431,7 @@ class LinuxCaptureRuntime {
   std::unique_ptr<noleax::agent::HookBackend> backend_;
   std::unique_ptr<noleax::agent::linux::GlibcHeapHooks> heap_hooks_;
   std::unique_ptr<noleax::agent::linux::VirtualMemoryHooks> vm_hooks_;
+  std::unique_ptr<noleax::agent::linux::LinuxCustomSymbolHooks> custom_hooks_;
   std::unique_ptr<noleax::agent::linux::LinuxModuleTracker> tracker_;
   std::unique_ptr<noleax::agent::linux::LinuxTraceWriter> writer_;
   noleax::agent::linux::LinuxTraceWriterResult writer_result_{};

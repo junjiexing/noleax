@@ -124,6 +124,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     targets/linux_workload_target.cpp
   )
   noleax_set_project_warnings(noleax-linux-workload-target)
+  # Export the custom-allocator symbols (my_alloc/my_free) into .dynsym so the custom
+  # hook e2e can locate them by export name.
+  set_target_properties(noleax-linux-workload-target PROPERTIES ENABLE_EXPORTS ON)
 
   add_executable(noleax-linux-e2e-test
     integration/linux_e2e_test.cpp
@@ -172,6 +175,21 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     COMMAND noleax-linux-virtual-memory-hooks-probe
   )
   set_tests_properties(agent.linux-virtual-memory-hooks-probe PROPERTIES
+    TIMEOUT 60
+  )
+
+  add_executable(noleax-linux-custom-hooks-probe
+    integration/linux_custom_hooks_probe.cpp
+  )
+  target_link_libraries(noleax-linux-custom-hooks-probe PRIVATE
+    noleax::hook-backend
+    ${CMAKE_DL_LIBS}
+  )
+  noleax_set_project_warnings(noleax-linux-custom-hooks-probe)
+  add_test(NAME agent.linux-custom-hooks-probe
+    COMMAND noleax-linux-custom-hooks-probe
+  )
+  set_tests_properties(agent.linux-custom-hooks-probe PROPERTIES
     TIMEOUT 60
   )
 

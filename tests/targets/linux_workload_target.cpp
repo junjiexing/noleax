@@ -111,6 +111,24 @@ void vm_workload() {
 
 }  // namespace
 
+// A trivially small "third-party allocator" for the custom-hook e2e: exported so the
+// declaration can locate it by export name, and kept out of the built-in profile.
+extern "C" __attribute__((visibility("default"))) void* my_alloc(std::size_t size) {
+  auto* block = static_cast<std::byte*>(std::malloc(size + 16U));
+  if (block == nullptr) {
+    return nullptr;
+  }
+  std::memset(block, 0x4e, 16U);
+  return block + 16U;
+}
+
+extern "C" __attribute__((visibility("default"))) void my_free(void* pointer) {
+  if (pointer == nullptr) {
+    return;
+  }
+  std::free(static_cast<std::byte*>(pointer) - 16U);
+}
+
 int main() {
   std::vector<void*> retained;
   retained.reserve(kLeakedCount);
@@ -120,6 +138,11 @@ int main() {
   realloc_workload();
   aligned_workload();
   vm_workload();
+
+  // Two blocks through the custom allocator: visible to custom-hook captures and
+  // retained until exit.
+  retained.push_back(escape(my_alloc(2048U)));
+  retained.push_back(escape(my_alloc(3072U)));
 
   std::thread first{burst_worker};
   std::thread second{burst_worker};
