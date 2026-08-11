@@ -807,6 +807,10 @@ class ConsoleControlGuard final {
       return noleax::ipc::HookProfile::kWindowsVirtualMemory;
     case noleax::config::HookProfile::kWindowsNative:
       return noleax::ipc::HookProfile::kWindowsNative;
+    case noleax::config::HookProfile::kLinuxGlibcHeap:
+    case noleax::config::HookProfile::kLinuxVirtualMemory:
+    case noleax::config::HookProfile::kLinuxNative:
+      break;
   }
   unsupported("hook profile is not supported on Windows");
 }
@@ -835,6 +839,9 @@ class ConsoleControlGuard final {
       return noleax::controller::windows::InjectionMethod::kEntrypointCode;
     case noleax::config::InjectionMethod::kStaticPePatch:
       return noleax::controller::windows::InjectionMethod::kStaticPePatch;
+    case noleax::config::InjectionMethod::kLdPreload:
+    case noleax::config::InjectionMethod::kPtrace:
+      break;
   }
   unsupported("injection method is not supported by the Windows controller");
 }

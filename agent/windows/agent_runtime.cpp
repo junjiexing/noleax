@@ -89,6 +89,10 @@ class HookGuardRuntimeLease final {
       return WindowsHookProfile::kVirtualMemory;
     case noleax::ipc::HookProfile::kWindowsNative:
       return WindowsHookProfile::kNative;
+    case noleax::ipc::HookProfile::kLinuxGlibcHeap:
+    case noleax::ipc::HookProfile::kLinuxVirtualMemory:
+    case noleax::ipc::HookProfile::kLinuxNative:
+      break;
   }
   throw std::invalid_argument{"unsupported hook profile"};
 }
@@ -673,6 +677,10 @@ void standalone_report(const std::string& message) noexcept {
       return noleax::ipc::HookProfile::kWindowsVirtualMemory;
     case noleax::config::HookProfile::kWindowsNative:
       return noleax::ipc::HookProfile::kWindowsNative;
+    case noleax::config::HookProfile::kLinuxGlibcHeap:
+    case noleax::config::HookProfile::kLinuxVirtualMemory:
+    case noleax::config::HookProfile::kLinuxNative:
+      break;
   }
   throw std::invalid_argument{"unsupported hook profile"};
 }
