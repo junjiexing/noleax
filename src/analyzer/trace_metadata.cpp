@@ -54,12 +54,9 @@ namespace {
       separator == std::string_view::npos ? module_name : module_name.substr(separator + 1U);
   for (const std::string_view agent_name : kAgentNames) {
     if (basename.size() == agent_name.size() &&
-        std::equal(basename.begin(), basename.end(), agent_name.begin(),
-                   [](char left, char right) {
-                     return (left >= 'A' && left <= 'Z'
-                                 ? static_cast<char>(left - 'A' + 'a')
-                                 : left) == right;
-                   })) {
+        std::equal(basename.begin(), basename.end(), agent_name.begin(), [](char left, char right) {
+          return (left >= 'A' && left <= 'Z' ? static_cast<char>(left - 'A' + 'a') : left) == right;
+        })) {
       return true;
     }
   }
