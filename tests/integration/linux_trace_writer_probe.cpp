@@ -326,7 +326,8 @@ bool phase1() {
   check(result.module_load_records >= 2U, "phase 1 wrote module loads");
   check(result.stack_dictionary_segments == 1U, "phase 1 stack dictionary has one segment");
   check(result.completeness_mask == 0U, "phase 1 completeness mask is zero");
-  check(result.per_api.size() == 8U, "phase 1 per-API result covers the registry");
+  check(result.per_api.size() == noleax::agent::linux::kLinuxHookRegistry.size(),
+        "phase 1 per-API result covers the registry");
 
   const Readback readback = read_trace(path);
   check_common_readback(readback, origin);

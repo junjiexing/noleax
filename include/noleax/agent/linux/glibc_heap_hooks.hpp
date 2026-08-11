@@ -43,7 +43,7 @@ struct GlibcHeapHookApiCounters {
 // before the replacement returns.
 class GlibcHeapHooks final {
  public:
-  static constexpr std::size_t kChannelCount = kLinuxHookRegistry.size();
+  static constexpr std::size_t kChannelCount = kGlibcHeapHookCount;
   static constexpr std::size_t kDefaultEventQueueCapacity = 16'384U;
   static constexpr std::uint16_t kDefaultMaximumStackDepth = kMaximumCapturedStackDepth;
 

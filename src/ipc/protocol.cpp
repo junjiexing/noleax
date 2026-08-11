@@ -121,7 +121,8 @@ void write_enum(PayloadWriter& writer, Enum value) {
 
 [[nodiscard]] bool valid_hook_profile(HookProfile value) noexcept {
   return value == HookProfile::kWindowsNtHeap || value == HookProfile::kWindowsVirtualMemory ||
-         value == HookProfile::kWindowsNative || value == HookProfile::kLinuxGlibcHeap;
+         value == HookProfile::kWindowsNative || value == HookProfile::kLinuxGlibcHeap ||
+         value == HookProfile::kLinuxVirtualMemory || value == HookProfile::kLinuxNative;
 }
 
 [[nodiscard]] bool valid_compression(CompressionCodec value) noexcept {

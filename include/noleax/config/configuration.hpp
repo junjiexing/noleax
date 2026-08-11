@@ -63,6 +63,8 @@ enum class HookProfile : std::uint8_t {
   kWindowsVirtualMemory,
   kWindowsNative,
   kLinuxGlibcHeap,
+  kLinuxVirtualMemory,
+  kLinuxNative,
 };
 
 enum class TraceFullPolicy : std::uint8_t {
@@ -253,6 +255,9 @@ struct EnumTraits<HookProfile> {
                      HookProfile::kWindowsVirtualMemory},
       NamedEnumValue{std::string_view{"windows-native"}, HookProfile::kWindowsNative},
       NamedEnumValue{std::string_view{"linux-glibc-heap"}, HookProfile::kLinuxGlibcHeap},
+      NamedEnumValue{std::string_view{"linux-virtual-memory"},
+                     HookProfile::kLinuxVirtualMemory},
+      NamedEnumValue{std::string_view{"linux-native"}, HookProfile::kLinuxNative},
   };
 };
 

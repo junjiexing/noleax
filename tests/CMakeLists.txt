@@ -97,6 +97,7 @@ endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_sources(noleax-unit-tests PRIVATE
     unit/ipc_unix_socket_test.cpp
+    unit/linux_memory_snapshot_test.cpp
     unit/linux_module_tracker_test.cpp
     unit/linux_stack_capture_test.cpp
   )

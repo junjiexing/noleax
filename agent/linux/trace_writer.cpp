@@ -189,6 +189,12 @@ void checked_add(std::uint64_t& value, std::uint64_t addition, const char* subje
       return LinuxHeapEventOperation::kReallocate;
     case LinuxLogicalHookApi::kFree:
       return LinuxHeapEventOperation::kFree;
+    case LinuxLogicalHookApi::kMmap:
+      return LinuxHeapEventOperation::kVmAllocate;
+    case LinuxLogicalHookApi::kMunmap:
+      return LinuxHeapEventOperation::kVmUnmap;
+    case LinuxLogicalHookApi::kMremap:
+      return LinuxHeapEventOperation::kVmRemap;
   }
   throw std::invalid_argument{"Linux hook API is not supported"};
 }
@@ -607,6 +613,11 @@ class LinuxTraceWriter::Implementation final {
           throw std::invalid_argument{"raw free event is inconsistent"};
         }
         break;
+      case LinuxHeapEventOperation::kVmAllocate:
+      case LinuxHeapEventOperation::kVmUnmap:
+      case LinuxHeapEventOperation::kVmRemap:
+        // VM events arrive with the linux-virtual-memory profile work (port M4).
+        throw std::invalid_argument{"virtual memory events are not yet supported"};
     }
     if (last_sequence_ == std::numeric_limits<std::uint64_t>::max() ||
         raw_event.queue_sequence != last_sequence_ + 1U) {

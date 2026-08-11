@@ -1193,6 +1193,10 @@ class InterruptHandlerGuard final {
   switch (profile) {
     case noleax::config::HookProfile::kLinuxGlibcHeap:
       return noleax::ipc::HookProfile::kLinuxGlibcHeap;
+    case noleax::config::HookProfile::kLinuxVirtualMemory:
+      return noleax::ipc::HookProfile::kLinuxVirtualMemory;
+    case noleax::config::HookProfile::kLinuxNative:
+      return noleax::ipc::HookProfile::kLinuxNative;
     default:
       throw ApplicationError{5, "hook profile '" +
                                     std::string{noleax::config::enum_value_name(profile)} +

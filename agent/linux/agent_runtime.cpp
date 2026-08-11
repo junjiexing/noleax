@@ -325,7 +325,9 @@ class LinuxCaptureRuntime {
     if (hooks_ == nullptr) {
       return snapshots;
     }
-    for (std::size_t index = 0U; index < noleax::agent::linux::kLinuxHookRegistry.size(); ++index) {
+    // Heap group only for the heap profile; the VM group joins here when the
+    // linux-virtual-memory profile lands.
+    for (std::size_t index = 0U; index < noleax::agent::linux::kGlibcHeapHookCount; ++index) {
       const auto& entry = noleax::agent::linux::kLinuxHookRegistry[index];
       const auto counters = hooks_->counters(entry.logical_api);
       snapshots.push_back(noleax::agent::linux::LinuxTraceWriterApiCounterSnapshot{

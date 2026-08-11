@@ -44,6 +44,8 @@ enum class HookProfile : std::uint8_t {
   kWindowsVirtualMemory = 2U,
   kWindowsNative = 3U,
   kLinuxGlibcHeap = 4U,
+  kLinuxVirtualMemory = 5U,
+  kLinuxNative = 6U,
 };
 
 enum class CompressionCodec : std::uint8_t {

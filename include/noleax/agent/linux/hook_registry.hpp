@@ -20,13 +20,19 @@ inline constexpr noleax::trace::ApiId kPosixMemalignApiId = 14U;
 inline constexpr noleax::trace::ApiId kAlignedAllocApiId = 15U;
 inline constexpr noleax::trace::ApiId kMemalignApiId = 16U;
 inline constexpr noleax::trace::ApiId kReallocarrayApiId = 17U;
+inline constexpr noleax::trace::ApiId kMmapApiId = 18U;
+inline constexpr noleax::trace::ApiId kMunmapApiId = 19U;
+inline constexpr noleax::trace::ApiId kMremapApiId = 20U;
 
 enum class LinuxHookProfile : std::uint8_t {
   kGlibcHeap,
+  kVirtualMemory,
+  kNative,
 };
 
 enum class LinuxHookApiGroup : std::uint8_t {
   kGlibcHeap,
+  kVirtualMemory,
 };
 
 enum class LinuxLogicalHookApi : std::uint8_t {
@@ -38,6 +44,9 @@ enum class LinuxLogicalHookApi : std::uint8_t {
   kAlignedAlloc,
   kMemalign,
   kReallocarray,
+  kMmap,
+  kMunmap,
+  kMremap,
 };
 
 struct LinuxHookRegistryEntry {
@@ -54,32 +63,88 @@ struct LinuxHookRegistryEntry {
 };
 
 inline constexpr auto kLinuxHookRegistry = std::array{
-    LinuxHookRegistryEntry{LinuxLogicalHookApi::kMalloc, kMallocApiId, "malloc", "libc.so.6",
-                           LinuxHookApiGroup::kGlibcHeap, {"malloc"}},
-    LinuxHookRegistryEntry{LinuxLogicalHookApi::kCalloc, kCallocApiId, "calloc", "libc.so.6",
-                           LinuxHookApiGroup::kGlibcHeap, {"calloc"}},
-    LinuxHookRegistryEntry{LinuxLogicalHookApi::kRealloc, kReallocApiId, "realloc", "libc.so.6",
-                           LinuxHookApiGroup::kGlibcHeap, {"realloc"}},
-    LinuxHookRegistryEntry{LinuxLogicalHookApi::kFree, kFreeApiId, "free", "libc.so.6",
-                           LinuxHookApiGroup::kGlibcHeap, {"free"}},
-    LinuxHookRegistryEntry{LinuxLogicalHookApi::kPosixMemalign, kPosixMemalignApiId,
-                           "posix_memalign", "libc.so.6", LinuxHookApiGroup::kGlibcHeap,
+    LinuxHookRegistryEntry{LinuxLogicalHookApi::kMalloc,
+                           kMallocApiId,
+                           "malloc",
+                           "libc.so.6",
+                           LinuxHookApiGroup::kGlibcHeap,
+                           {"malloc"}},
+    LinuxHookRegistryEntry{LinuxLogicalHookApi::kCalloc,
+                           kCallocApiId,
+                           "calloc",
+                           "libc.so.6",
+                           LinuxHookApiGroup::kGlibcHeap,
+                           {"calloc"}},
+    LinuxHookRegistryEntry{LinuxLogicalHookApi::kRealloc,
+                           kReallocApiId,
+                           "realloc",
+                           "libc.so.6",
+                           LinuxHookApiGroup::kGlibcHeap,
+                           {"realloc"}},
+    LinuxHookRegistryEntry{LinuxLogicalHookApi::kFree,
+                           kFreeApiId,
+                           "free",
+                           "libc.so.6",
+                           LinuxHookApiGroup::kGlibcHeap,
+                           {"free"}},
+    LinuxHookRegistryEntry{LinuxLogicalHookApi::kPosixMemalign,
+                           kPosixMemalignApiId,
+                           "posix_memalign",
+                           "libc.so.6",
+                           LinuxHookApiGroup::kGlibcHeap,
                            {"posix_memalign"}},
-    LinuxHookRegistryEntry{LinuxLogicalHookApi::kAlignedAlloc, kAlignedAllocApiId,
-                           "aligned_alloc", "libc.so.6", LinuxHookApiGroup::kGlibcHeap,
+    LinuxHookRegistryEntry{LinuxLogicalHookApi::kAlignedAlloc,
+                           kAlignedAllocApiId,
+                           "aligned_alloc",
+                           "libc.so.6",
+                           LinuxHookApiGroup::kGlibcHeap,
                            {"aligned_alloc"}},
-    LinuxHookRegistryEntry{LinuxLogicalHookApi::kMemalign, kMemalignApiId, "memalign",
-                           "libc.so.6", LinuxHookApiGroup::kGlibcHeap, {"memalign"}},
-    LinuxHookRegistryEntry{LinuxLogicalHookApi::kReallocarray, kReallocarrayApiId,
-                           "reallocarray", "libc.so.6", LinuxHookApiGroup::kGlibcHeap,
+    LinuxHookRegistryEntry{LinuxLogicalHookApi::kMemalign,
+                           kMemalignApiId,
+                           "memalign",
+                           "libc.so.6",
+                           LinuxHookApiGroup::kGlibcHeap,
+                           {"memalign"}},
+    LinuxHookRegistryEntry{LinuxLogicalHookApi::kReallocarray,
+                           kReallocarrayApiId,
+                           "reallocarray",
+                           "libc.so.6",
+                           LinuxHookApiGroup::kGlibcHeap,
                            {"reallocarray"}},
+    LinuxHookRegistryEntry{LinuxLogicalHookApi::kMmap,
+                           kMmapApiId,
+                           "mmap",
+                           "libc.so.6",
+                           LinuxHookApiGroup::kVirtualMemory,
+                           {"mmap"}},
+    LinuxHookRegistryEntry{LinuxLogicalHookApi::kMunmap,
+                           kMunmapApiId,
+                           "munmap",
+                           "libc.so.6",
+                           LinuxHookApiGroup::kVirtualMemory,
+                           {"munmap"}},
+    LinuxHookRegistryEntry{LinuxLogicalHookApi::kMremap,
+                           kMremapApiId,
+                           "mremap",
+                           "libc.so.6",
+                           LinuxHookApiGroup::kVirtualMemory,
+                           {"mremap"}},
 };
+
+// The heap group occupies the first eight registry entries; the VM group follows.
+// GlibcHeapHooks sizes its channels by this count, not by the whole registry.
+inline constexpr std::size_t kGlibcHeapHookCount = 8U;
+inline constexpr std::size_t kVirtualMemoryHookCount = 3U;
 
 [[nodiscard]] constexpr std::string_view linux_hook_profile_name(
     LinuxHookProfile profile) noexcept {
   switch (profile) {
     case LinuxHookProfile::kGlibcHeap:
       return "linux-glibc-heap";
+    case LinuxHookProfile::kVirtualMemory:
+      return "linux-virtual-memory";
+    case LinuxHookProfile::kNative:
+      return "linux-native";
   }
   return "unknown";
 }
