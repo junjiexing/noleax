@@ -702,6 +702,19 @@ struct AnalysisResult {
   return result.completeness.recommended_exit_code();
 }
 
+// Capture-wide capability gate shared by both platforms: trace rotation is not
+// implemented anywhere, and unload-on-stop only makes sense for attach.
+void validate_capture_support(const noleax::config::Configuration& configuration) {
+  if (configuration.trace.on_full.value != noleax::config::TraceFullPolicy::kStop ||
+      configuration.trace.max_files.value != 1U) {
+    unsupported("P6 supports only --on-trace-full stop with --max-trace-files 1");
+  }
+  if (configuration.injection.unload_on_stop.value &&
+      *configuration.operation.value != noleax::config::Operation::kAttach) {
+    unsupported("--unload-on-stop is only supported for attach");
+  }
+}
+
 #if defined(_WIN32)
 
 std::atomic<bool> stop_requested{false};
@@ -850,17 +863,6 @@ class ConsoleControlGuard final {
   capture.start.unload_on_stop = configuration.injection.unload_on_stop.value;
   capture.start.custom_hooks = resolve_custom_hooks(configuration);
   return capture;
-}
-
-void validate_capture_support(const noleax::config::Configuration& configuration) {
-  if (configuration.trace.on_full.value != noleax::config::TraceFullPolicy::kStop ||
-      configuration.trace.max_files.value != 1U) {
-    unsupported("P6 supports only --on-trace-full stop with --max-trace-files 1");
-  }
-  if (configuration.injection.unload_on_stop.value &&
-      *configuration.operation.value != noleax::config::Operation::kAttach) {
-    unsupported("--unload-on-stop is only supported for attach");
-  }
 }
 
 [[nodiscard]] bool wait_until_stop(noleax::controller::windows::CaptureSession& session,
@@ -1439,6 +1441,7 @@ class InterruptHandlerGuard final {
 }
 
 [[nodiscard]] int execute_capture(const noleax::config::Configuration& configuration) {
+  validate_capture_support(configuration);
   const auto operation = *configuration.operation.value;
   const bool is_attach = operation == noleax::config::Operation::kAttach;
   const auto method = configuration.injection.method.value;

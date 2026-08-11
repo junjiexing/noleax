@@ -1,8 +1,9 @@
-# Noleax Windows x64 快速上手
+# Noleax 快速上手
 
-本指南适用于 Windows x64 控制器与 x64 目标；`run` 支持
+本指南适用于 Windows x64 与 Linux x86-64/glibc。Windows 的 `run` 支持
 `remote-thread`、`thread-hijack`、`entrypoint-code` 和 `static-pe-patch` 注入，`attach` 支持
-`remote-thread` 和 `thread-hijack`，并可用 `noleax patch` 生成静态 patch 副本。
+`remote-thread` 和 `thread-hijack`，并可用 `noleax patch` 生成静态 patch 副本；Linux 侧
+`run` 使用 `ld-preload`、`attach` 使用 `ptrace`（见第 8 节）。
 
 不支持的目标：Protected Process / PPL（部分安全软件、受保护的媒体与服务进程）。Noleax 的
 安全模型要求枚举并暂停目标进程的全部线程并读取线程上下文，protected process 会拒绝这些
@@ -172,3 +173,76 @@ CLI 可以覆盖配置。例如以下命令保留 TOML 中的其他字段，但�
 
 不要把退出码 2 当作无输出；先读取输出中的 completeness 原因。遇到问题见
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md)。
+
+## 8. Linux x86-64
+
+本节适用于 Linux x86-64 控制器与 glibc 目标。分析、过滤、TOML 配置与退出码语义与上文
+完全一致，差异集中在注入与 hook profile。保持 `noleax` 与 `noleax-agent.so` 在同一目录。
+
+注入不需要选择方法：`run` 只有 `ld-preload` 一种启动注入（动态加载器在目标入口点之前
+加载 agent，时序与 Windows 的入口前注入等价），`attach` 只有 `ptrace`。在 Linux 上指定
+Windows 专有方法（`remote-thread`、`thread-hijack`、`entrypoint-code`、`static-pe-patch`）
+或 `patch` 命令以退出码 5 拒绝；在 Windows 上指定 `ld-preload`/`ptrace` 同样返回 5。
+
+## 8.1 准备
+
+~~~bash
+./noleax doctor --target ./app
+~~~
+
+doctor 检查平台架构、agent 可加载性、目标是否为动态链接的 x86-64 ELF（静态目标没有动态
+加载器，无法注入，在此明确报错）、setuid/setgid 标记与 ptrace_scope 权限状态。
+
+## 8.2 启动目标并捕获
+
+~~~bash
+./noleax run --hook-profile linux-glibc-heap --trace capture.nlx -- ./app --workload sample
+~~~
+
+Linux 提供三个 hook profile：
+
+| profile | API 组 |
+|---|---|
+| linux-glibc-heap | glibc malloc 族（malloc/calloc/realloc/free/posix_memalign/aligned_alloc/memalign/reallocarray） |
+| linux-virtual-memory | mmap/munmap/mremap |
+| linux-native | 上述两组并集 |
+
+Linux 的默认 profile 是 `linux-glibc-heap`（不同于 Windows 的 `windows-native`）。收尾语义
+与 Windows 对齐：无 duration 时 agent 在目标正常退出（`exit`/`_exit` hook）时自行收尾，
+正常退出的 trace 带 end-of-trace；`--capture-duration` 到点由控制器驱动停止，目标以
+hook 已 revert 的状态继续运行；Ctrl+C 后控制器 detach（退出码 2），agent 继续捕获到目标
+退出——注意 detach 之后 duration 定时器不再生效（v1 中它由控制器侧驱动）。profile 的
+覆盖边界见 [LINUX_HOOK_PROFILES.md](LINUX_HOOK_PROFILES.md)。
+
+第三方 allocator 的 custom hook 同样可用；Linux 的定位器为 dynsym 导出名、`<role>_sym`
+（任意 symtab/dynsym 符号，controller 侧解析）与 `<role>_rva`，`*_pdb` 仅 Windows 可用。
+完整语义见 [CUSTOM_HOOKS.md](CUSTOM_HOOKS.md) 与 [CONFIG.md](CONFIG.md)。
+
+## 8.3 Attach 到运行中的目标
+
+~~~bash
+./noleax attach --pid 1234 --capture-duration 30s --trace attach.nlx
+~~~
+
+attach 固定走 ptrace：缺省方法自动升级为 ptrace，显式指定 `ld-preload` 或 Windows 方法
+返回 5。盲期语义与 Windows 相同——attach 无法知道注入前已存在的 allocation，分析结果
+标记 `preexisting_allocations_unknown` 并以退出码 2 表示范围不完整；这不代表命令崩溃或
+trace 不可读。attach 需要 ptrace 权限：`ptrace_scope=0/1` 时可注入同用户进程，更严格时
+需要 `CAP_SYS_PTRACE`，详见 [TROUBLESHOOTING.md](TROUBLESHOOTING.md) 的 Linux 一节。
+
+## 8.4 standalone：不经过控制器直接捕获
+
+Linux 没有 `noleax patch`；standalone 由环境变量直接完成，把 agent 与配置交给动态加载器
+即可：
+
+~~~bash
+LD_PRELOAD=/path/to/noleax-agent.so NOLEAX_AGENT_CONFIG=cfg.toml ./app
+./noleax analyze capture.nlx
+~~~
+
+agent 在目标启动时读取 `NOLEAX_AGENT_CONFIG` 指向的捕获 TOML（沿用 `[capture]` 与
+`[trace]` 段）并自写 trace；目标正常退出时 trace 完整（含 end-of-trace）。setuid/setgid
+目标会忽略 LD_PRELOAD（AT_SECURE 规则），该路径对它们不适用。
+
+分析流程（events/leaks/memory 三种模式、console/JSON/CSV 输出、窗口与聚合过滤）不区分
+录制平台，第 4–6 节的示例原样适用。

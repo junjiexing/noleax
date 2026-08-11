@@ -52,22 +52,26 @@ noleax run [capture-options] [injection-options] -- target [args...]
 | CLI | 配置键 | 默认值 |
 |---|---|---|
 | --working-directory PATH | target.working_directory | 目标文件目录 |
-| --inject-method METHOD | injection.method | remote-thread |
+| --inject-method METHOD | injection.method | remote-thread（Windows）/ ld-preload（Linux） |
 | --agent PATH | injection.agent_path | 与 noleax 匹配的 agent |
 | --inject-timeout DURATION | injection.timeout | 10s |
 | --trace PATH | trace.path | 基于目标名和时间生成 |
 | --capture-duration DURATION | capture.duration | 直到目标退出或用户停止 |
 
-规划的 run 注入方法：
+run 注入方法（按平台）：
 
-- remote-thread
-- thread-hijack
-- entrypoint-code
-- static-pe-patch
+- remote-thread（Windows）
+- thread-hijack（Windows）
+- entrypoint-code（Windows）
+- static-pe-patch（Windows）
+- ld-preload（Linux，唯一的启动注入）
 
-全部四种 run 注入方法均已实现。`static-pe-patch` 要求目标是 `noleax patch` 生成的副本；
+全部四种 Windows run 注入方法均已实现。`static-pe-patch` 要求目标是 `noleax patch` 生成的副本；
 未打补丁的目标在执行前以退出码 1 拒绝，patched 副本的捕获语义见
-[STATIC_PE_PATCH.md](STATIC_PE_PATCH.md)。
+[STATIC_PE_PATCH.md](STATIC_PE_PATCH.md)。Linux 只有 `ld-preload`：动态加载器在目标入口点
+之前加载 agent，不需要也无法选择方法。在 Linux 上指定 Windows 方法、在 Windows 上指定
+`ld-preload`，都在执行前以退出码 5 拒绝。Linux 的注入通道与 bootstrap 流程见
+[LINUX_LAUNCH_INJECTION.md](LINUX_LAUNCH_INJECTION.md)。
 
 **默认（agent 直写）**：控制器把有效捕获配置写成会话 TOML 经 bootstrap 参数传入，注入后
 agent 自行启动记录并直写 trace；`--capture-duration` 由 agent 到点自行 finalize（quiescence、
@@ -94,23 +98,29 @@ noleax attach --pid PID [capture-options] [injection-options]
 | CLI | 配置键 | 默认值 |
 |---|---|---|
 | --pid PID | target.pid | 必填 |
-| --inject-method METHOD | injection.method | remote-thread |
+| --inject-method METHOD | injection.method | remote-thread（Windows）/ ptrace（Linux） |
 | --agent PATH | injection.agent_path | 与 noleax 匹配的 agent |
 | --inject-timeout DURATION | injection.timeout | 10s |
 | --trace PATH | trace.path | 基于 PID 和时间生成 |
 | --capture-duration DURATION | capture.duration | 直到目标退出或用户停止 |
 | --unload-on-stop / --no-unload-on-stop | injection.unload_on_stop | false |
 
-规划的 attach 注入方法：
+attach 注入方法（按平台）：
 
-- remote-thread
-- thread-hijack
+- remote-thread（Windows）
+- thread-hijack（Windows）
+- ptrace（Linux）
 
-两种 attach 注入方法均已实现（`entrypoint-code` 仅适用于 launch，attach 选择它会被配置校验
-拒绝）。`--unload-on-stop` 让 agent 在捕获收尾完成后从仍在运行的目标卸载自身 DLL：
+两种 Windows attach 注入方法与 Linux 的 `ptrace` 均已实现（`entrypoint-code` 仅适用于
+launch，attach 选择它会被配置校验拒绝）。Linux 的 attach 没有环境变量通道，`ld-preload`
+不适用：缺省方法自动升级为 `ptrace`，显式指定 `ld-preload` 或 Windows 方法以退出码 5
+拒绝；注入流程与权限模型（ptrace_scope、CAP_SYS_PTRACE）见
+[LINUX_PTRACE_INJECTION.md](LINUX_PTRACE_INJECTION.md)。`--unload-on-stop` 让 agent 在
+捕获收尾完成后从仍在运行的目标卸载自身 DLL：
 仅在全部 teardown 证明成立时执行（replacement 模块引用已释放、gate 无 parked 线程且计数
-归零），任一不满足则保持驻留兜底。`run` 不支持该选项。attach 成功不表示
-trace 完整；分析输出必须标记注入前分配未知。默认模式（agent 直写）下
+归零），任一不满足则保持驻留兜底。`run` 不支持该选项。Linux 接受 `--unload-on-stop` 但为
+no-op：agent 从不 dlclose——捕获停止时 hook 原地 revert，模块随进程退出回收。attach 成功
+不表示 trace 完整；分析输出必须标记注入前分配未知。默认模式（agent 直写）下
 `--capture-duration` 由 agent 自行执行，无 duration 时记录到目标退出；attach 的退出码同样由
 trace 完整性驱动（preexisting 盲点使结果为 2）。`--live` 恢复管道会话语义（见 run 一节）。
 
@@ -118,7 +128,7 @@ trace 完整性驱动（preexisting 盲点使结果为 2）。`--live` 恢复管
 
 | CLI | 配置键 | 默认值 |
 |---|---|---|
-| --hook-profile PROFILE | capture.hook_profile | windows-native |
+| --hook-profile PROFILE | capture.hook_profile | windows-native（Windows）/ linux-glibc-heap（Linux） |
 | --max-stack-depth N | capture.max_stack_depth | 64 |
 | --capture-min-size SIZE | capture.min_size | 0B |
 | --memory-counters-interval DURATION | capture.memory_counters_interval | 1s（0s 关闭） |
@@ -158,11 +168,17 @@ custom hook 都装不上，捕获也以仅剩内置事件的方式完成，不�
 
 V1 profile：
 
-| profile | API 组 |
-|---|---|
-| windows-nt-heap | Rtl heap create/destroy/alloc/realloc/free |
-| windows-virtual-memory | NT virtual memory allocate/free/map/unmap |
-| windows-native | 上述两组并集 |
+| profile | 平台 | API 组 |
+|---|---|---|
+| windows-nt-heap | Windows | Rtl heap create/destroy/alloc/realloc/free |
+| windows-virtual-memory | Windows | NT virtual memory allocate/free/map/unmap |
+| windows-native | Windows | 上述两组并集（Windows 默认） |
+| linux-glibc-heap | Linux | glibc malloc 族（malloc/calloc/realloc/free/posix_memalign/aligned_alloc/memalign/reallocarray，Linux 默认） |
+| linux-virtual-memory | Linux | mmap/munmap/mremap |
+| linux-native | Linux | 上述两组并集 |
+
+指定对面平台的 profile 在执行前以退出码 5 拒绝。Linux profile 的覆盖语义与 API 清单见
+[LINUX_HOOK_PROFILES.md](LINUX_HOOK_PROFILES.md)。
 
 `--capture-min-size` 在 Windows V1 只于 hook 热路径过滤尺寸严格小于阈值的
 `RtlAllocateHeap`、`NtAllocateVirtualMemory` 和 `NtMapViewOfSection` creation-side 事件。成功 VM/
@@ -212,6 +228,9 @@ noleax patch --input INPUT --output OUTPUT [options]
 
 规则：
 
+- patch 仅 Windows 可用；在 Linux 上执行以退出码 5 拒绝。Linux 的 standalone 不需要
+  patch，由 `LD_PRELOAD` + `NOLEAX_AGENT_CONFIG` 直接覆盖（见
+  [QUICKSTART.md](QUICKSTART.md) 第 8 节）。
 - input 与 output 必须不同。
 - output 已存在时失败，不提供隐式覆盖。
 - V1 只接受原生 x64 EXE。
@@ -322,7 +341,11 @@ symbols mode：
 `_NT_ALT_SYMBOL_PATH`（DbgHelp 惯例，分号连接的搜索路径，支持 `srv*` 语法）；配置任一者
 则忽略环境变量。`--symbol-server` 的值已带 `srv*` 前缀（大小写不敏感）时原样透传，可写成
 `srv*缓存目录*服务器地址` 指定本地下载缓存，否则自动补 `srv*` 前缀。符号服务器下载由
-DbgHelp 在解析缺失 PDB 时按需进行。
+DbgHelp 在解析缺失 PDB 时按需进行。符号服务器（`--symbol-server`/`srv*`）与
+`_NT_SYMBOL_PATH` 环境变量回退均为 Windows 概念：Linux 的符号化使用内置 ELF 读取器
+（`.symtab` 优先、`.dynsym` 兜底，无外部依赖），没有符号服务器，上述两项在 Linux 被
+忽略；`--symbol-path` 保留本地路径语义。Windows 录制的 trace 需在 Windows 上分析——
+Linux 后端只读 ELF 映像。详见 [SYMBOLIZATION.md](SYMBOLIZATION.md) 第 9 节。
 
 同一过滤类别的重复选项为 OR，不同类别为 AND；大小范围包含端点。模块 pattern 支持 `*` 和
 `?`，ASCII 大小写及 `/`、`\` 路径分隔符不敏感。API 名称区分大小写。

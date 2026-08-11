@@ -2,7 +2,8 @@
 
 > 范围：Linux x86_64 / glibc 端口的总体设计与里程碑规划
 > 基线：v0.4.1（Windows x64），trace format 1.3，agent ABI 4
-> 状态：待审核；审核通过后按里程碑顺序实施
+> 状态：**全部里程碑已完成**（M0–M8，2026-08-11 收官）；本文档保留为移植的设计与
+> 决策档案（每个里程碑的勾选注记记录了与最初方案的偏差及原因）
 
 ## 1. 目标与范围
 
@@ -347,6 +348,22 @@ analyzer 三模式可分析。这是 Linux 版第一个用户可用形态。
 - 交付：`CUSTOM_HOOKS.md` Linux 章节；jemalloc/mimalloc fixture 集成测试。
 
 ### M8 打包发布与文档收尾
+
+> 状态：**已完成**（2026-08-11）。双 preset 310/310。
+>
+> - CPack TGZ 包（`noleax-<version>-linux-x86_64.tar.gz` + sha256），`bin/noleax` 与
+>   `bin/noleax-agent.so` 同目录；从解包目录实测 doctor/run/analyze 全通，`ldd` 只列
+>   系统库（hoox/lz4/zstd/toml++/CLI11 全静态）。
+> - CI：`linux-x64` job 在 release preset 打包上传 artifact；`release` job 门禁加入
+>   linux-x64，`v*` 标签与滚动 `ci-latest` 同时发布 Windows ZIP 与 Linux TGZ。
+> - 文档：README 双平台化；QUICKSTART/CLI/CONFIG/TROUBLESHOOTING 增加 Linux 章节；
+>   PACKAGING.md Linux 包节；TRACE_WRITER.md Linux 注记；ROADMAP 重写为完成态 + 剩余
+>   边界（musl/ARM64/ELF patch/macOS 无时间表）。
+> - 过程中补了一个一致性缺口：Linux 的 execute_capture 漏接 validate_capture_support，
+>   `on_full=rotate`/`max_files>1` 曾静默忽略——现在与 Windows 一致以退出码 5 拒绝；
+>   同时把该函数移出 Windows-only 区块（共用）。
+> - Linux RC 校验脚本（Test-NoleaxPackage 的 Linux 等价物）本期以手工 smoke + CI 打包
+>   代替；脚本化校验留作后续。
 
 - CPack Linux 包（TGZ：`bin/noleax` + `bin/noleax-agent.so` 同目录，LICENSE/文档/示例/
   第三方声明/SHA256 对齐 Windows 包布局）；CI 加 Linux 构建-测试-打包-发布链路

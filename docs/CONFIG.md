@@ -111,7 +111,7 @@ module = "myalloc.dll"
 alloc = "my_malloc"
 realloc = "my_realloc"
 free = "my_free"
-# alloc_pdb = "myalloc!internal_alloc"   # 每个角色三选一:导出名 / _pdb / _rva
+# alloc_pdb = "myalloc!internal_alloc"   # 每角色定位选一:导出名 / _pdb(仅 Windows) / _sym(仅 Linux) / _rva
 # free_rva = "0x1a210"
 size_arg = 0
 ptr_arg = 0
@@ -126,10 +126,13 @@ wait_module = "0s"
 示例展示 schema，不表示所有键在所有 operation 中都有效。与当前 operation 无关但非默认的配置键应报错，避免用户误以为设置已生效。
 
 `[[custom_hooks]]` 把第三方 allocator 的分配函数声明为 hook 点（仅 run/attach/patch 有效），
-每个元素声明一个模块和 alloc/realloc/free 三个角色，alloc 与 free 必填。三种定位三选一：
-导出符号名（agent 在目标进程内读取模块导出表解析）、`<role>_pdb`（`module!symbol`，由
-controller 侧 DbgHelp 沿 `[symbols]` 规则解析为 RVA）、`<role>_rva`（直接 RVA，十六进制或
-十进制整数）。参数语义按位映射：`size_arg`（alloc/realloc 的 size）、`ptr_arg`（realloc/free
+每个元素声明一个模块和 alloc/realloc/free 三个角色，alloc 与 free 必填。每个角色的定位
+四选一（按平台）：导出符号名（agent 在目标进程内解析；Windows 读模块导出表，Linux 读
+磁盘 ELF 的 `.dynsym`）、`<role>_pdb`（`module!symbol`，由 controller 侧 DbgHelp 沿
+`[symbols]` 规则解析为 RVA，仅 Windows）、`<role>_sym`（任意 symtab/dynsym 符号，由
+controller 侧解析为模块偏移，仅 Linux）、`<role>_rva`（直接 RVA/模块相对偏移，十六进制或
+十进制整数）。`*_pdb` 与 `*_sym` 互为平台专有，在对面平台出现由配置校验拒绝。参数语义
+按位映射：`size_arg`（alloc/realloc 的 size）、`ptr_arg`（realloc/free
 的指针）、`result_arg`（结果经 `*(void**)argN` 返回时设置，默认取 rax）、`kind = "calloc"`
 配 `count_arg`（语义 size = count × size，带溢出检查）、`free_size_arg`（free 自带 size）。
 参数位 0–3 为 rcx/rdx/r8/r9，4–7 为栈槽。`forced = true` 在 checked relocation 拒绝时允许
@@ -146,10 +149,16 @@ completeness `custom_hook_install_failed`（退出码 2）。
 
 当前 Windows x64 对尚未实现但已为后续阶段预留的组合返回 5：`trace.on_full` 仅支持 `stop`、
 `trace.max_files` 仅支持 1，`injection.unload_on_stop` 仅 attach 支持，analysis
-每次仅支持一个 input。`injection.method` 在 run 下支持 `remote-thread`、`thread-hijack`、
-`entrypoint-code` 和 `static-pe-patch`（后者要求 `noleax patch` 产物），attach 下支持
-`remote-thread` 和 `thread-hijack`（其余组合由配置校验以退出码 1 拒绝）。配置值不会被
-静默忽略。
+每次仅支持一个 input。`injection.method` 的取值按平台划分：Windows 的 run 支持
+`remote-thread`、`thread-hijack`、`entrypoint-code` 和 `static-pe-patch`（后者要求
+`noleax patch` 产物），attach 支持 `remote-thread` 和 `thread-hijack`；Linux 的 run 只有
+`ld-preload`，attach 只有 `ptrace`（Linux attach 的缺省方法自动升级为 `ptrace`）。默认值
+同样按平台：Windows 为 `remote-thread`，Linux 为 `ld-preload`。`capture.hook_profile` 在
+Windows 取 `windows-nt-heap`/`windows-virtual-memory`/`windows-native`（默认
+`windows-native`），在 Linux 取 `linux-glibc-heap`/`linux-virtual-memory`/`linux-native`
+（默认 `linux-glibc-heap`）。指定对面平台的方法或 profile 在执行前以退出码 5 拒绝；
+不属于当前 operation 的组合（如 attach 选 `entrypoint-code`、run 选 `ptrace`）由配置校验
+以退出码 1 拒绝。配置值不会被静默忽略。
 
 `operation = "patch"` 与 `[patch]` 表用于静态 PE patch：input 只接受原生 x64 EXE，
 签名文件默认拒绝，输出总是新副本且不与输入相同。patched 副本通过 `run` 加
@@ -167,7 +176,9 @@ standalone 激活参数烧进镜像，patched 副本可直接运行：agent 读�
 `symbols.paths` 与 `symbols.servers` 都为空时，analyzer 回退到 `_NT_SYMBOL_PATH` 与
 `_NT_ALT_SYMBOL_PATH` 环境变量（DbgHelp 惯例）；配置任一者则忽略环境变量。`symbols.servers`
 的值已带 `srv*` 前缀（大小写不敏感）时原样透传，可用 `srv*缓存目录*服务器地址` 指定本地
-下载缓存，否则自动补 `srv*` 前缀。
+下载缓存，否则自动补 `srv*` 前缀。符号服务器与环境变量回退均为 Windows 概念：Linux 的
+符号化使用内置 ELF 读取器（`.symtab` 优先、`.dynsym` 兜底），没有符号服务器，二者在
+Linux 被忽略。
 
 `symbols.mode`：`auto`（默认）尽可能解析、失败静默回退 module+offset；`off` 完全不触碰
 DbgHelp（不探测映像、不下载符号），与 `symbols.paths`/`symbols.servers` 同时配置校验报错；
@@ -248,7 +259,8 @@ CLI subcommand存在时覆盖 operation。若 CLI 和配置均缺失，显示顶
 - capture.memory_counters_interval / capture.memory_map_interval 为 duration，`0s` 关闭对应
   内存快照采样器，上限 1h；仅 run/attach 可非默认。
 - trace.path 的父目录必须存在或可创建。
-- custom_hooks：alloc 与 free 必填，每角色的三种定位互斥，参数位 0–7，`kind = "calloc"` 与
+- custom_hooks：alloc 与 free 必填，每角色的定位互斥（导出名 / `_pdb` / `_sym` / `_rva`
+  四选一；`*_pdb` 仅 Windows、`*_sym` 仅 Linux，错配平台即报错），参数位 0–7，`kind = "calloc"` 与
   `count_arg` 必须同时出现，同一模块不得重复声明（大小写不敏感），一次捕获最多 32 个
   hook 点；声明 PDB 定位时 `symbols.mode` 不得为 `off`。仅 run/attach/patch 有效，其余
   operation 下必须缺省；声明后 run/attach/patch 允许配置 `[symbols]`。
