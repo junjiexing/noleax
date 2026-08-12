@@ -28,8 +28,10 @@ decoder 必须消费完整输入，拒绝截断和尾随数据。
 agent worker 外的目标线程，最后才允许物理卸载 hook。
 
 `StartCapture` 的 `custom_hooks` 以 `uint32 count` 加定长元素块编码在既有字段之后（最多 32
-点）：每元素含参数位映射（size/ptr/result/count/free_size，未设项为 0xFF）、calloc/forced
-标志、wait_module_ms、三个角色的定位（none/export/RVA + export 名或 RVA）、module 与 label
+点）：每元素含每角色参数位映射（alloc_size_arg、alloc_count_arg、realloc_ptr_arg、
+realloc_size_arg、free_ptr_arg、result_arg、free_size_arg，可选项为 0xFF）、calloc/forced
+标志、wait_module_ms、三个角色的定位（none/export/RVA/ELF 符号 + export 名或 RVA；ELF 符号
+定位复用 export 名字段承载符号名，仅 Linux）、module 与 label
 字符串，以及可选的烘焙映像 identity（timestamp/checksum/image size）。该数组自 ABI 3 起存在；
 声明非法（缺 alloc/free、定位冲突、参数位越界、count 超限）在编解码两侧均被拒绝。
 安装期失败不再使 `StartCapture` 报错：custom hook 按 hook point 降级安装，失败点写入
@@ -39,6 +41,12 @@ trace 的 CustomHookFailure 记录并置 `custom_hook_install_failed`，`Capture
 ABI 4 在 `flush_interval_ns` 之后为 `StartCapture` 增加 `memory_counters_interval_ns` 与
 `memory_map_interval_ns` 两个 uint64 字段：agent 按各自间隔在 writer 线程采样内存计数器与
 虚拟内存 map（0 表示关闭对应采样器）。
+
+ABI 5 把 `custom_hooks` 元素的共享参数位（size_arg/ptr_arg/count_arg）替换为每角色参数位
+（alloc_size_arg/alloc_count_arg/realloc_ptr_arg/realloc_size_arg/free_ptr_arg），元素字节序
+相应重排；calloc 的一致性约束改为与 alloc_count_arg 配对。定位枚举新增 kElfSymbol（仅
+Linux）：符号名经角色的 export 名字段传输，agent 对模块磁盘映像做 symtab/dynsym 流式查找
+（必要时经 `.gnu_debuglink` 伴生文件，GNU CRC32 + Build ID 校验）并换算为运行时地址。
 
 ## 3. 传输和安全边界
 

@@ -301,7 +301,24 @@ void validate_custom_hooks(const Configuration& configuration) {
         (hook.free_size_arg.has_value() && *hook.free_size_arg > 7U)) {
       fail("custom_hooks.result_arg", "argument slots must be between 0 and 7");
     }
-    if ((hook.kind == CustomHookKind::kCalloc) != hook.count_arg.has_value()) {
+    if ((hook.alloc_size_arg.has_value() && *hook.alloc_size_arg > 7U) ||
+        (hook.alloc_count_arg.has_value() && *hook.alloc_count_arg > 7U) ||
+        (hook.realloc_ptr_arg.has_value() && *hook.realloc_ptr_arg > 7U) ||
+        (hook.realloc_size_arg.has_value() && *hook.realloc_size_arg > 7U) ||
+        (hook.free_ptr_arg.has_value() && *hook.free_ptr_arg > 7U)) {
+      fail("custom_hooks.alloc_size_arg", "argument slots must be between 0 and 7");
+    }
+    const bool per_role_arguments =
+        hook.alloc_size_arg.has_value() || hook.alloc_count_arg.has_value() ||
+        hook.realloc_ptr_arg.has_value() || hook.realloc_size_arg.has_value() ||
+        hook.free_ptr_arg.has_value();
+    if (per_role_arguments &&
+        (hook.size_arg != 0U || hook.ptr_arg != 0U || hook.count_arg.has_value())) {
+      fail("custom_hooks.alloc_size_arg",
+           "cannot mix legacy size_arg/ptr_arg with per-role argument fields");
+    }
+    if ((hook.kind == CustomHookKind::kCalloc) !=
+        (hook.count_arg.has_value() || hook.alloc_count_arg.has_value())) {
       fail("custom_hooks.count_arg", "requires kind = \"calloc\" and vice versa");
     }
     if (hook.wait_module < std::chrono::nanoseconds::zero()) {

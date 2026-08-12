@@ -182,7 +182,8 @@ struct CollectedEvents {
   hook.alloc = export_role(std::move(alloc_export));
   hook.realloc = export_role("my_realloc");
   hook.free = export_role("my_free");
-  hook.size_arg = 1U;
+  hook.alloc_size_arg = 1U;
+  hook.realloc_size_arg = 1U;
   hook.label = std::move(label);
   return hook;
 }
@@ -378,7 +379,7 @@ void scenario_rva(const ScenarioContext& context) {
   hook.module = "noleax-custom-alloc-a.dll";
   hook.alloc = rva_role(image.exported_offset("my_malloc"));
   hook.free = rva_role(image.exported_offset("my_free"));
-  hook.size_arg = 1U;
+  hook.alloc_size_arg = 1U;
   hook.label = "my_malloc";
 
   TargetProcess target{context, "rva"};
@@ -452,15 +453,15 @@ void scenario_mappings(const ScenarioContext& context) {
   calloc_hook.alloc = export_role("my_calloc");
   calloc_hook.free = export_role("my_free");
   calloc_hook.calloc = true;
-  calloc_hook.count_arg = std::uint8_t{0U};
-  calloc_hook.size_arg = 1U;
+  calloc_hook.alloc_count_arg = std::uint8_t{0U};
+  calloc_hook.alloc_size_arg = 1U;
   calloc_hook.label = "my_calloc";
 
   noleax::ipc::CustomHookSpec sized_hook;
   sized_hook.module = "noleax-custom-alloc-c.dll";
   sized_hook.alloc = export_role("my_xalloc");
   sized_hook.free = export_role("my_free_size");
-  sized_hook.size_arg = 1U;
+  sized_hook.alloc_size_arg = 1U;
   sized_hook.result_arg = std::uint8_t{0U};
   sized_hook.free_size_arg = std::uint8_t{1U};
   sized_hook.label = "my_xalloc";

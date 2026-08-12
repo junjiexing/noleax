@@ -148,6 +148,12 @@ struct CustomHookImageIdentity {
 };
 
 // One `[[custom_hooks]]` declaration: a module and its alloc/realloc/free function roles.
+// Argument mapping comes in two shapes: the legacy shared slots (size_arg serves alloc and
+// realloc, ptr_arg serves realloc and free, count_arg pairs with kind = "calloc") and the
+// per-role slots (alloc_size_arg/alloc_count_arg/realloc_ptr_arg/realloc_size_arg/
+// free_ptr_arg) for signatures whose roles disagree, such as a C++ member allocator with
+// `this` in argument 0. The two shapes cannot be mixed in one declaration;
+// resolve_custom_hook_arguments turns either into the per-role wire fields.
 struct CustomHook {
   std::string module;
   CustomHookRole alloc;
@@ -159,12 +165,32 @@ struct CustomHook {
   CustomHookKind kind{CustomHookKind::kAlloc};
   std::optional<std::uint8_t> count_arg;
   std::optional<std::uint8_t> free_size_arg;
+  std::optional<std::uint8_t> alloc_size_arg;
+  std::optional<std::uint8_t> alloc_count_arg;
+  std::optional<std::uint8_t> realloc_ptr_arg;
+  std::optional<std::uint8_t> realloc_size_arg;
+  std::optional<std::uint8_t> free_ptr_arg;
   bool forced{false};
   std::chrono::nanoseconds wait_module{0};
   std::optional<CustomHookImageIdentity> image_identity;
 
   bool operator==(const CustomHook&) const = default;
 };
+
+// The per-role argument slots the wire protocol and the agents consume.
+struct CustomHookRoleArguments {
+  std::uint8_t alloc_size_arg{0U};
+  std::optional<std::uint8_t> alloc_count_arg;
+  std::uint8_t realloc_ptr_arg{0U};
+  std::uint8_t realloc_size_arg{0U};
+  std::uint8_t free_ptr_arg{0U};
+};
+
+// Resolves a declaration's argument mapping to the per-role slots. Any per-role field set
+// selects the per-role shape (unset fields default to slot 0) and forbids the legacy fields;
+// otherwise the legacy shared slots expand to every role they serve. Throws
+// std::invalid_argument when legacy and per-role keys are mixed.
+[[nodiscard]] CustomHookRoleArguments resolve_custom_hook_arguments(const CustomHook& hook);
 
 // The label recorded in the trace's CustomHookDefinition record: the alloc role's symbol name,
 // or "module+0x<rva>" when the alloc role is located by RVA.

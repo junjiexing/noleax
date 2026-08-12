@@ -35,6 +35,7 @@
 
 #include "noleax/agent/hook_guard.hpp"
 #include "noleax/agent/hook_section.hpp"
+#include "noleax/agent/linux/elf_symbol_lookup.hpp"
 #include "noleax/agent/patch_rendezvous.hpp"
 #include "noleax/agent/replacement_lifecycle.hpp"
 
@@ -109,10 +110,12 @@ struct CustomHookSlot {
   std::atomic<void*> free_restored_target{nullptr};
   LinuxHeapEventQueue* event_queue{nullptr};
   std::uint32_t api_id{0U};
-  std::uint8_t size_arg{0U};
-  std::uint8_t ptr_arg{0U};
+  std::uint8_t alloc_size_arg{0U};
+  std::uint8_t alloc_count_arg{kNoArgumentSlot};
+  std::uint8_t realloc_ptr_arg{0U};
+  std::uint8_t realloc_size_arg{0U};
+  std::uint8_t free_ptr_arg{0U};
   std::uint8_t result_arg{kNoArgumentSlot};
-  std::uint8_t count_arg{kNoArgumentSlot};
   std::uint8_t free_size_arg{kNoArgumentSlot};
   bool calloc{false};
   std::uint16_t maximum_stack_depth{0U};
@@ -317,8 +320,8 @@ __attribute__((noinline)) inline void* custom_alloc_impl(CustomHookSlot* slot, v
       std::uint64_t count = 0U;
       bool size_valid = true;
       if (slot->calloc) {
-        count = argument_value(args, slot->count_arg);
-        const std::uint64_t element = argument_value(args, slot->size_arg);
+        count = argument_value(args, slot->alloc_count_arg);
+        const std::uint64_t element = argument_value(args, slot->alloc_size_arg);
         if (count != 0U && element > std::numeric_limits<std::uint64_t>::max() / count) {
           // The declared product overflows: record a failure event with a zero size.
           size_valid = false;
@@ -326,7 +329,7 @@ __attribute__((noinline)) inline void* custom_alloc_impl(CustomHookSlot* slot, v
           size = count * element;
         }
       } else {
-        size = argument_value(args, slot->size_arg);
+        size = argument_value(args, slot->alloc_size_arg);
       }
       void* result_pointer = result;
       if (slot->result_arg != kNoArgumentSlot) {
@@ -359,12 +362,13 @@ __attribute__((noinline)) inline void* custom_realloc_impl(CustomHookSlot* slot,
     const int original_errno = errno;
     if (route == ReplacementRoute::kRecord && entry_kind == HookEntryKind::kOutermost) {
       void* const args[8U] = {a0, a1, a2, a3, a4, a5, a6, a7};
-      const std::uint64_t size = argument_value(args, slot->size_arg);
+      const std::uint64_t size = argument_value(args, slot->realloc_size_arg);
       void* result_pointer = result;
       if (slot->result_arg != kNoArgumentSlot) {
         result_pointer = *static_cast<void**>(args[slot->result_arg]);
       }
-      record_custom_reallocate(*slot, args[slot->ptr_arg], size, result_pointer, original_errno);
+      record_custom_reallocate(*slot, args[slot->realloc_ptr_arg], size, result_pointer,
+                               original_errno);
     }
     errno = original_errno;
     leave_hook_invocation_unscoped();
@@ -393,7 +397,7 @@ __attribute__((noinline)) inline void* custom_free_impl(CustomHookSlot* slot, vo
       void* const args[8U] = {a0, a1, a2, a3, a4, a5, a6, a7};
       const std::uint64_t freed_size =
           slot->free_size_arg != kNoArgumentSlot ? argument_value(args, slot->free_size_arg) : 0U;
-      record_custom_free(*slot, args[slot->ptr_arg], freed_size);
+      record_custom_free(*slot, args[slot->free_ptr_arg], freed_size);
     }
     errno = original_errno;
     leave_hook_invocation_unscoped();
@@ -629,9 +633,11 @@ struct ElfModuleLayout {
 }
 
 // Self-contained minimal ELF reader (no external dependencies; the agent must not link the
-// analyzer). Runs at install time on the file backing the loaded module.
+// analyzer). Runs at install time on the file backing the loaded module. The .dynsym bounds
+// are only required when a role actually resolves an export; an ELF-symbol-only point needs
+// just the load bias, so a module without a dynamic table can still host one.
 [[nodiscard]] ElfModuleLayout parse_elf_layout(int fd, const std::string& module,
-                                               const std::string& path) {
+                                               const std::string& path, bool require_dynsym) {
   Elf64_Ehdr header;
   if (!read_file_at(fd, &header, sizeof(header), 0U) ||
       std::memcmp(header.e_ident, ELFMAG, SELFMAG) != 0 || header.e_ident[EI_CLASS] != ELFCLASS64 ||
@@ -680,7 +686,7 @@ struct ElfModuleLayout {
     found = true;
     break;
   }
-  if (!found) {
+  if (!found && require_dynsym) {
     throw CustomHookError{
         module, CustomHookFailureRole::kPoint, CustomHookFailureReason::kOther,
         "custom hook module '" + module + "' at '" + path + "' has no dynamic symbol table"};
@@ -759,19 +765,21 @@ void validate_point_spec(const CustomHookSpec& spec) {
         "custom hook point '" + spec.module + "' requires an alloc and a free role"};
   }
   const bool argument_out_of_range =
-      spec.size_arg > kMaximumArgumentSlot || spec.ptr_arg > kMaximumArgumentSlot ||
+      spec.alloc_size_arg > kMaximumArgumentSlot ||
+      (spec.alloc_count_arg.has_value() && *spec.alloc_count_arg > kMaximumArgumentSlot) ||
+      spec.realloc_ptr_arg > kMaximumArgumentSlot || spec.realloc_size_arg > kMaximumArgumentSlot ||
+      spec.free_ptr_arg > kMaximumArgumentSlot ||
       (spec.result_arg.has_value() && *spec.result_arg > kMaximumArgumentSlot) ||
-      (spec.count_arg.has_value() && *spec.count_arg > kMaximumArgumentSlot) ||
       (spec.free_size_arg.has_value() && *spec.free_size_arg > kMaximumArgumentSlot);
   if (argument_out_of_range) {
     throw CustomHookError{
         spec.module, CustomHookFailureRole::kPoint, CustomHookFailureReason::kOther,
         "custom hook point '" + spec.module + "' declares an argument position outside 0-7"};
   }
-  if (spec.calloc && !spec.count_arg.has_value()) {
+  if (spec.calloc && !spec.alloc_count_arg.has_value()) {
     throw CustomHookError{
         spec.module, CustomHookFailureRole::kPoint, CustomHookFailureReason::kOther,
-        "custom hook point '" + spec.module + "' declares the calloc kind without count_arg"};
+        "custom hook point '" + spec.module + "' declares the calloc kind without alloc_count_arg"};
   }
 }
 
@@ -1034,13 +1042,17 @@ class LinuxCustomSymbolHooks::Implementation final {
     validate_point_spec(point.spec);
     const ModuleMapping mapping = wait_for_module(point.spec);
 
-    // The on-disk ELF is only needed to resolve export names; an RVA-only point skips the
-    // parse, so a module whose file disappeared after loading can still host RVA hooks.
+    // The on-disk ELF is needed to resolve export names and ELF symbols; an RVA-only point
+    // skips the parse, so a module whose file disappeared after loading can still host RVA
+    // hooks. Exports additionally require a .dynsym; ELF symbols only need the load bias.
     OpenedFile module_file;
     ElfModuleLayout layout;
-    const bool needs_symbols = point.alloc.spec.locator == CustomHookLocator::kExport ||
-                               point.realloc.spec.locator == CustomHookLocator::kExport ||
-                               point.free.spec.locator == CustomHookLocator::kExport;
+    const auto locator_is = [](const PointState& point, CustomHookLocator locator) {
+      return point.alloc.spec.locator == locator || point.realloc.spec.locator == locator ||
+             point.free.spec.locator == locator;
+    };
+    const bool needs_dynsym = locator_is(point, CustomHookLocator::kExport);
+    const bool needs_symbols = needs_dynsym || locator_is(point, CustomHookLocator::kElfSymbol);
     if (needs_symbols) {
       module_file.descriptor = ::open(mapping.path.c_str(), O_RDONLY | O_CLOEXEC);
       if (module_file.descriptor < 0) {
@@ -1049,7 +1061,8 @@ class LinuxCustomSymbolHooks::Implementation final {
                               "custom hook module '" + point.spec.module +
                                   "' cannot be read from '" + mapping.path + "'"};
       }
-      layout = parse_elf_layout(module_file.descriptor, point.spec.module, mapping.path);
+      layout =
+          parse_elf_layout(module_file.descriptor, point.spec.module, mapping.path, needs_dynsym);
     }
     point.alloc.target =
         resolve_role_target(point, point.alloc.spec, mapping, module_file.descriptor, layout,
@@ -1063,10 +1076,12 @@ class LinuxCustomSymbolHooks::Implementation final {
     CustomHookSlot& slot = g_custom_hook_slots[point.slot_index];
     slot.event_queue = event_queue_;
     slot.api_id = point.api_id;
-    slot.size_arg = point.spec.size_arg;
-    slot.ptr_arg = point.spec.ptr_arg;
+    slot.alloc_size_arg = point.spec.alloc_size_arg;
+    slot.alloc_count_arg = point.spec.alloc_count_arg.value_or(kNoArgumentSlot);
+    slot.realloc_ptr_arg = point.spec.realloc_ptr_arg;
+    slot.realloc_size_arg = point.spec.realloc_size_arg;
+    slot.free_ptr_arg = point.spec.free_ptr_arg;
     slot.result_arg = point.spec.result_arg.value_or(kNoArgumentSlot);
-    slot.count_arg = point.spec.count_arg.value_or(kNoArgumentSlot);
     slot.free_size_arg = point.spec.free_size_arg.value_or(kNoArgumentSlot);
     slot.calloc = point.spec.calloc;
     slot.maximum_stack_depth = maximum_stack_depth_;
@@ -1180,6 +1195,34 @@ class LinuxCustomSymbolHooks::Implementation final {
                                     point.spec.module + "'"};
         }
         return reinterpret_cast<void*>(static_cast<std::uintptr_t>(mapping.base + role.rva));
+      case CustomHookLocator::kElfSymbol: {
+        // Same conversion as the kExport path: the link-time st_value becomes a runtime
+        // address through the module's load bias (mapping base minus minimum load vaddr).
+        const std::optional<std::uint64_t> value =
+            find_elf_symbol_vaddr(mapping.path, role.export_name);
+        if (!value.has_value()) {
+          throw CustomHookError{point.spec.module, failure_role, CustomHookFailureReason::kOther,
+                                std::string{"custom hook "} + role_name + " ELF symbol '" +
+                                    role.export_name + "' was not found in module '" +
+                                    point.spec.module + "' (or its debug companion)"};
+        }
+        if (*value < layout.min_load_vaddr ||
+            *value - layout.min_load_vaddr >
+                std::numeric_limits<std::uint64_t>::max() - mapping.base) {
+          throw CustomHookError{point.spec.module, failure_role, CustomHookFailureReason::kOther,
+                                std::string{"custom hook "} + role_name + " ELF symbol '" +
+                                    role.export_name + "' of module '" + point.spec.module +
+                                    "' resolves outside the loaded image"};
+        }
+        const std::uint64_t address = mapping.base + (*value - layout.min_load_vaddr);
+        if (!inside_executable_range(mapping, address)) {
+          throw CustomHookError{point.spec.module, failure_role, CustomHookFailureReason::kOther,
+                                std::string{"custom hook "} + role_name + " ELF symbol '" +
+                                    role.export_name + "' of module '" + point.spec.module +
+                                    "' does not resolve into an executable mapping"};
+        }
+        return reinterpret_cast<void*>(static_cast<std::uintptr_t>(address));
+      }
     }
     throw CustomHookError{point.spec.module, failure_role, CustomHookFailureReason::kOther,
                           std::string{"custom hook "} + role_name + " locator is not supported"};

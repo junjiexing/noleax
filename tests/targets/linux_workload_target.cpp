@@ -129,6 +129,43 @@ extern "C" __attribute__((visibility("default"))) void my_free(void* pointer) {
   std::free(static_cast<std::byte*>(pointer) - 16U);
 }
 
+// A C++ member allocator for the per-role custom-hook argument model: `this` occupies
+// argument 0, so Malloc's size rides in argument 1, Realloc's pointer/size in arguments
+// 1/2, and Free's pointer in argument 1. Out-of-line default-visibility definitions keep
+// the mangled names in .dynsym (the target links with ENABLE_EXPORTS) as well as .symtab.
+// noipa keeps the compiler from cloning or otherwise rerouting the hooked entry points
+// (an ipa-cp constprop clone would bypass the patch on the canonical symbol).
+class CxxAllocator {
+ public:
+  void* Malloc(std::size_t size, std::size_t alignment);
+  void* Realloc(void* pointer, std::size_t size, std::size_t alignment);
+  void Free(void* pointer);
+};
+
+__attribute__((noinline, noipa)) void* CxxAllocator::Malloc(std::size_t size,
+                                                            std::size_t alignment) {
+  static_cast<void>(alignment);  // the alignment parameter only shifts the argument slots
+  return std::malloc(size);
+}
+
+__attribute__((noinline, noipa)) void* CxxAllocator::Realloc(void* pointer, std::size_t size,
+                                                             std::size_t alignment) {
+  static_cast<void>(alignment);
+  return std::realloc(pointer, size);
+}
+
+__attribute__((noinline, noipa)) void CxxAllocator::Free(void* pointer) { std::free(pointer); }
+
+// Hidden visibility: external linkage but absent from .dynsym, so only the .symtab lookup
+// path (or a debug companion) can resolve these symbols.
+__attribute__((noinline, noipa, visibility("hidden"))) void* hidden_alloc(std::size_t size) {
+  return std::malloc(size);
+}
+
+__attribute__((noinline, noipa, visibility("hidden"))) void hidden_free(void* pointer) {
+  std::free(pointer);
+}
+
 int main() {
   std::vector<void*> retained;
   retained.reserve(kLeakedCount);
@@ -143,6 +180,18 @@ int main() {
   // retained until exit.
   retained.push_back(escape(my_alloc(2048U)));
   retained.push_back(escape(my_alloc(3072U)));
+
+  // The C++ member allocator exercises the per-role argument mapping (`this` in argument
+  // 0), the hidden pair the .symtab-only symbol lookup.
+  CxxAllocator cxx_allocator;
+  void* const cxx_block = escape(cxx_allocator.Malloc(1024U, 32U));
+  std::memset(cxx_block, 0x6a, 16U);
+  void* const cxx_grown = escape(cxx_allocator.Realloc(cxx_block, 1536U, 32U));
+  std::memset(cxx_grown, 0x6b, 16U);
+  cxx_allocator.Free(cxx_grown);
+  void* const hidden_block = escape(hidden_alloc(512U));
+  std::memset(hidden_block, 0x6c, 16U);
+  hidden_free(hidden_block);
 
   std::thread first{burst_worker};
   std::thread second{burst_worker};

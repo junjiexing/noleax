@@ -117,16 +117,28 @@ TEST_CASE("IPC start capture round trips custom hook declarations",
   hook.realloc.rva = 0x12340U;
   hook.free.locator = noleax::ipc::CustomHookLocator::kExport;
   hook.free.export_name = "my_free";
-  hook.size_arg = 1U;
-  hook.ptr_arg = 2U;
+  hook.alloc_size_arg = 1U;
+  hook.alloc_count_arg = std::uint8_t{3U};
+  hook.realloc_ptr_arg = 2U;
+  hook.realloc_size_arg = 1U;
+  hook.free_ptr_arg = 2U;
   hook.result_arg = std::uint8_t{0U};
   hook.calloc = true;
-  hook.count_arg = std::uint8_t{3U};
   hook.free_size_arg = std::uint8_t{4U};
   hook.forced = true;
   hook.wait_module_ms = 10'000U;
   hook.label = "my_malloc";
   hook.image_identity = noleax::ipc::CustomHookImageIdentity{0x65a1b2c3U, 0x1a2bU, 198656U};
+
+  noleax::ipc::CustomHookSpec elf;
+  elf.module = "libmyalloc.so";
+  elf.alloc.locator = noleax::ipc::CustomHookLocator::kElfSymbol;
+  elf.alloc.export_name = "_ZN12CxxAllocator6MallocEmm";
+  elf.free.locator = noleax::ipc::CustomHookLocator::kElfSymbol;
+  elf.free.export_name = "_ZN12CxxAllocator4FreeEPv";
+  elf.alloc_size_arg = 1U;
+  elf.free_ptr_arg = 1U;
+  elf.label = "_ZN12CxxAllocator6MallocEmm";
 
   noleax::ipc::CustomHookSpec minimal;
   minimal.module = "other.dll";
@@ -136,7 +148,7 @@ TEST_CASE("IPC start capture round trips custom hook declarations",
   minimal.free.rva = 0x2100U;
   minimal.label = "other.dll+0x2000";
 
-  start.custom_hooks = {hook, minimal};
+  start.custom_hooks = {hook, elf, minimal};
   CHECK(noleax::ipc::decode_start_capture(noleax::ipc::encode_start_capture(start)) == start);
 }
 
@@ -164,12 +176,20 @@ TEST_CASE("IPC custom hook codec rejects malformed declarations", "[ipc][protoco
 
   // Argument slots are bounded.
   start.custom_hooks = {valid};
-  start.custom_hooks.at(0U).size_arg = 8U;
+  start.custom_hooks.at(0U).alloc_size_arg = 8U;
   CHECK_THROWS_AS(noleax::ipc::encode_start_capture(start), noleax::ipc::ProtocolError);
 
-  // calloc requires count_arg and vice versa.
+  start.custom_hooks = {valid};
+  start.custom_hooks.at(0U).free_ptr_arg = 9U;
+  CHECK_THROWS_AS(noleax::ipc::encode_start_capture(start), noleax::ipc::ProtocolError);
+
+  // calloc requires alloc_count_arg and vice versa.
   start.custom_hooks = {valid};
   start.custom_hooks.at(0U).calloc = true;
+  CHECK_THROWS_AS(noleax::ipc::encode_start_capture(start), noleax::ipc::ProtocolError);
+
+  start.custom_hooks = {valid};
+  start.custom_hooks.at(0U).alloc_count_arg = std::uint8_t{1U};
   CHECK_THROWS_AS(noleax::ipc::encode_start_capture(start), noleax::ipc::ProtocolError);
 
   // The point count is bounded.

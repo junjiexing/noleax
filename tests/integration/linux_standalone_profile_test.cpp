@@ -18,13 +18,18 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <set>
 #include <string>
 #include <system_error>
 #include <thread>
+#include <variant>
+#include <vector>
 
 #include "noleax/agent/linux/hook_registry.hpp"
 #include "noleax/analyzer/event_stream.hpp"
+#include "noleax/trace/custom_hook.hpp"
+#include "noleax/trace/event.hpp"
 
 namespace {
 
@@ -37,12 +42,12 @@ using namespace std::chrono_literals;
 
 void write_config(const std::filesystem::path& path, const std::string& profile,
                   const std::filesystem::path& trace, const std::string& capture_extra = "",
-                  const std::string& trace_extra = "") {
+                  const std::string& trace_extra = "", const std::string& tail_extra = "") {
   std::ofstream output{path, std::ios::binary | std::ios::trunc};
   output << "schema_version = 1\n\n[capture]\nhook_profile = \"" << profile << "\"\n"
          << capture_extra << "\n[trace]\npath = \"" << trace.string()
          << "\"\ncompression = \"none\"\n"
-         << trace_extra;
+         << trace_extra << tail_extra;
   if (!output) {
     FAIL("cannot write the standalone config");
   }
@@ -301,7 +306,6 @@ TEST_CASE("standalone rejects unsupported non-default fields", "[linux][standalo
       {"rotate", "", "on_full = \"rotate\"\n", "trace.on_full"},
       {"maxfiles", "", "max_files = 2\n", "trace.max_files"},
       {"method", "", "", "injection.method"},
-      {"custom", "", "", "custom_hooks"},
   };
   for (const auto& test_case : cases) {
     const auto config = unique_path("config.toml");
@@ -311,9 +315,6 @@ TEST_CASE("standalone rejects unsupported non-default fields", "[linux][standalo
     if (test_case.name == "method") {
       std::ofstream append{config, std::ios::app};
       append << "\n[injection]\nmethod = \"ptrace\"\n";
-    } else if (test_case.name == "custom") {
-      std::ofstream append{config, std::ios::app};
-      append << "\n[[custom_hooks]]\nmodule = \"libc.so.6\"\nalloc = \"malloc\"\nfree = \"free\"\n";
     }
 
     const StandaloneRun run = run_standalone(config, stderr_capture);
@@ -326,4 +327,136 @@ TEST_CASE("standalone rejects unsupported non-default fields", "[linux][standalo
     std::filesystem::remove(config, error);
     std::filesystem::remove(stderr_capture, error);
   }
+}
+
+namespace {
+
+// ---- standalone custom hooks (_sym ELF locators, per-role argument model) ----
+
+struct CustomHookTrace {
+  std::vector<noleax::trace::Event> events;
+  noleax::analyzer::EventStreamResult result;
+};
+
+// Reads a standalone trace and collects every event stamped with a custom hook api_id.
+[[nodiscard]] CustomHookTrace collect_custom_events(const std::filesystem::path& trace) {
+  std::ifstream input{trace, std::ios::binary};
+  if (!input) {
+    FAIL("cannot open the standalone trace");
+  }
+  CustomHookTrace collected;
+  noleax::analyzer::EventStreamCallbacks callbacks;
+  callbacks.on_event = [&collected](const noleax::trace::Event& event) {
+    if (event.header.api_id >= noleax::trace::kCustomHookApiIdBase) {
+      collected.events.push_back(event);
+    }
+  };
+  collected.result = noleax::analyzer::analyze_event_stream(input, callbacks);
+  return collected;
+}
+
+void remove_all(const std::filesystem::path& config, const std::filesystem::path& trace,
+                const std::filesystem::path& stderr_capture) {
+  std::error_code error;
+  std::filesystem::remove(config, error);
+  std::filesystem::remove(trace, error);
+  std::filesystem::remove(stderr_capture, error);
+}
+
+}  // namespace
+
+TEST_CASE("standalone custom hooks record a C++ member allocator through per-role arguments",
+          "[linux][standalone][custom-hook]") {
+  const auto config = unique_path("config.toml");
+  const auto trace = unique_path("trace.nlx");
+  const auto stderr_capture = unique_path("stderr.txt");
+  // CxxAllocator's `this` occupies argument 0, so every semantic slot shifts by one:
+  // Malloc(size, align) reads its size at 1, Realloc(ptr, size, align) its pointer at 1 and
+  // its size at 2, Free(ptr) its pointer at 1.
+  write_config(config, "linux-glibc-heap", trace, "", "",
+               R"toml(
+[[custom_hooks]]
+module = "noleax-linux-workload-target"
+alloc_sym = "_ZN12CxxAllocator6MallocEmm"
+realloc_sym = "_ZN12CxxAllocator7ReallocEPvmm"
+free_sym = "_ZN12CxxAllocator4FreeEPv"
+alloc_size_arg = 1
+realloc_ptr_arg = 1
+realloc_size_arg = 2
+free_ptr_arg = 1
+)toml");
+
+  const StandaloneRun run = run_standalone(config, stderr_capture);
+  INFO(run.agent_stderr);
+  REQUIRE(run.exit_code == 42);
+
+  const CustomHookTrace collected = collect_custom_events(trace);
+  check_clean_finalize(collected.result);
+  REQUIRE(collected.result.custom_hooks.size() == 1U);
+  CHECK(collected.result.custom_hooks.front().module_name == "noleax-linux-workload-target");
+  CHECK(collected.result.custom_hooks.front().label == "_ZN12CxxAllocator6MallocEmm");
+
+  std::optional<noleax::trace::AllocationEvent> allocation;
+  std::optional<noleax::trace::ReallocationEvent> reallocation;
+  std::optional<noleax::trace::FreeEvent> free_event;
+  for (const noleax::trace::Event& event : collected.events) {
+    if (const auto* payload = std::get_if<noleax::trace::AllocationEvent>(&event.payload)) {
+      allocation = *payload;
+    } else if (const auto* payload =
+                   std::get_if<noleax::trace::ReallocationEvent>(&event.payload)) {
+      reallocation = *payload;
+    } else if (const auto* payload = std::get_if<noleax::trace::FreeEvent>(&event.payload)) {
+      free_event = *payload;
+    }
+  }
+  REQUIRE(allocation.has_value());
+  CHECK(allocation->requested_size == 1024U);
+  REQUIRE(reallocation.has_value());
+  CHECK(reallocation->old_address == allocation->result_address);
+  CHECK(reallocation->requested_size == 1536U);
+  REQUIRE(free_event.has_value());
+  CHECK(free_event->address == reallocation->result_address);
+
+  remove_all(config, trace, stderr_capture);
+}
+
+TEST_CASE("standalone custom hooks resolve symtab-only symbols",
+          "[linux][standalone][custom-hook]") {
+  const auto config = unique_path("config.toml");
+  const auto trace = unique_path("trace.nlx");
+  const auto stderr_capture = unique_path("stderr.txt");
+  // hidden_alloc/hidden_free carry hidden visibility: absent from .dynsym, so only the
+  // .symtab scan can resolve them.
+  write_config(config, "linux-glibc-heap", trace, "", "",
+               R"toml(
+[[custom_hooks]]
+module = "noleax-linux-workload-target"
+alloc_sym = "_Z12hidden_allocm"
+free_sym = "_Z11hidden_freePv"
+)toml");
+
+  const StandaloneRun run = run_standalone(config, stderr_capture);
+  INFO(run.agent_stderr);
+  REQUIRE(run.exit_code == 42);
+
+  const CustomHookTrace collected = collect_custom_events(trace);
+  check_clean_finalize(collected.result);
+  REQUIRE(collected.result.custom_hooks.size() == 1U);
+  CHECK(collected.result.custom_hooks.front().label == "_Z12hidden_allocm");
+
+  std::optional<noleax::trace::AllocationEvent> allocation;
+  std::optional<noleax::trace::FreeEvent> free_event;
+  for (const noleax::trace::Event& event : collected.events) {
+    if (const auto* payload = std::get_if<noleax::trace::AllocationEvent>(&event.payload)) {
+      allocation = *payload;
+    } else if (const auto* payload = std::get_if<noleax::trace::FreeEvent>(&event.payload)) {
+      free_event = *payload;
+    }
+  }
+  REQUIRE(allocation.has_value());
+  CHECK(allocation->requested_size == 512U);
+  REQUIRE(free_event.has_value());
+  CHECK(free_event->address == allocation->result_address);
+
+  remove_all(config, trace, stderr_capture);
 }

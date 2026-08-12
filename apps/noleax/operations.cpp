@@ -330,10 +330,14 @@ void resolve_custom_hook_pdb_role(noleax::analyzer::OfflineSymbolizer& symbolize
     const noleax::config::Configuration& configuration, const noleax::config::CustomHook& hook) {
   noleax::ipc::CustomHookSpec spec;
   spec.module = hook.module;
-  spec.size_arg = hook.size_arg;
-  spec.ptr_arg = hook.ptr_arg;
+  const noleax::config::CustomHookRoleArguments arguments =
+      noleax::config::resolve_custom_hook_arguments(hook);
+  spec.alloc_size_arg = arguments.alloc_size_arg;
+  spec.alloc_count_arg = arguments.alloc_count_arg;
+  spec.realloc_ptr_arg = arguments.realloc_ptr_arg;
+  spec.realloc_size_arg = arguments.realloc_size_arg;
+  spec.free_ptr_arg = arguments.free_ptr_arg;
   spec.result_arg = hook.result_arg;
-  spec.count_arg = hook.count_arg;
   spec.free_size_arg = hook.free_size_arg;
   spec.calloc = hook.kind == noleax::config::CustomHookKind::kCalloc;
   spec.forced = hook.forced;
@@ -437,20 +441,26 @@ void write_custom_hook_toml(std::ostream& output, const noleax::ipc::CustomHookS
   write_role("alloc", hook.alloc);
   write_role("realloc", hook.realloc);
   write_role("free", hook.free);
-  if (hook.size_arg != 0U) {
-    output << "size_arg = " << static_cast<std::uint32_t>(hook.size_arg) << "\n";
+  if (hook.alloc_size_arg != 0U) {
+    output << "alloc_size_arg = " << static_cast<std::uint32_t>(hook.alloc_size_arg) << "\n";
   }
-  if (hook.ptr_arg != 0U) {
-    output << "ptr_arg = " << static_cast<std::uint32_t>(hook.ptr_arg) << "\n";
+  if (hook.alloc_count_arg.has_value()) {
+    output << "alloc_count_arg = " << static_cast<std::uint32_t>(*hook.alloc_count_arg) << "\n";
+  }
+  if (hook.realloc_ptr_arg != 0U) {
+    output << "realloc_ptr_arg = " << static_cast<std::uint32_t>(hook.realloc_ptr_arg) << "\n";
+  }
+  if (hook.realloc_size_arg != 0U) {
+    output << "realloc_size_arg = " << static_cast<std::uint32_t>(hook.realloc_size_arg) << "\n";
+  }
+  if (hook.free_ptr_arg != 0U) {
+    output << "free_ptr_arg = " << static_cast<std::uint32_t>(hook.free_ptr_arg) << "\n";
   }
   if (hook.result_arg.has_value()) {
     output << "result_arg = " << static_cast<std::uint32_t>(*hook.result_arg) << "\n";
   }
   if (hook.calloc) {
     output << "kind = \"calloc\"\n";
-  }
-  if (hook.count_arg.has_value()) {
-    output << "count_arg = " << static_cast<std::uint32_t>(*hook.count_arg) << "\n";
   }
   if (hook.free_size_arg.has_value()) {
     output << "free_size_arg = " << static_cast<std::uint32_t>(*hook.free_size_arg) << "\n";
@@ -1289,10 +1299,14 @@ class InterruptHandlerGuard final {
     const noleax::config::Configuration& configuration, const noleax::config::CustomHook& hook) {
   noleax::ipc::CustomHookSpec spec;
   spec.module = hook.module;
-  spec.size_arg = hook.size_arg;
-  spec.ptr_arg = hook.ptr_arg;
+  const noleax::config::CustomHookRoleArguments arguments =
+      noleax::config::resolve_custom_hook_arguments(hook);
+  spec.alloc_size_arg = arguments.alloc_size_arg;
+  spec.alloc_count_arg = arguments.alloc_count_arg;
+  spec.realloc_ptr_arg = arguments.realloc_ptr_arg;
+  spec.realloc_size_arg = arguments.realloc_size_arg;
+  spec.free_ptr_arg = arguments.free_ptr_arg;
   spec.result_arg = hook.result_arg;
-  spec.count_arg = hook.count_arg;
   spec.free_size_arg = hook.free_size_arg;
   spec.calloc = hook.kind == noleax::config::CustomHookKind::kCalloc;
   spec.forced = hook.forced;

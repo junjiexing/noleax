@@ -37,6 +37,30 @@ forced = false      # 序言不可重定位时是否允许 forced relocation,默
 wait_module = "0s"  # 安装时模块未加载的等待上限;0 = 立即失败,默认 0
 ```
 
+共享的 `size_arg`/`ptr_arg`/`count_arg` 表达不了各角色参数位不一致的签名(如 C++ 成员
+allocator:`this` 占参数位 0,`Malloc(size, align)` 的 size 在参数位 1)。每角色参数位
+(仅 TOML)覆盖这一形态:
+
+```toml
+[[custom_hooks]]
+module = "myalloc.dll"
+alloc = "my_malloc"
+realloc = "my_realloc"
+free = "my_free"
+# 任写一个每角色键即整体启用每角色形态,未写的槽位默认 0;此时 legacy 的
+# size_arg/ptr_arg/count_arg 必须全部缺省(或为 0),混写在配置校验期报错。
+alloc_size_arg = 1    # alloc 的 size 参数位(calloc 时为其元素大小位)
+# alloc_count_arg = 2 # alloc 的 count 参数位(配 kind = "calloc")
+realloc_ptr_arg = 1   # realloc 的指针参数位
+realloc_size_arg = 2  # realloc 的 size 参数位
+free_ptr_arg = 1      # free 的指针参数位
+```
+
+legacy 键按下述规则展开为每角色槽位:`alloc_size_arg = size_arg`、
+`realloc_size_arg = size_arg`、`realloc_ptr_arg = ptr_arg`、`free_ptr_arg = ptr_arg`、
+`alloc_count_arg = count_arg`。`result_arg`/`free_size_arg`/`forced`/`wait_module` 两种
+形态共用,语义不变。
+
 CLI 重复选项(与 TOML 数组替换语义一致):
 
 ```
@@ -64,9 +88,17 @@ noleax attach --custom-hook "myalloc.dll:alloc_pdb=myalloc!internal_alloc,free_r
   standalone 见下方"standalone 的烘焙合同"。解析失败(无 PDB、符号未找到、内联函数
   无独立代码)在安装前报明确错误。
 - **RVA**:直接使用,合法性(落在模块 .text 内)由安装期检查。
+- **ELF 符号(`<role>_sym`,仅 Linux)**:任意 symtab/dynsym 符号名。live 路径由
+  controller 侧对磁盘映像解析并烘焙为 RVA(与 PDB 同一合同);Linux standalone 没有运行期
+  controller,由 agent 在安装期自行解析——流式扫描模块磁盘映像的 `.symtab`,无可用
+  `.symtab` 时回退 `.dynsym`,再退到 `.gnu_debuglink` 伴生调试文件(搜索顺序:映像同目录、
+  其 `.debug/` 子目录、`/usr/lib/debug/<映像绝对路径>/`;伴生文件须通过 GNU CRC32 与
+  Build ID 双重校验),命中后按"映射基址 + (st_value − 最小装载地址)"换算为运行时地址。
 
 解析结果经 StartCaptureRequest(见 §5)传入 agent;直写(standalone)模式 agent 自行读取
 TOML 中的同一声明,此时 PDB 解析仍由写出该配置的 controller 提前完成并烘焙为 RVA。
+Linux standalone 的 `_sym` 定位是唯一的例外:它以 kElfSymbol 定位随配置直达 agent,由
+agent 按上条规则在目标进程内解析,无需烘焙。
 
 **standalone 的烘焙合同**:patch standalone 没有运行期 controller,PDB 解析在 `noleax patch`
 执行时完成——对磁盘上的模块映像解析后,在输出副本旁写出**已解析的** `noleax-agent.toml`
@@ -92,13 +124,16 @@ noleax 需要的 lifecycle 计数、递归抑制、SEH 异常观察、LastError 
 排空证明会失效。参数位在安装期已确定,运行时读固定槽位只有两三条指令,args[] 是编写期便利,
 对本设计没有运行时价值。内置 Rtl\* hook 不用 attach 是同一组理由(见 HOOK_BACKEND.md)。
 
-参数映射(x64 Windows ABI):
+参数映射(x64 Windows ABI / System V AMD64 通用 replacement 均声明 8 个指针槽位):
 
-- alloc:结果取 `rax`;size 取第 `size_arg` 个参数。
-- free:指针取第 `ptr_arg` 个参数;返回值忽略。
-- realloc:指针取第 `ptr_arg` 个、size 取第 `size_arg` 个;结果取 `rax`。
+- alloc:结果取 `rax`;size 取第 `alloc_size_arg` 个参数(`kind = "calloc"` 时语义 size =
+  `alloc_count_arg` × `alloc_size_arg`,带溢出检查,溢出按失败事件记录)。
+- realloc:指针取第 `realloc_ptr_arg` 个、size 取第 `realloc_size_arg` 个;结果取 `rax`。
+- free:指针取第 `free_ptr_arg` 个参数;返回值忽略。
 
-参数位 0–3 读 rcx/rdx/r8/r9;4–7 读入口栈槽(`[rsp+8+8*(n-4)]`,replacement 序言不破坏该布局)。
+TOML 的 legacy 键(`size_arg`/`ptr_arg`/`count_arg`)按 §2 的规则展开为上述每角色槽位;
+CLI `--custom-hook` 只有 legacy 键。参数位 0–3 读 rcx/rdx/r8/r9(Windows)或
+rdi/rsi/rdx/rcx(SysV 前四槽);4–7 读入口栈槽。
 
 非标准签名的处理(全部为声明式映射,不引入脚本语言):
 
@@ -135,9 +170,12 @@ adapter 基础设施;uninstall/reinstall/unload-on-stop 与内置 hook 行为一
   并设置 `custom_hook_install_failed`(bit 10),live 与直写两种模式行为一致。
 - `EventMetadata.api_name/api_module`、`--api` 过滤、stacks 聚合 apis 展示全部自然扩展到自定义
   名称。
-- **StartCaptureRequest** 增加 `custom_hooks` 数组(每元素:module、三个角色的 RVA 与启用位、
-  size_arg、ptr_arg、forced、wait_module_ms、label),IPC 字段级编码,`kAgentAbiVersion` 2 → 3
-  (该 bump 由本特性引入;当前 ABI 版本以 [IPC_PROTOCOL.md](IPC_PROTOCOL.md) 为准)。
+- **StartCaptureRequest** 增加 `custom_hooks` 数组(每元素:module、三个角色的定位与启用位、
+  每角色参数位 alloc_size_arg/alloc_count_arg/realloc_ptr_arg/realloc_size_arg/free_ptr_arg、
+  result_arg、free_size_arg、calloc、forced、wait_module_ms、label),IPC 字段级编码。
+  该数组自 ABI 3 起存在(2 → 3 由本特性引入);ABI 4 → 5 把共享的
+  size_arg/ptr_arg/count_arg 换成每角色参数位并新增 kElfSymbol 定位(当前 ABI 版本以
+  [IPC_PROTOCOL.md](IPC_PROTOCOL.md) 为准)。
 
 ## 6. 配置校验
 
@@ -219,3 +257,14 @@ CLI.md、CONFIG.md、QUICKSTART.md(示例)、HOOK_API_MATRIX.md §5 更新、TRA
    `_pdb`)仍是启动期硬错误(agent 无法从中恢复出可安装的定位)。
 7. **api_id 命名解析顺序**:内建注册表 → trace 内 CustomHookDefinition → `api-<id>` 兜底,
    与老 minor reader 跳过该记录并显示兜底名的兼容语义一致。
+8. **每角色参数位与 kElfSymbol(ABI 4 → 5)**:原设计的共享 `size_arg`/`ptr_arg`/`count_arg`
+   无法表达各角色参数位不一致的签名(C++ 成员 allocator 的 `this` 占参数位 0:
+   `Malloc(size, align)` 的 size 在 1,`Realloc(ptr, size, align)` 的指针/size 在 1/2,
+   `Free(ptr)` 的指针在 1)。线上模型改为每角色槽位
+   (alloc_size_arg/alloc_count_arg/realloc_ptr_arg/realloc_size_arg/free_ptr_arg),TOML 的
+   legacy 键保留并按 §2 规则展开,混写在配置校验期报错;agent 的通用 replacement 按角色
+   读各自槽位,`result_arg`/`free_size_arg` 语义不变。定位枚举新增 kElfSymbol(仅 Linux),
+   符号名复用角色的 export_name 字段承载:Linux standalone(`LD_PRELOAD` +
+   `NOLEAX_AGENT_CONFIG`)由此支持 `[[custom_hooks]]` 全量声明——导出符号、`_sym`、RVA
+   均在 agent 安装期解析(`_pdb` 为 Windows 专有,出现即拒绝配置);解析失败沿用按
+   hook point 降级并写 CustomHookFailure 的既有模型。

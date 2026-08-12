@@ -64,10 +64,12 @@ struct CustomHookSlot {
   std::atomic<void*> free_restored_target{nullptr};
   RtlHeapEventQueue* event_queue{nullptr};
   std::uint32_t api_id{0U};
-  std::uint8_t size_arg{0U};
-  std::uint8_t ptr_arg{0U};
+  std::uint8_t alloc_size_arg{0U};
+  std::uint8_t alloc_count_arg{kNoArgumentSlot};
+  std::uint8_t realloc_ptr_arg{0U};
+  std::uint8_t realloc_size_arg{0U};
+  std::uint8_t free_ptr_arg{0U};
   std::uint8_t result_arg{kNoArgumentSlot};
-  std::uint8_t count_arg{kNoArgumentSlot};
   std::uint8_t free_size_arg{kNoArgumentSlot};
   bool calloc{false};
   std::uint16_t maximum_stack_depth{0U};
@@ -242,15 +244,15 @@ __declspec(noinline) PVOID NTAPI custom_alloc_impl(CustomHookSlot* slot, PVOID a
             std::uint64_t size = 0U;
             bool size_valid = true;
             if (slot->calloc) {
-              const std::uint64_t count = argument_value(args, slot->count_arg);
-              const std::uint64_t element = argument_value(args, slot->size_arg);
+              const std::uint64_t count = argument_value(args, slot->alloc_count_arg);
+              const std::uint64_t element = argument_value(args, slot->alloc_size_arg);
               if (count != 0U && element > std::numeric_limits<std::uint64_t>::max() / count) {
                 size_valid = false;
               } else {
                 size = count * element;
               }
             } else {
-              size = argument_value(args, slot->size_arg);
+              size = argument_value(args, slot->alloc_size_arg);
             }
             PVOID result_pointer = result;
             if (slot->result_arg != kNoArgumentSlot) {
@@ -346,8 +348,8 @@ __declspec(noinline) PVOID NTAPI custom_realloc_impl(CustomHookSlot* slot, PVOID
 
           if (entry_kind == HookEntryKind::kOutermost) {
             const PVOID args[8U] = {a0, a1, a2, a3, a4, a5, a6, a7};
-            const std::uint64_t size = argument_value(args, slot->size_arg);
-            const std::uintptr_t old_address = argument_value(args, slot->ptr_arg);
+            const std::uint64_t size = argument_value(args, slot->realloc_size_arg);
+            const std::uintptr_t old_address = argument_value(args, slot->realloc_ptr_arg);
             PVOID result_pointer = result;
             if (slot->result_arg != kNoArgumentSlot) {
               result_pointer = *static_cast<PVOID*>(args[slot->result_arg]);
@@ -438,7 +440,7 @@ __declspec(noinline) PVOID NTAPI custom_free_impl(CustomHookSlot* slot, PVOID a0
 
           if (entry_kind == HookEntryKind::kOutermost) {
             const PVOID args[8U] = {a0, a1, a2, a3, a4, a5, a6, a7};
-            const std::uintptr_t freed_address = argument_value(args, slot->ptr_arg);
+            const std::uintptr_t freed_address = argument_value(args, slot->free_ptr_arg);
             const std::uint64_t freed_size = slot->free_size_arg != kNoArgumentSlot
                                                  ? argument_value(args, slot->free_size_arg)
                                                  : 0U;
@@ -965,10 +967,12 @@ class CustomSymbolHooks::Implementation final {
     CustomHookSlot& slot = g_custom_hook_slots[point.slot_index];
     slot.event_queue = event_queue_;
     slot.api_id = point.api_id;
-    slot.size_arg = point.spec.size_arg;
-    slot.ptr_arg = point.spec.ptr_arg;
+    slot.alloc_size_arg = point.spec.alloc_size_arg;
+    slot.alloc_count_arg = point.spec.alloc_count_arg.value_or(kNoArgumentSlot);
+    slot.realloc_ptr_arg = point.spec.realloc_ptr_arg;
+    slot.realloc_size_arg = point.spec.realloc_size_arg;
+    slot.free_ptr_arg = point.spec.free_ptr_arg;
     slot.result_arg = point.spec.result_arg.value_or(kNoArgumentSlot);
-    slot.count_arg = point.spec.count_arg.value_or(kNoArgumentSlot);
     slot.free_size_arg = point.spec.free_size_arg.value_or(kNoArgumentSlot);
     slot.calloc = point.spec.calloc;
     slot.maximum_stack_depth = maximum_stack_depth_;
@@ -1083,6 +1087,11 @@ class CustomSymbolHooks::Implementation final {
                                     point.spec.module + "'"};
         }
         return const_cast<std::byte*>(pe.base) + static_cast<std::size_t>(role.rva);
+      case noleax::ipc::CustomHookLocator::kElfSymbol:
+        throw CustomHookError{point.spec.module, failure_role, CustomHookFailureReason::kOther,
+                              std::string{"custom hook "} + role_name +
+                                  " ELF symbol locators are only supported on Linux (module '" +
+                                  point.spec.module + "')"};
     }
     throw CustomHookError{point.spec.module, failure_role, CustomHookFailureReason::kOther,
                           std::string{"custom hook "} + role_name + " locator is not supported"};

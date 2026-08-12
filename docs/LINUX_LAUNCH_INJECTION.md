@@ -83,9 +83,17 @@ token 由控制器用 `getrandom(2)` 生成，同时决定 socket 名（`make_so
 |---|---|
 | `[capture]` | `hook_profile`（必须 `linux-*`）、`max_stack_depth`、`min_size`、`duration`、`memory_counters_interval`、`memory_map_interval` |
 | `[trace]` | `path`、`buffer_size`、`max_file_size`、`flush_interval`、`compression`、`compression_level` |
+| `[[custom_hooks]]` | 全量声明（模块、alloc/realloc/free 角色、参数位、`forced`、`wait_module` 等） |
+
+standalone 的 custom hook 定位限导出名（agent 解析目标模块的 `.dynsym`）、`<role>_sym`
+（agent 流式解析磁盘映像的 `.symtab`/`.dynsym`，并可经 `.gnu_debuglink` 伴生文件定位被
+strip 的符号）与 `<role>_rva` 三种；`<role>_pdb` 是 Windows 专有定位，standalone TOML 中
+出现即在 stderr 拒绝该配置（无运行期 controller 可烘焙 RVA）。参数位两种形态（legacy
+`size_arg`/`ptr_arg`/`count_arg` 与每角色 `alloc_size_arg` 等五键）均可使用，规则见
+[CUSTOM_HOOKS.md](CUSTOM_HOOKS.md)。
 
 明确不支持（写了非默认值即报错）：`trace.on_full = "rotate"` 与 `trace.max_files > 1`
-（rotation 未实现）、`[[custom_hooks]]`（standalone 透传未实现）、`target.*`/`injection.*`
+（rotation 未实现）、`target.*`/`injection.*`
 （standalone 是进程内启动，无注入面）、`capture.live`、`symbols.*`、分析/筛选类各节
 （属于 analyze/symbols/patch 操作）。加载失败（TOML 语法错误、未知键）同样在 stderr
 报告配置路径与原因。

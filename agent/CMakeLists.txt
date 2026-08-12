@@ -37,6 +37,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 
   target_sources(noleax-hook-backend PRIVATE
     linux/custom_symbol_hooks.cpp
+    linux/elf_symbol_lookup.cpp
     linux/glibc_heap_hooks.cpp
     linux/memory_snapshot.cpp
     linux/module_tracker.cpp

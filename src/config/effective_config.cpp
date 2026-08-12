@@ -224,6 +224,21 @@ void append_custom_hook(std::string& output, const CustomHook& hook, ValueSource
   if (hook.free_size_arg.has_value()) {
     append_setting(output, "free_size_arg", std::to_string(*hook.free_size_arg), source);
   }
+  if (hook.alloc_size_arg.has_value()) {
+    append_setting(output, "alloc_size_arg", std::to_string(*hook.alloc_size_arg), source);
+  }
+  if (hook.alloc_count_arg.has_value()) {
+    append_setting(output, "alloc_count_arg", std::to_string(*hook.alloc_count_arg), source);
+  }
+  if (hook.realloc_ptr_arg.has_value()) {
+    append_setting(output, "realloc_ptr_arg", std::to_string(*hook.realloc_ptr_arg), source);
+  }
+  if (hook.realloc_size_arg.has_value()) {
+    append_setting(output, "realloc_size_arg", std::to_string(*hook.realloc_size_arg), source);
+  }
+  if (hook.free_ptr_arg.has_value()) {
+    append_setting(output, "free_ptr_arg", std::to_string(*hook.free_ptr_arg), source);
+  }
   if (hook.forced) {
     append_setting(output, "forced", "true", source);
   }
