@@ -4,7 +4,7 @@
 
 TEST_CASE("version constants match the version string", "[version]") {
   CHECK(noleax::kVersionMajor == 0);
-  CHECK(noleax::kVersionMinor == 4);
-  CHECK(noleax::kVersionPatch == 1);
-  CHECK(noleax::version_string() == "0.4.1-dev");
+  CHECK(noleax::kVersionMinor == 5);
+  CHECK(noleax::kVersionPatch == 0);
+  CHECK(noleax::version_string() == "0.5.0-dev");
 }
