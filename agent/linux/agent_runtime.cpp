@@ -46,6 +46,7 @@
 #include "noleax/agent/linux/virtual_memory_hooks.hpp"
 #include "noleax/config/config_io.hpp"
 #include "noleax/config/configuration.hpp"
+#include "noleax/config/hook_profile_ipc.hpp"
 #include "noleax/ipc/linux/unix_socket.hpp"
 #include "noleax/ipc/protocol.hpp"
 #include "noleax/version.hpp"
@@ -609,10 +610,10 @@ bool session_bootstrap(std::string_view socket_name_without_nul,
 // ---------------------------------------------------------------------------
 
 [[nodiscard]] noleax::ipc::StartCaptureRequest standalone_capture_request(
-    const noleax::config::Configuration& configuration) {
+    const noleax::config::Configuration& configuration, noleax::ipc::HookProfile hook_profile) {
   noleax::ipc::StartCaptureRequest request;
   request.capture_kind = noleax::ipc::CaptureKind::kLaunch;
-  request.hook_profile = noleax::ipc::HookProfile::kLinuxGlibcHeap;
+  request.hook_profile = hook_profile;
   request.maximum_stack_depth = configuration.capture.max_stack_depth.value;
   request.minimum_capture_size = configuration.capture.min_size.value;
   request.buffer_size = configuration.trace.buffer_size.value;
@@ -662,10 +663,9 @@ bool standalone_bootstrap(const std::string& config_path) {
     std::fprintf(stderr, "noleax-agent: standalone attach is not supported on Linux\n");
     return false;
   }
-  const auto standalone_profile = configuration.capture.hook_profile.value;
-  if (standalone_profile != noleax::config::HookProfile::kLinuxGlibcHeap &&
-      standalone_profile != noleax::config::HookProfile::kLinuxVirtualMemory &&
-      standalone_profile != noleax::config::HookProfile::kLinuxNative) {
+  const auto standalone_profile =
+      noleax::config::linux_ipc_hook_profile(configuration.capture.hook_profile.value);
+  if (!standalone_profile.has_value()) {
     std::fprintf(stderr, "noleax-agent: standalone requires a linux-* hook profile\n");
     return false;
   }
@@ -677,7 +677,7 @@ bool standalone_bootstrap(const std::string& config_path) {
   }
 
   auto* const runtime = new LinuxCaptureRuntime;
-  const auto request = standalone_capture_request(configuration);
+  const auto request = standalone_capture_request(configuration, *standalone_profile);
   std::array<std::byte, 16U> session_id{};
   const ssize_t random_bytes = ::getrandom(session_id.data(), session_id.size(), 0U);
   static_cast<void>(random_bytes);
