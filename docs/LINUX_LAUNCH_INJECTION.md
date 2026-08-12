@@ -74,6 +74,22 @@ token 由控制器用 `getrandom(2)` 生成，同时决定 socket 名（`make_so
 | entrypoint-code | LD_PRELOAD constructor | 时序保证相同，无代码改写 |
 | static-pe-patch | 本期不做 | standalone 由 `LD_PRELOAD + NOLEAX_AGENT_CONFIG` 直接覆盖 |
 
+## 5.1 standalone 配置面
+
+`NOLEAX_AGENT_CONFIG` 指向的捕获 TOML 只支持下列字段（其余字段即使写了也会被拒绝，
+而不是静默忽略——校验失败时 stderr 逐字段报告，agent 不启动捕获，目标进程照常运行）：
+
+| 节 | 字段 |
+|---|---|
+| `[capture]` | `hook_profile`（必须 `linux-*`）、`max_stack_depth`、`min_size`、`duration`、`memory_counters_interval`、`memory_map_interval` |
+| `[trace]` | `path`、`buffer_size`、`max_file_size`、`flush_interval`、`compression`、`compression_level` |
+
+明确不支持（写了非默认值即报错）：`trace.on_full = "rotate"` 与 `trace.max_files > 1`
+（rotation 未实现）、`[[custom_hooks]]`（standalone 透传未实现）、`target.*`/`injection.*`
+（standalone 是进程内启动，无注入面）、`capture.live`、`symbols.*`、分析/筛选类各节
+（属于 analyze/symbols/patch 操作）。加载失败（TOML 语法错误、未知键）同样在 stderr
+报告配置路径与原因。
+
 ## 6. 验证
 
 - `tests/integration/linux_agent_bootstrap_test.cpp`：harness 扮控制器，LD_PRELOAD
