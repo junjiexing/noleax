@@ -72,6 +72,17 @@ class ElfImage {
   // .note.gnu.build-id descriptor bytes; empty when the image carries no build ID.
   [[nodiscard]] const std::vector<std::byte>& build_id() const noexcept { return build_id_; }
 
+  // Companion debug-file name from a well-formed .gnu_debuglink section, and its GNU CRC32
+  // (the zlib/IEEE one, not the trace format's CRC32C). Both empty when the image has no
+  // usable debuglink; malformed sections (truncated, unterminated, escaping filenames) are
+  // treated as absent rather than failing the whole image load.
+  [[nodiscard]] const std::optional<std::string>& debuglink_name() const noexcept {
+    return debuglink_name_;
+  }
+  [[nodiscard]] std::optional<std::uint32_t> debuglink_crc32() const noexcept {
+    return debuglink_crc32_;
+  }
+
   // Best function candidate for `vaddr` (a link-time virtual address): the defined
   // STT_FUNC/STT_GNU_IFUNC symbol with st_value <= vaddr < st_value + st_size, or the nearest
   // function symbol below `vaddr` when sizes are zero. .dynsym is consulted only when .symtab
@@ -89,6 +100,8 @@ class ElfImage {
   std::vector<std::size_t> symtab_functions_;
   std::vector<std::size_t> dynsym_functions_;
   std::vector<std::byte> build_id_;
+  std::optional<std::string> debuglink_name_;
+  std::optional<std::uint32_t> debuglink_crc32_;
 };
 
 // True when a symbol is defined in the image and worth listing: skips undefined, unnamed,
@@ -103,5 +116,11 @@ class ElfImage {
 // C++ demangling via abi::__cxa_demangle; returns `name` unchanged when it is not a valid
 // mangled name (C symbols, demangle failures).
 [[nodiscard]] std::string demangle(std::string_view name);
+
+// GNU CRC32 (zlib/IEEE polynomial, as stored in .gnu_debuglink) of a file's contents,
+// streamed in chunks; nullopt when the file cannot be read. Deliberately distinct from the
+// trace wire format's CRC32C.
+[[nodiscard]] std::optional<std::uint32_t> gnu_crc32_of_file(
+    const std::filesystem::path& path) noexcept;
 
 }  // namespace noleax::analyzer::elf

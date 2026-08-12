@@ -407,8 +407,11 @@ class OfflineSymbolizer::Impl {
       return std::nullopt;
     }
     // The RVA of a named symbol is its link-time vaddr relative to the module's recorded
-    // base, i.e. minus the minimum PT_LOAD vaddr.
-    const std::optional<elf::ElfSymbol> symbol = entry.elf_image->find_symbol(symbol_name);
+    // base, i.e. minus the minimum PT_LOAD vaddr of the runtime image (the split-debug
+    // companion shares the same link-time layout).
+    const elf::ElfImage& symbols =
+        entry.debug_image != nullptr ? *entry.debug_image : *entry.elf_image;
+    const std::optional<elf::ElfSymbol> symbol = symbols.find_symbol(symbol_name);
     if (!symbol.has_value()) {
       return std::nullopt;
     }
@@ -443,16 +446,20 @@ class OfflineSymbolizer::Impl {
       throw SymbolizerError{"cannot enumerate the module symbols"};
     }
 #elif defined(__linux__)
-    if (entry.elf_image == nullptr || (entry.result.status != SymbolModuleStatus::kSymbolsLoaded &&
-                                       entry.result.status != SymbolModuleStatus::kExportsOnly)) {
+    if (entry.elf_image == nullptr ||
+        (entry.result.status != SymbolModuleStatus::kSymbolsLoaded &&
+         entry.result.status != SymbolModuleStatus::kExportsOnly &&
+         entry.result.status != SymbolModuleStatus::kDebugIdentityMismatch)) {
       return result;
     }
-    // Mirror the DbgHelp split: full symbol table for symbols_loaded modules, the
-    // export-equivalent .dynsym for exports_only ones.
+    // Mirror the DbgHelp split: a verified split-debug companion (or an unstripped runtime
+    // image) lists its full symbol table; lesser states list the export-equivalent .dynsym.
+    const elf::ElfImage& symbols =
+        entry.debug_image != nullptr ? *entry.debug_image : *entry.elf_image;
     const elf::SymbolTable table = entry.result.status == SymbolModuleStatus::kSymbolsLoaded
                                        ? elf::SymbolTable::kSymtab
                                        : elf::SymbolTable::kDynsym;
-    for (const elf::ElfSymbol& symbol : entry.elf_image->symbols(table)) {
+    for (const elf::ElfSymbol& symbol : symbols.symbols(table)) {
       if (!elf::is_displayable(symbol)) {
         continue;
       }
@@ -484,6 +491,9 @@ class OfflineSymbolizer::Impl {
     bool dbghelp_loaded{false};
 #elif defined(__linux__)
     std::unique_ptr<elf::ElfImage> elf_image;
+    // Identity-verified .gnu_debuglink companion: symbols come from here while the address
+    // math keeps using elf_image's (the runtime image's) load layout.
+    std::unique_ptr<elf::ElfImage> debug_image;
 #endif
   };
 
@@ -646,6 +656,48 @@ class OfflineSymbolizer::Impl {
 #endif
 
 #if defined(__linux__)
+  // Candidate locations for a .gnu_debuglink companion, in priority order: the runtime
+  // image's directory, its .debug/ subdirectory, every --symbol-path entry, and the global
+  // debug directory layout (/usr/lib/debug/<runtime path>/<name>).
+  [[nodiscard]] std::vector<std::filesystem::path> split_debug_candidates(
+      const std::filesystem::path& image_path, const std::string& debuglink_name) const {
+    std::vector<std::filesystem::path> candidates;
+    const std::filesystem::path directory = image_path.parent_path();
+    candidates.push_back(directory / debuglink_name);
+    candidates.push_back(directory / ".debug" / debuglink_name);
+    for (const std::filesystem::path& search_path : options_.search_paths) {
+      candidates.push_back(search_path / debuglink_name);
+    }
+    std::error_code error;
+    const std::filesystem::path absolute = std::filesystem::absolute(image_path, error);
+    if (!error) {
+      const std::filesystem::path normal = absolute.lexically_normal();
+      candidates.push_back(std::filesystem::path{"/usr/lib/debug"} /
+                           normal.parent_path().relative_path() / debuglink_name);
+    }
+    return candidates;
+  }
+
+  // Identity gate for a split-debug candidate: the .gnu_debuglink GNU CRC32 must match the
+  // file contents, and when both images carry a Build ID those must match too. A candidate
+  // that fails either check must never be used silently.
+  [[nodiscard]] static bool split_debug_identity_matches(
+      const elf::ElfImage& runtime_image, const std::filesystem::path& candidate_path,
+      const elf::ElfImage& candidate_image) {
+    const std::optional<std::uint32_t> expected_crc = runtime_image.debuglink_crc32();
+    if (expected_crc.has_value()) {
+      const std::optional<std::uint32_t> actual_crc = elf::gnu_crc32_of_file(candidate_path);
+      if (actual_crc != expected_crc) {
+        return false;
+      }
+    }
+    if (!runtime_image.build_id().empty() && !candidate_image.build_id().empty() &&
+        runtime_image.build_id() != candidate_image.build_id()) {
+      return false;
+    }
+    return true;
+  }
+
   void register_linux_module(Entry& entry) {
     if (options_.mode == SymbolResolutionMode::kOff) {
       entry.result.status = SymbolModuleStatus::kNoSymbols;
@@ -670,20 +722,59 @@ class OfflineSymbolizer::Impl {
     }
     if (image->has_function_symbols(elf::SymbolTable::kSymtab)) {
       entry.result.status = SymbolModuleStatus::kSymbolsLoaded;
-    } else if (image->has_function_symbols(elf::SymbolTable::kDynsym)) {
-      entry.result.status = SymbolModuleStatus::kExportsOnly;
     } else {
-      entry.result.status = SymbolModuleStatus::kNoSymbols;
+      // The runtime image is stripped: try its .gnu_debuglink companion before falling back
+      // to the export-equivalent .dynsym.
+      bool identity_mismatch = false;
+      if (image->debuglink_name().has_value()) {
+        for (const std::filesystem::path& candidate :
+             split_debug_candidates(entry.module.image_path, *image->debuglink_name())) {
+          if (!std::filesystem::is_regular_file(candidate, filesystem_error) || filesystem_error) {
+            continue;
+          }
+          std::unique_ptr<elf::ElfImage> candidate_image;
+          try {
+            candidate_image = std::make_unique<elf::ElfImage>(candidate);
+          } catch (const elf::ElfImageError&) {
+            identity_mismatch = true;  // present but not a usable ELF: treat as a failed match
+            continue;
+          }
+          if (!split_debug_identity_matches(*image, candidate, *candidate_image)) {
+            identity_mismatch = true;
+            continue;
+          }
+          if (!candidate_image->has_function_symbols(elf::SymbolTable::kSymtab)) {
+            identity_mismatch = true;  // verified but carries no full table either
+            continue;
+          }
+          entry.debug_image = std::move(candidate_image);
+          entry.result.status = SymbolModuleStatus::kSymbolsLoaded;
+          break;
+        }
+      }
+      if (entry.debug_image == nullptr) {
+        if (identity_mismatch) {
+          entry.result.status = SymbolModuleStatus::kDebugIdentityMismatch;
+        } else if (image->has_function_symbols(elf::SymbolTable::kDynsym)) {
+          entry.result.status = SymbolModuleStatus::kExportsOnly;
+        } else {
+          entry.result.status = SymbolModuleStatus::kNoSymbols;
+        }
+      }
     }
     entry.elf_image = std::move(image);
   }
 
   // Trace frames carry absolute runtime addresses; the registered base equals the load bias
   // plus the minimum PT_LOAD vaddr (see the agent's module tracker), so the link-time lookup
-  // vaddr is the module offset shifted back by that minimum vaddr.
+  // vaddr is the module offset shifted back by that minimum vaddr. The address math always
+  // uses the runtime image's layout; the symbol table may come from the verified split-debug
+  // companion, which shares the same link-time layout by construction.
   static void resolve_linux_symbol(const Entry& entry, ResolvedStackFrame& frame) {
+    const elf::ElfImage& symbols =
+        entry.debug_image != nullptr ? *entry.debug_image : *entry.elf_image;
     const std::uint64_t vaddr = *frame.module_offset + entry.elf_image->minimum_load_vaddr();
-    const std::optional<elf::ElfSymbol> symbol = entry.elf_image->find_function(vaddr);
+    const std::optional<elf::ElfSymbol> symbol = symbols.find_function(vaddr);
     if (!symbol.has_value()) {
       return;
     }
@@ -722,6 +813,8 @@ std::string_view symbol_module_status_name(SymbolModuleStatus status) noexcept {
       return "load_failed";
     case SymbolModuleStatus::kUnsupportedPlatform:
       return "unsupported_platform";
+    case SymbolModuleStatus::kDebugIdentityMismatch:
+      return "debug_identity_mismatch";
   }
   return "unknown";
 }

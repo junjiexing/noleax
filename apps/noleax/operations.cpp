@@ -1630,6 +1630,7 @@ class InterruptHandlerGuard final {
     case noleax::analyzer::SymbolModuleStatus::kImageIdentityMismatch:
     case noleax::analyzer::SymbolModuleStatus::kPdbNotFound:
     case noleax::analyzer::SymbolModuleStatus::kPdbIdentityMismatch:
+    case noleax::analyzer::SymbolModuleStatus::kDebugIdentityMismatch:
     case noleax::analyzer::SymbolModuleStatus::kLoadFailed:
       throw ApplicationError{
           1, "cannot load symbols for '" + noleax::config::path_to_utf8(input) + "': " +
@@ -1746,6 +1747,7 @@ class InterruptHandlerGuard final {
     case noleax::analyzer::SymbolModuleStatus::kImageIdentityMismatch:
     case noleax::analyzer::SymbolModuleStatus::kPdbNotFound:
     case noleax::analyzer::SymbolModuleStatus::kPdbIdentityMismatch:
+    case noleax::analyzer::SymbolModuleStatus::kDebugIdentityMismatch:
     case noleax::analyzer::SymbolModuleStatus::kLoadFailed:
       throw ApplicationError{
           1, "cannot load symbols for '" + noleax::config::path_to_utf8(input) + "': " +
