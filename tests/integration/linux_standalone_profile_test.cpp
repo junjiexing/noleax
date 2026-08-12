@@ -255,7 +255,9 @@ TEST_CASE("standalone duration finalizes while the target keeps running", "[linu
                "duration = \"1s\"\nmemory_counters_interval = \"200ms\"\n");
 
   StandaloneRun run = run_standalone(config, stderr_capture, "/bin/sleep", "10", /*wait=*/false);
-  // Poll for the finalized trace while the child should still be alive.
+  // Poll for the finalized trace while the child should still be alive. The file is
+  // visible before the writer finishes flushing it, so a parse error just means
+  // "not finalized yet" — keep polling.
   bool finalized = false;
   for (int attempt = 0; attempt != 100 && !finalized; ++attempt) {
     std::this_thread::sleep_for(100ms);
@@ -263,9 +265,13 @@ TEST_CASE("standalone duration finalizes while the target keeps running", "[linu
     if (!std::filesystem::is_regular_file(trace, error)) {
       continue;
     }
-    std::ifstream input{trace, std::ios::binary};
-    const auto result = noleax::analyzer::analyze_event_stream(input);
-    finalized = result.end_of_trace.has_value();
+    try {
+      std::ifstream input{trace, std::ios::binary};
+      const auto result = noleax::analyzer::analyze_event_stream(input);
+      finalized = result.end_of_trace.has_value();
+    } catch (const std::exception&) {
+      // Any parse/read failure (truncated header, partial chunk) = not finalized yet.
+    }
   }
   CHECK(finalized);
   CHECK(run.pid > 0);
