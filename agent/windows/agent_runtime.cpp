@@ -31,6 +31,7 @@
 #include "noleax/agent/windows/windows_memory_hooks.hpp"
 #include "noleax/config/config_io.hpp"
 #include "noleax/config/configuration.hpp"
+#include "noleax/config/hook_profile_ipc.hpp"
 #include "noleax/ipc/protocol.hpp"
 #include "noleax/ipc/windows/named_pipe.hpp"
 #include "noleax/trace/wire_format.hpp"
@@ -670,19 +671,11 @@ void standalone_report(const std::string& message) noexcept {
 }
 
 [[nodiscard]] noleax::ipc::HookProfile ipc_hook_profile(noleax::config::HookProfile profile) {
-  switch (profile) {
-    case noleax::config::HookProfile::kWindowsNtHeap:
-      return noleax::ipc::HookProfile::kWindowsNtHeap;
-    case noleax::config::HookProfile::kWindowsVirtualMemory:
-      return noleax::ipc::HookProfile::kWindowsVirtualMemory;
-    case noleax::config::HookProfile::kWindowsNative:
-      return noleax::ipc::HookProfile::kWindowsNative;
-    case noleax::config::HookProfile::kLinuxGlibcHeap:
-    case noleax::config::HookProfile::kLinuxVirtualMemory:
-    case noleax::config::HookProfile::kLinuxNative:
-      break;
+  const auto mapped = noleax::config::windows_ipc_hook_profile(profile);
+  if (!mapped.has_value()) {
+    throw std::invalid_argument{"unsupported hook profile"};
   }
-  throw std::invalid_argument{"unsupported hook profile"};
+  return *mapped;
 }
 
 [[nodiscard]] noleax::ipc::CompressionCodec ipc_compression(

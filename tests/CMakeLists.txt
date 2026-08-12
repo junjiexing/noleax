@@ -148,6 +148,27 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     RUN_SERIAL TRUE
   )
 
+  add_executable(noleax-linux-standalone-profile-test
+    integration/linux_standalone_profile_test.cpp
+  )
+  target_link_libraries(noleax-linux-standalone-profile-test PRIVATE
+    Catch2::Catch2WithMain
+    noleax::analyzer
+  )
+  noleax_set_project_warnings(noleax-linux-standalone-profile-test)
+  add_dependencies(noleax-linux-standalone-profile-test noleax-agent noleax-linux-workload-target)
+  target_compile_definitions(noleax-linux-standalone-profile-test PRIVATE
+    NOLEAX_AGENT_PATH="$<TARGET_FILE:noleax-agent>"
+    NOLEAX_WORKLOAD_PATH="$<TARGET_FILE:noleax-linux-workload-target>"
+  )
+  add_test(NAME agent.linux-standalone-profile-routing
+    COMMAND noleax-linux-standalone-profile-test
+  )
+  set_tests_properties(agent.linux-standalone-profile-routing PROPERTIES
+    TIMEOUT 90
+    RUN_SERIAL TRUE
+  )
+
   add_executable(noleax-linux-glibc-heap-hooks-probe
     integration/linux_glibc_heap_hooks_probe.cpp
   )

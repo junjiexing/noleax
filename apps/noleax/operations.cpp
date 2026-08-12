@@ -40,6 +40,7 @@
 #include "noleax/analyzer/trace_metadata.hpp"
 #include "noleax/config/config_io.hpp"
 #include "noleax/config/configuration.hpp"
+#include "noleax/config/hook_profile_ipc.hpp"
 #include "noleax/trace/completeness.hpp"
 #include "noleax/trace/event.hpp"
 
@@ -800,19 +801,11 @@ class ConsoleControlGuard final {
 }
 
 [[nodiscard]] noleax::ipc::HookProfile hook_profile(noleax::config::HookProfile profile) {
-  switch (profile) {
-    case noleax::config::HookProfile::kWindowsNtHeap:
-      return noleax::ipc::HookProfile::kWindowsNtHeap;
-    case noleax::config::HookProfile::kWindowsVirtualMemory:
-      return noleax::ipc::HookProfile::kWindowsVirtualMemory;
-    case noleax::config::HookProfile::kWindowsNative:
-      return noleax::ipc::HookProfile::kWindowsNative;
-    case noleax::config::HookProfile::kLinuxGlibcHeap:
-    case noleax::config::HookProfile::kLinuxVirtualMemory:
-    case noleax::config::HookProfile::kLinuxNative:
-      break;
+  const auto mapped = noleax::config::windows_ipc_hook_profile(profile);
+  if (!mapped.has_value()) {
+    unsupported("hook profile is not supported on Windows");
   }
-  unsupported("hook profile is not supported on Windows");
+  return *mapped;
 }
 
 [[nodiscard]] noleax::ipc::CompressionCodec compression_codec(
@@ -1202,18 +1195,13 @@ class InterruptHandlerGuard final {
 }
 
 [[nodiscard]] noleax::ipc::HookProfile linux_hook_profile(noleax::config::HookProfile profile) {
-  switch (profile) {
-    case noleax::config::HookProfile::kLinuxGlibcHeap:
-      return noleax::ipc::HookProfile::kLinuxGlibcHeap;
-    case noleax::config::HookProfile::kLinuxVirtualMemory:
-      return noleax::ipc::HookProfile::kLinuxVirtualMemory;
-    case noleax::config::HookProfile::kLinuxNative:
-      return noleax::ipc::HookProfile::kLinuxNative;
-    default:
-      throw ApplicationError{5, "hook profile '" +
-                                    std::string{noleax::config::enum_value_name(profile)} +
-                                    "' is not supported on Linux"};
+  const auto mapped = noleax::config::linux_ipc_hook_profile(profile);
+  if (!mapped.has_value()) {
+    throw ApplicationError{5, "hook profile '" +
+                                  std::string{noleax::config::enum_value_name(profile)} +
+                                  "' is not supported on Linux"};
   }
+  return *mapped;
 }
 
 [[nodiscard]] noleax::ipc::CompressionCodec linux_compression_codec(
