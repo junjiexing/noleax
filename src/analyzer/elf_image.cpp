@@ -7,6 +7,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
@@ -286,6 +287,40 @@ void read_build_id_note(const FileReader& file, const Elf64_Shdr& section,
   }
 }
 
+// Parses .gnu_debuglink: a NUL-terminated companion filename padded to a 4-byte boundary,
+// followed by the companion's GNU CRC32. Malformed content (truncated section, missing NUL,
+// empty or path-escaping filename, missing CRC) leaves both outputs empty — a bad debuglink
+// must never fail the image itself.
+void parse_debuglink(const FileReader& file, const Elf64_Shdr& section,
+                     std::optional<std::string>& debuglink_name,
+                     std::optional<std::uint32_t>& debuglink_crc32) {
+  if (section.sh_size == 0U || section.sh_offset + section.sh_size > file.size()) {
+    return;
+  }
+  const std::vector<std::byte> bytes = file.read(section.sh_offset, section.sh_size);
+  std::size_t name_length = 0;
+  while (name_length < bytes.size() && bytes[name_length] != std::byte{0}) {
+    ++name_length;
+  }
+  if (name_length == 0U || name_length == bytes.size()) {
+    return;  // empty name or missing NUL terminator
+  }
+  const std::string name{reinterpret_cast<const char*>(bytes.data()), name_length};
+  // The name must stay a plain basename: it is joined onto search directories later.
+  if (name.find('/') != std::string::npos || name.find('\\') != std::string::npos || name == "." ||
+      name == "..") {
+    return;
+  }
+  const std::size_t crc_offset = align4(name_length + 1U);
+  if (crc_offset > bytes.size() || bytes.size() - crc_offset < sizeof(std::uint32_t)) {
+    return;
+  }
+  std::uint32_t crc = 0;
+  std::memcpy(&crc, bytes.data() + crc_offset, sizeof(crc));
+  debuglink_name = name;
+  debuglink_crc32 = crc;
+}
+
 }  // namespace
 
 ElfImage::ElfImage(const std::filesystem::path& path) {
@@ -316,13 +351,18 @@ ElfImage::ElfImage(const std::filesystem::path& path) {
   // Extended numbering: real counts live in section header 0 when the 16-bit fields overflow.
   std::uint64_t section_count = header.e_shnum;
   std::uint64_t program_count = header.e_phnum;
-  if (header.e_shoff != 0U && (header.e_shnum == 0U || header.e_phnum == PN_XNUM)) {
+  std::uint64_t section_names_index = header.e_shstrndx;
+  if (header.e_shoff != 0U &&
+      (header.e_shnum == 0U || header.e_phnum == PN_XNUM || section_names_index == SHN_XINDEX)) {
     const auto first_section = file.read_struct<Elf64_Shdr>(header.e_shoff);
     if (header.e_shnum == 0U) {
       section_count = first_section.sh_size;
     }
     if (header.e_phnum == PN_XNUM) {
       program_count = first_section.sh_info;
+    }
+    if (section_names_index == SHN_XINDEX) {
+      section_names_index = first_section.sh_link;
     }
   }
 
@@ -350,7 +390,19 @@ ElfImage::ElfImage(const std::filesystem::path& path) {
   }
   std::optional<Elf64_Shdr> symtab_header;
   std::optional<Elf64_Shdr> dynsym_header;
+  std::optional<Elf64_Shdr> debuglink_header;
   std::vector<Elf64_Shdr> note_headers;
+  // Section names are needed exactly once (to spot .gnu_debuglink), so the string table is
+  // loaded lazily and only when present.
+  std::vector<std::byte> section_names;
+  if (section_names_index != SHN_UNDEF && section_names_index < section_count) {
+    const auto names_header = file.read_struct<Elf64_Shdr>(
+        header.e_shoff + section_names_index * static_cast<std::uint64_t>(header.e_shentsize));
+    if (names_header.sh_type == SHT_STRTAB && names_header.sh_size != 0U &&
+        names_header.sh_offset + names_header.sh_size <= file.size()) {
+      section_names = file.read(names_header.sh_offset, names_header.sh_size);
+    }
+  }
   for (std::uint64_t index = 0; index < section_count; ++index) {
     const auto section = file.read_struct<Elf64_Shdr>(
         header.e_shoff + index * static_cast<std::uint64_t>(header.e_shentsize));
@@ -360,7 +412,17 @@ ElfImage::ElfImage(const std::filesystem::path& path) {
       dynsym_header = section;
     } else if (section.sh_type == SHT_NOTE) {
       note_headers.push_back(section);
+    } else if (!section_names.empty() &&
+               static_cast<std::uint64_t>(section.sh_name) + sizeof(".gnu_debuglink") <=
+                   section_names.size() &&
+               std::memcmp(section_names.data() + section.sh_name, ".gnu_debuglink",
+                           sizeof(".gnu_debuglink")) == 0) {
+      debuglink_header = section;
     }
+  }
+
+  if (debuglink_header.has_value()) {
+    parse_debuglink(file, *debuglink_header, debuglink_name_, debuglink_crc32_);
   }
 
   if (symtab_header.has_value()) {
@@ -435,6 +497,45 @@ std::string demangle(std::string_view name) {
   std::string result{decoded};
   std::free(decoded);
   return result;
+}
+
+std::optional<std::uint32_t> gnu_crc32_of_file(const std::filesystem::path& path) noexcept {
+  // Table-driven zlib/IEEE CRC32 (polynomial 0xEDB88320), computed once per process.
+  static const std::array<std::uint32_t, 256U> table = [] {
+    std::array<std::uint32_t, 256U> entries{};
+    for (std::uint32_t index = 0; index < entries.size(); ++index) {
+      std::uint32_t value = index;
+      for (int bit = 0; bit < 8; ++bit) {
+        value = (value >> 1U) ^ ((value & 1U) != 0U ? 0xEDB88320U : 0U);
+      }
+      entries[index] = value;
+    }
+    return entries;
+  }();
+
+  const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+  if (fd < 0) {
+    return std::nullopt;
+  }
+  std::uint32_t crc = 0xFFFFFFFFU;
+  std::array<std::byte, 64U * 1024U> buffer{};
+  for (;;) {
+    const ssize_t count = ::read(fd, buffer.data(), buffer.size());
+    if (count < 0) {
+      static_cast<void>(::close(fd));
+      return std::nullopt;
+    }
+    if (count == 0) {
+      break;
+    }
+    for (ssize_t index = 0; index < count; ++index) {
+      crc = table[(crc ^ static_cast<std::uint8_t>(buffer[static_cast<std::size_t>(index)])) &
+                  0xFFU] ^
+            (crc >> 8U);
+    }
+  }
+  static_cast<void>(::close(fd));
+  return crc ^ 0xFFFFFFFFU;
 }
 
 }  // namespace noleax::analyzer::elf

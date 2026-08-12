@@ -127,6 +127,14 @@ Windows 组件测试使用带完整 PDB 和导出函数的专用 DLL，覆盖：
 - 覆盖：`.symtab` 全量符号表优先（`symbols_loaded`）；只有 `.dynsym` 时导出符号兜底
   （`exports_only`）；两者皆无（strip 彻底）为 `no_symbols`。DWARF 行号不在本期——输出
   模型消费的是函数级 `module!symbol+offset`，dynsym/symtab 已够。
+- 分离调试文件（`.gnu_debuglink`）：运行时映像无 `.symtab` 但带 well-formed
+  `.gnu_debuglink` 节时，按固定顺序搜索 companion——映像同目录、同目录 `.debug/`
+  子目录、`--symbol-path` 各目录、`/usr/lib/debug/<映像绝对路径>/`。候选必须通过身份
+  校验才会使用：优先比对 debuglink 存储的 **GNU CRC32**（zlib/IEEE 多项式，与 trace
+  线格式的 CRC32C 无关）；两侧都有 Build ID 时另要求 Build ID 一致。全部候选缺失时
+  退回 `.dynsym`（`exports_only`）；候选存在但校验失败时状态为
+  `debug_identity_mismatch`（仍退回 `.dynsym` 解析，`--symbols required` 下失败）。
+  地址换算始终以运行时映像的 load layout 为准，符号表取自 debug ELF。
 - 地址换算：agent 记录的模块基址 = load_bias + min(PT_LOAD p_vaddr)，后端查表用
   `绝对地址 - base + min_vaddr`；RVA 输出为 `st_value - min_vaddr`。PIE 主程序与共享库
   同一公式。
@@ -136,8 +144,9 @@ Windows 组件测试使用带完整 PDB 和导出函数的专用 DLL，覆盖：
 - 身份校验：v1 按 trace 记录的**路径**打开映像；ELF build-id 的落位（ModuleLoad 记录
   版本 2）是后续的格式治理项——当前没有身份不匹配检测，分析他机/他构建的模块时结果
   可能张冠李戴，与 PDB 缺失场景同级对待。`image_identity_mismatch`/
-  `pdb_identity_mismatch` 在 Linux 后端不产生。
+  `pdb_identity_mismatch` 在 Linux 后端不产生（`.gnu_debuglink` companion 的校验是
+  独立机制，见上）。
 - `--symbol-server`/`srv*` 与 `_NT_SYMBOL_PATH` 回退是 Windows 概念，Linux 后端忽略；
-  `--symbol-path` 保留本地路径语义。debuginfod 本期不做。
+  `--symbol-path` 参与 split-debug companion 搜索。debuginfod 本期不做。
 - 主程序模块路径：agent 快照时 readlink `/proc/self/exe` 取真实路径（M5 修正——否则
   分析进程会把 `/proc/self/exe` 解析成 noleax 自身映像）。

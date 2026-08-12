@@ -28,7 +28,9 @@
 #include "elf_image.hpp"
 #include "noleax/analyzer/presentation.hpp"
 #include "noleax/analyzer/symbolizer.hpp"
+#include "noleax/analyzer/trace_metadata.hpp"
 #include "noleax/trace/identifiers.hpp"
+#include "support/synthetic_trace.hpp"
 
 namespace {
 
@@ -428,4 +430,134 @@ TEST_CASE("linux symbolizer rejects frames outside the registered image",
       noleax::analyzer::SymbolizerError);
   CHECK_THROWS_AS(symbolizer.resolve_frame(module.module_id, module.base_address - 1U),
                   noleax::analyzer::SymbolizerError);
+}
+
+// ---- .gnu_debuglink split-debug fixtures (objcopy-generated, see tests/CMakeLists) ----
+
+namespace {
+
+constexpr std::uint64_t kDebuglinkBase = 0x100000000ULL;
+
+[[nodiscard]] std::filesystem::path debuglink_case_dir(std::string_view name) {
+  return std::filesystem::path{NOLEAX_DEBUGLINK_DIR} / name;
+}
+
+[[nodiscard]] noleax::analyzer::SymbolModule debuglink_module(std::uint64_t module_id,
+                                                              std::string_view case_name) {
+  noleax::analyzer::SymbolModule module;
+  module.module_id = noleax::trace::ModuleId{module_id};
+  module.base_address = kDebuglinkBase;
+  module.image_size = 0x100000U;
+  module.image_path = debuglink_case_dir(case_name) / "libnoleax-debuglink-fixture.so";
+  return module;
+}
+
+// Resolves the hidden fixture function (present only in the companion's .symtab) and
+// checks the round trip through frame resolution.
+void check_internal_symbol_resolves(const noleax::analyzer::OfflineSymbolizer& symbolizer,
+                                    noleax::trace::ModuleId module_id) {
+  const auto rva = symbolizer.resolve_symbol(module_id, "_Z18debuglink_internali");
+  REQUIRE(rva.has_value());
+  const auto frame = symbolizer.resolve_frame(module_id, kDebuglinkBase + *rva + 1U);
+  REQUIRE(frame.symbol_name.has_value());
+  CHECK(*frame.symbol_name == "debuglink_internal(int)");
+}
+
+}  // namespace
+
+TEST_CASE("linux split debug symbols are found next to the runtime image",
+          "[analyzer][symbolizer][linux][debuglink]") {
+  const auto stripped = debuglink_case_dir("plain") / "libnoleax-debuglink-fixture.so";
+  const noleax::analyzer::elf::ElfImage image{stripped};
+  REQUIRE(image.debuglink_name().has_value());
+  CHECK(*image.debuglink_name() == "libnoleax-debuglink-fixture.so.debug");
+  REQUIRE(image.debuglink_crc32().has_value());
+  // objcopy stored the companion's real GNU CRC32; our verifier must reproduce it.
+  CHECK(noleax::analyzer::elf::gnu_crc32_of_file(debuglink_case_dir("plain") /
+                                                 "libnoleax-debuglink-fixture.so.debug") ==
+        image.debuglink_crc32());
+  CHECK_FALSE(image.build_id().empty());
+
+  noleax::analyzer::OfflineSymbolizer symbolizer;
+  const auto module = debuglink_module(41U, "plain");
+  REQUIRE(symbolizer.register_module(module).status ==
+          noleax::analyzer::SymbolModuleStatus::kSymbolsLoaded);
+  check_internal_symbol_resolves(symbolizer, module.module_id);
+}
+
+TEST_CASE("linux split debug symbols are found in the .debug subdirectory",
+          "[analyzer][symbolizer][linux][debuglink]") {
+  noleax::analyzer::OfflineSymbolizer symbolizer;
+  const auto module = debuglink_module(43U, "subdir");
+  REQUIRE(symbolizer.register_module(module).status ==
+          noleax::analyzer::SymbolModuleStatus::kSymbolsLoaded);
+  check_internal_symbol_resolves(symbolizer, module.module_id);
+}
+
+TEST_CASE("linux split debug symbols are found through the symbol path",
+          "[analyzer][symbolizer][linux][debuglink]") {
+  noleax::analyzer::SymbolizerOptions options;
+  options.search_paths.push_back(debuglink_case_dir("store"));
+  noleax::analyzer::OfflineSymbolizer symbolizer{options};
+  const auto module = debuglink_module(45U, "spath");
+  REQUIRE(symbolizer.register_module(module).status ==
+          noleax::analyzer::SymbolModuleStatus::kSymbolsLoaded);
+  check_internal_symbol_resolves(symbolizer, module.module_id);
+}
+
+TEST_CASE("linux split debug candidate with a corrupted CRC32 is rejected",
+          "[analyzer][symbolizer][linux][debuglink]") {
+  noleax::analyzer::OfflineSymbolizer symbolizer;
+  const auto module = debuglink_module(47U, "badcrc");
+  CHECK(symbolizer.register_module(module).status ==
+        noleax::analyzer::SymbolModuleStatus::kDebugIdentityMismatch);
+  // The mismatch must not be used, but the runtime image's .dynsym still applies.
+  CHECK(symbolizer.resolve_symbol(module.module_id, "_Z18debuglink_exportedi").has_value());
+  CHECK(!symbolizer.resolve_symbol(module.module_id, "_Z18debuglink_internali").has_value());
+}
+
+TEST_CASE("linux split debug candidate with a foreign Build ID is rejected",
+          "[analyzer][symbolizer][linux][debuglink]") {
+  noleax::analyzer::OfflineSymbolizer symbolizer;
+  const auto module = debuglink_module(49U, "badid");
+  CHECK(symbolizer.register_module(module).status ==
+        noleax::analyzer::SymbolModuleStatus::kDebugIdentityMismatch);
+  CHECK(!symbolizer.resolve_symbol(module.module_id, "_Z18debuglink_internali").has_value());
+}
+
+TEST_CASE("linux symbolizer falls back to dynsym when the split debug file is missing",
+          "[analyzer][symbolizer][linux][debuglink]") {
+  noleax::analyzer::OfflineSymbolizer symbolizer;
+  const auto module = debuglink_module(51U, "missing");
+  CHECK(symbolizer.register_module(module).status ==
+        noleax::analyzer::SymbolModuleStatus::kExportsOnly);
+  CHECK(symbolizer.resolve_symbol(module.module_id, "_Z18debuglink_exportedi").has_value());
+  CHECK(!symbolizer.resolve_symbol(module.module_id, "_Z18debuglink_internali").has_value());
+}
+
+TEST_CASE("required symbol mode rejects a split-debug identity mismatch",
+          "[analyzer][symbolizer][linux][debuglink]") {
+  noleax::trace::FileHeader header;
+  header.pointer_width = 8U;
+  header.platform = noleax::trace::Platform::kLinux;
+  header.architecture = noleax::trace::Architecture::kX64;
+  header.monotonic_frequency = 1'000'000'000U;
+
+  noleax::trace::ModuleLoad module;
+  module.module_id = noleax::trace::ModuleId{53U};
+  module.base_address = kDebuglinkBase;
+  module.image_size = 0x100000U;
+  const auto image_path =
+      (debuglink_case_dir("badcrc") / "libnoleax-debuglink-fixture.so").u8string();
+  module.image_path = {reinterpret_cast<const char*>(image_path.data()), image_path.size()};
+
+  const std::string bytes = noleax::testing::SyntheticTraceBuilder{header, {true, false}}
+                                .add_module(module)
+                                .finish_normally()
+                                .build();
+  std::istringstream input{bytes, std::ios::binary};
+  noleax::analyzer::SymbolizerOptions options;
+  options.mode = noleax::analyzer::SymbolResolutionMode::kRequired;
+  noleax::analyzer::TraceMetadata metadata{options};
+  CHECK_THROWS_AS(metadata.scan(input), noleax::analyzer::TraceAnalysisError);
 }

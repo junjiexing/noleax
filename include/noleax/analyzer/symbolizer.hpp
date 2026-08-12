@@ -39,6 +39,10 @@ enum class SymbolModuleStatus : std::uint8_t {
   kPdbIdentityMismatch,
   kLoadFailed,
   kUnsupportedPlatform,
+  // Linux split debug: a .gnu_debuglink companion was found on disk but failed identity
+  // verification (GNU CRC32 and/or Build ID), so it was NOT used; resolution falls back to
+  // the runtime image's .dynsym.
+  kDebugIdentityMismatch,
 };
 
 [[nodiscard]] std::string_view symbol_module_status_name(SymbolModuleStatus status) noexcept;

@@ -108,6 +108,86 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     NOLEAX_TEST_AGENT_PATH="$<TARGET_FILE:noleax-agent>"
   )
 
+  # Split-debug (.gnu_debuglink) fixture set for the Linux symbolizer tests: objcopy turns
+  # the fixture library into a stripped runtime image plus a .debug companion, arranged
+  # into same-dir, .debug/-subdir, symbol-path, corrupted-CRC, and foreign-Build-ID
+  # variants. objcopy computes the companion's GNU CRC32 when --add-gnu-debuglink runs,
+  # so the happy-path tests also prove the verifier's CRC is the real GNU one.
+  find_program(NOLEAX_OBJCOPY_EXECUTABLE objcopy REQUIRED)
+  add_library(noleax-debuglink-fixture SHARED integration/debuglink_fixture.cpp)
+  noleax_set_project_warnings(noleax-debuglink-fixture)
+  target_link_options(noleax-debuglink-fixture PRIVATE "-Wl,--build-id")
+  add_library(noleax-debuglink-fixture-foreign SHARED integration/debuglink_fixture_foreign.cpp)
+  noleax_set_project_warnings(noleax-debuglink-fixture-foreign)
+  target_link_options(noleax-debuglink-fixture-foreign PRIVATE "-Wl,--build-id")
+
+  set(NOLEAX_DEBUGLINK_DIR "${CMAKE_CURRENT_BINARY_DIR}/debuglink")
+  set(NOLEAX_DEBUGLINK_DEBUG_NAME "libnoleax-debuglink-fixture.so.debug")
+  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/debuglink-junk.bin" "x")
+  add_custom_command(
+    OUTPUT "${NOLEAX_DEBUGLINK_DIR}/.stamp"
+    COMMAND "${CMAKE_COMMAND}" -E rm -rf "${NOLEAX_DEBUGLINK_DIR}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory
+      "${NOLEAX_DEBUGLINK_DIR}/plain"
+      "${NOLEAX_DEBUGLINK_DIR}/subdir/.debug"
+      "${NOLEAX_DEBUGLINK_DIR}/spath"
+      "${NOLEAX_DEBUGLINK_DIR}/store"
+      "${NOLEAX_DEBUGLINK_DIR}/badcrc"
+      "${NOLEAX_DEBUGLINK_DIR}/badid"
+      "${NOLEAX_DEBUGLINK_DIR}/missing"
+    # The reference companion and the stripped runtime that names it.
+    COMMAND "${CMAKE_COMMAND}" -E chdir "${NOLEAX_DEBUGLINK_DIR}/store"
+      "${NOLEAX_OBJCOPY_EXECUTABLE}" --only-keep-debug
+      "$<TARGET_FILE:noleax-debuglink-fixture>" "${NOLEAX_DEBUGLINK_DEBUG_NAME}"
+    COMMAND "${CMAKE_COMMAND}" -E chdir "${NOLEAX_DEBUGLINK_DIR}/store"
+      "${NOLEAX_OBJCOPY_EXECUTABLE}" --strip-all
+      "--add-gnu-debuglink=${NOLEAX_DEBUGLINK_DEBUG_NAME}"
+      "$<TARGET_FILE:noleax-debuglink-fixture>" "${NOLEAX_DEBUGLINK_DIR}/stripped.so"
+    # same-dir: companion next to the runtime image
+    COMMAND "${CMAKE_COMMAND}" -E copy "${NOLEAX_DEBUGLINK_DIR}/stripped.so"
+      "${NOLEAX_DEBUGLINK_DIR}/plain/libnoleax-debuglink-fixture.so"
+    COMMAND "${CMAKE_COMMAND}" -E copy
+      "${NOLEAX_DEBUGLINK_DIR}/store/${NOLEAX_DEBUGLINK_DEBUG_NAME}"
+      "${NOLEAX_DEBUGLINK_DIR}/plain/${NOLEAX_DEBUGLINK_DEBUG_NAME}"
+    # .debug/ subdirectory
+    COMMAND "${CMAKE_COMMAND}" -E copy "${NOLEAX_DEBUGLINK_DIR}/stripped.so"
+      "${NOLEAX_DEBUGLINK_DIR}/subdir/libnoleax-debuglink-fixture.so"
+    COMMAND "${CMAKE_COMMAND}" -E copy
+      "${NOLEAX_DEBUGLINK_DIR}/store/${NOLEAX_DEBUGLINK_DEBUG_NAME}"
+      "${NOLEAX_DEBUGLINK_DIR}/subdir/.debug/${NOLEAX_DEBUGLINK_DEBUG_NAME}"
+    # symbol-path: companion lives only in the store directory
+    COMMAND "${CMAKE_COMMAND}" -E copy "${NOLEAX_DEBUGLINK_DIR}/stripped.so"
+      "${NOLEAX_DEBUGLINK_DIR}/spath/libnoleax-debuglink-fixture.so"
+    # corrupted CRC: same Build ID, but an extra section changes the file contents
+    COMMAND "${CMAKE_COMMAND}" -E copy "${NOLEAX_DEBUGLINK_DIR}/stripped.so"
+      "${NOLEAX_DEBUGLINK_DIR}/badcrc/libnoleax-debuglink-fixture.so"
+    COMMAND "${CMAKE_COMMAND}" -E chdir "${NOLEAX_DEBUGLINK_DIR}/badcrc"
+      "${NOLEAX_OBJCOPY_EXECUTABLE}"
+      --add-section ".nlxjunk=${CMAKE_CURRENT_BINARY_DIR}/debuglink-junk.bin"
+      "${NOLEAX_DEBUGLINK_DIR}/store/${NOLEAX_DEBUGLINK_DEBUG_NAME}"
+      "${NOLEAX_DEBUGLINK_DEBUG_NAME}"
+    # foreign Build ID: the other fixture's companion under the expected name
+    COMMAND "${CMAKE_COMMAND}" -E copy "${NOLEAX_DEBUGLINK_DIR}/stripped.so"
+      "${NOLEAX_DEBUGLINK_DIR}/badid/libnoleax-debuglink-fixture.so"
+    COMMAND "${CMAKE_COMMAND}" -E chdir "${NOLEAX_DEBUGLINK_DIR}/badid"
+      "${NOLEAX_OBJCOPY_EXECUTABLE}" --only-keep-debug
+      "$<TARGET_FILE:noleax-debuglink-fixture-foreign>" "${NOLEAX_DEBUGLINK_DEBUG_NAME}"
+    # missing: runtime image without any companion on disk
+    COMMAND "${CMAKE_COMMAND}" -E copy "${NOLEAX_DEBUGLINK_DIR}/stripped.so"
+      "${NOLEAX_DEBUGLINK_DIR}/missing/libnoleax-debuglink-fixture.so"
+    COMMAND "${CMAKE_COMMAND}" -E touch "${NOLEAX_DEBUGLINK_DIR}/.stamp"
+    DEPENDS noleax-debuglink-fixture noleax-debuglink-fixture-foreign
+    VERBATIM
+  )
+  add_custom_target(noleax-debuglink-fixtures ALL
+    DEPENDS "${NOLEAX_DEBUGLINK_DIR}/.stamp"
+  )
+  add_dependencies(noleax-unit-tests noleax-debuglink-fixtures)
+  target_compile_definitions(noleax-unit-tests PRIVATE
+    NOLEAX_DEBUGLINK_DIR="${NOLEAX_DEBUGLINK_DIR}"
+  )
+
+
   add_executable(noleax-linux-stack-capture-probe
     integration/linux_stack_capture_probe.cpp
   )
