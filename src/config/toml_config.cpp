@@ -638,18 +638,35 @@ void load_custom_hook_role(const toml::table& table, std::string_view role_name,
 }
 
 [[nodiscard]] CustomHook load_custom_hook(const toml::table& table) {
-  constexpr std::array allowed{"module",         "alloc",
-                               "alloc_pdb",      "alloc_sym",
-                               "alloc_rva",      "realloc",
-                               "realloc_pdb",    "realloc_sym",
-                               "realloc_rva",    "free",
-                               "free_pdb",       "free_sym",
-                               "free_rva",       "size_arg",
-                               "ptr_arg",        "result_arg",
-                               "kind",           "count_arg",
-                               "free_size_arg",  "forced",
-                               "wait_module",    "image_timestamp",
-                               "image_checksum", "image_size"};
+  constexpr std::array allowed{"module",
+                               "alloc",
+                               "alloc_pdb",
+                               "alloc_sym",
+                               "alloc_rva",
+                               "realloc",
+                               "realloc_pdb",
+                               "realloc_sym",
+                               "realloc_rva",
+                               "free",
+                               "free_pdb",
+                               "free_sym",
+                               "free_rva",
+                               "size_arg",
+                               "ptr_arg",
+                               "result_arg",
+                               "kind",
+                               "count_arg",
+                               "free_size_arg",
+                               "alloc_size_arg",
+                               "alloc_count_arg",
+                               "realloc_ptr_arg",
+                               "realloc_size_arg",
+                               "free_ptr_arg",
+                               "forced",
+                               "wait_module",
+                               "image_timestamp",
+                               "image_checksum",
+                               "image_size"};
   reject_unknown_keys(table, allowed, "custom_hooks");
 
   CustomHook hook;
@@ -676,6 +693,21 @@ void load_custom_hook_role(const toml::table& table, std::string_view role_name,
   }
   if (const auto* node = optional_node(table, "free_size_arg")) {
     hook.free_size_arg = read_argument_slot(*node, "custom_hooks.free_size_arg");
+  }
+  if (const auto* node = optional_node(table, "alloc_size_arg")) {
+    hook.alloc_size_arg = read_argument_slot(*node, "custom_hooks.alloc_size_arg");
+  }
+  if (const auto* node = optional_node(table, "alloc_count_arg")) {
+    hook.alloc_count_arg = read_argument_slot(*node, "custom_hooks.alloc_count_arg");
+  }
+  if (const auto* node = optional_node(table, "realloc_ptr_arg")) {
+    hook.realloc_ptr_arg = read_argument_slot(*node, "custom_hooks.realloc_ptr_arg");
+  }
+  if (const auto* node = optional_node(table, "realloc_size_arg")) {
+    hook.realloc_size_arg = read_argument_slot(*node, "custom_hooks.realloc_size_arg");
+  }
+  if (const auto* node = optional_node(table, "free_ptr_arg")) {
+    hook.free_ptr_arg = read_argument_slot(*node, "custom_hooks.free_ptr_arg");
   }
   if (const auto* node = optional_node(table, "forced")) {
     hook.forced = read_boolean(*node, "custom_hooks.forced", "--custom-hook");

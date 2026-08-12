@@ -140,7 +140,7 @@ void write_enum(PayloadWriter& writer, Enum value) {
 
 [[nodiscard]] bool valid_custom_hook_locator(CustomHookLocator value) noexcept {
   return value == CustomHookLocator::kNone || value == CustomHookLocator::kExport ||
-         value == CustomHookLocator::kRva;
+         value == CustomHookLocator::kRva || value == CustomHookLocator::kElfSymbol;
 }
 
 [[nodiscard]] bool valid_argument_slot(std::uint8_t value) noexcept { return value <= 7U; }
@@ -156,6 +156,7 @@ void validate_custom_hook_role(const CustomHookRoleSpec& role, bool required) {
       }
       return;
     case CustomHookLocator::kExport:
+    case CustomHookLocator::kElfSymbol:
       if (role.export_name.empty() || role.rva != 0U) {
         throw ProtocolError{"custom hook export role is inconsistent"};
       }
@@ -180,14 +181,16 @@ void validate_custom_hooks(const std::vector<CustomHookSpec>& hooks) {
     if (hook.module.empty() || hook.label.empty()) {
       throw ProtocolError{"custom hook module and label must not be empty"};
     }
-    if (!valid_argument_slot(hook.size_arg) || !valid_argument_slot(hook.ptr_arg) ||
+    if (!valid_argument_slot(hook.alloc_size_arg) ||
+        (hook.alloc_count_arg.has_value() && !valid_argument_slot(*hook.alloc_count_arg)) ||
+        !valid_argument_slot(hook.realloc_ptr_arg) || !valid_argument_slot(hook.realloc_size_arg) ||
+        !valid_argument_slot(hook.free_ptr_arg) ||
         (hook.result_arg.has_value() && !valid_argument_slot(*hook.result_arg)) ||
-        (hook.count_arg.has_value() && !valid_argument_slot(*hook.count_arg)) ||
         (hook.free_size_arg.has_value() && !valid_argument_slot(*hook.free_size_arg))) {
       throw ProtocolError{"custom hook argument slot is out of range"};
     }
-    if (hook.calloc != hook.count_arg.has_value()) {
-      throw ProtocolError{"custom hook calloc mapping requires count_arg and vice versa"};
+    if (hook.calloc != hook.alloc_count_arg.has_value()) {
+      throw ProtocolError{"custom hook calloc mapping requires alloc_count_arg and vice versa"};
     }
   }
 }
@@ -218,10 +221,12 @@ void write_custom_hook_role(PayloadWriter& writer, const CustomHookRoleSpec& rol
 void write_custom_hooks(PayloadWriter& writer, const std::vector<CustomHookSpec>& hooks) {
   writer.integer(static_cast<std::uint32_t>(hooks.size()));
   for (const CustomHookSpec& hook : hooks) {
-    writer.integer(hook.size_arg);
-    writer.integer(hook.ptr_arg);
+    writer.integer(hook.alloc_size_arg);
+    writer.integer(static_cast<std::uint8_t>(hook.alloc_count_arg.value_or(0xFFU)));
+    writer.integer(hook.realloc_ptr_arg);
+    writer.integer(hook.realloc_size_arg);
+    writer.integer(hook.free_ptr_arg);
     writer.integer(static_cast<std::uint8_t>(hook.result_arg.value_or(0xFFU)));
-    writer.integer(static_cast<std::uint8_t>(hook.count_arg.value_or(0xFFU)));
     writer.integer(static_cast<std::uint8_t>(hook.free_size_arg.value_or(0xFFU)));
     writer.integer(static_cast<std::uint8_t>(hook.calloc ? 1U : 0U));
     writer.integer(static_cast<std::uint8_t>(hook.forced ? 1U : 0U));
@@ -257,16 +262,18 @@ void read_custom_hooks(PayloadReader& reader, StartCaptureRequest& request) {
   request.custom_hooks.reserve(count);
   for (std::uint32_t index = 0U; index < count; ++index) {
     CustomHookSpec hook;
-    hook.size_arg = read_argument_slot(reader);
-    hook.ptr_arg = read_argument_slot(reader);
+    hook.alloc_size_arg = read_argument_slot(reader);
+    const std::uint8_t alloc_count_arg = read_argument_slot(reader);
+    hook.realloc_ptr_arg = read_argument_slot(reader);
+    hook.realloc_size_arg = read_argument_slot(reader);
+    hook.free_ptr_arg = read_argument_slot(reader);
     const std::uint8_t result_arg = read_argument_slot(reader);
-    const std::uint8_t count_arg = read_argument_slot(reader);
     const std::uint8_t free_size_arg = read_argument_slot(reader);
+    if (alloc_count_arg != 0xFFU) {
+      hook.alloc_count_arg = alloc_count_arg;
+    }
     if (result_arg != 0xFFU) {
       hook.result_arg = result_arg;
-    }
-    if (count_arg != 0xFFU) {
-      hook.count_arg = count_arg;
     }
     if (free_size_arg != 0xFFU) {
       hook.free_size_arg = free_size_arg;

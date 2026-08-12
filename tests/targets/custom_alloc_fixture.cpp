@@ -41,8 +41,8 @@
   } while (0)
 
 NOLEAX_FIXTURE_EXPORT void* NTAPI my_malloc(void* arena, std::size_t size) {
-  // An arena-style first parameter exercises argument mapping: size_arg = 1 here matches
-  // my_realloc's size position, and the extra parameter is ignored by the hook.
+  // An arena-style first parameter exercises argument mapping: alloc_size_arg = 1 here
+  // matches my_realloc's size position, and the extra parameter is ignored by the hook.
   NOLEAX_FIXTURE_PROLOGUE_ANCHOR(size);
   static_cast<void>(arena);
   return HeapAlloc(GetProcessHeap(), 0, size);

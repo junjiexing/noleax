@@ -701,6 +701,12 @@ void standalone_report(const std::string& message) noexcept {
         "'; resolve it with 'noleax patch' (which bakes RVAs into noleax-agent.toml) or use an "
         "export name/RVA instead"};
   }
+  if (role.symbol.has_value()) {
+    throw std::runtime_error{"custom hook " + std::string{role_name} + " of module '" + module +
+                             "' uses the ELF symbol '" + *role.symbol +
+                             "', which is only supported on Linux; use an export name, a _pdb "
+                             "symbol, or an RVA instead"};
+  }
   if (role.export_name.has_value()) {
     spec.locator = noleax::ipc::CustomHookLocator::kExport;
     spec.export_name = *role.export_name;
@@ -721,10 +727,14 @@ void standalone_report(const std::string& message) noexcept {
     spec.alloc = standalone_custom_hook_role(hook.alloc, hook.module, "alloc");
     spec.realloc = standalone_custom_hook_role(hook.realloc, hook.module, "realloc");
     spec.free = standalone_custom_hook_role(hook.free, hook.module, "free");
-    spec.size_arg = hook.size_arg;
-    spec.ptr_arg = hook.ptr_arg;
+    const noleax::config::CustomHookRoleArguments arguments =
+        noleax::config::resolve_custom_hook_arguments(hook);
+    spec.alloc_size_arg = arguments.alloc_size_arg;
+    spec.alloc_count_arg = arguments.alloc_count_arg;
+    spec.realloc_ptr_arg = arguments.realloc_ptr_arg;
+    spec.realloc_size_arg = arguments.realloc_size_arg;
+    spec.free_ptr_arg = arguments.free_ptr_arg;
     spec.result_arg = hook.result_arg;
-    spec.count_arg = hook.count_arg;
     spec.free_size_arg = hook.free_size_arg;
     spec.calloc = hook.kind == noleax::config::CustomHookKind::kCalloc;
     spec.forced = hook.forced;

@@ -104,10 +104,13 @@ enum class CustomHookLocator : std::uint8_t {
   kNone = 0U,
   kExport = 1U,
   kRva = 2U,
+  kElfSymbol = 3U,
 };
 
 // One function role of a custom hook point: nothing, an export-table symbol the agent resolves
-// inside the target, or a pre-resolved RVA (PDB symbols are baked to RVAs by the controller).
+// inside the target, a pre-resolved RVA (PDB symbols are baked to RVAs by the controller), or
+// an ELF symtab/dynsym symbol the agent resolves against the module's on-disk image (Linux
+// only). kElfSymbol carries the symbol name in export_name, exactly like kExport.
 struct CustomHookRoleSpec {
   CustomHookLocator locator{CustomHookLocator::kNone};
   std::string export_name;
@@ -126,18 +129,20 @@ struct CustomHookImageIdentity {
   bool operator==(const CustomHookImageIdentity&) const = default;
 };
 
-// One custom hook point: a module plus its alloc/realloc/free roles and the argument mapping
-// of the generic replacements. The point's api_id is kCustomHookApiIdBase + its index in
-// StartCaptureRequest::custom_hooks.
+// One custom hook point: a module plus its alloc/realloc/free roles and the per-role argument
+// mapping of the generic replacements. The point's api_id is kCustomHookApiIdBase + its index
+// in StartCaptureRequest::custom_hooks.
 struct CustomHookSpec {
   std::string module;
   CustomHookRoleSpec alloc;
   CustomHookRoleSpec realloc;
   CustomHookRoleSpec free;
-  std::uint8_t size_arg{0U};
-  std::uint8_t ptr_arg{0U};
+  std::uint8_t alloc_size_arg{0U};
+  std::optional<std::uint8_t> alloc_count_arg;
+  std::uint8_t realloc_ptr_arg{0U};
+  std::uint8_t realloc_size_arg{0U};
+  std::uint8_t free_ptr_arg{0U};
   std::optional<std::uint8_t> result_arg;
-  std::optional<std::uint8_t> count_arg;
   std::optional<std::uint8_t> free_size_arg;
   bool calloc{false};
   bool forced{false};

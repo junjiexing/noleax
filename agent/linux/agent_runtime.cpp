@@ -32,9 +32,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include "noleax/agent/hook_backend.hpp"
 #include "noleax/agent/hook_guard.hpp"
@@ -609,6 +611,67 @@ bool session_bootstrap(std::string_view socket_name_without_nul,
 // standalone
 // ---------------------------------------------------------------------------
 
+// One role of a standalone custom hook: the TOML locators map straight to the wire model
+// (export names resolve against the target's .dynsym, ELF symbols against the module's
+// on-disk image, RVAs are used as given). PDB symbols are Windows-only and there is no
+// controller to bake them to RVAs here, so they reject the configuration outright.
+[[nodiscard]] noleax::ipc::CustomHookRoleSpec standalone_custom_hook_role(
+    const noleax::config::CustomHookRole& role, const std::string& module, const char* role_name) {
+  if (role.pdb_symbol.has_value()) {
+    throw std::runtime_error{"custom hook " + std::string{role_name} + " of module '" + module +
+                             "' uses the PDB symbol '" + *role.pdb_symbol +
+                             "', which is only supported on Windows; use an export name, a _sym "
+                             "symbol, or an RVA instead"};
+  }
+  noleax::ipc::CustomHookRoleSpec spec;
+  if (role.export_name.has_value()) {
+    spec.locator = noleax::ipc::CustomHookLocator::kExport;
+    spec.export_name = *role.export_name;
+  } else if (role.symbol.has_value()) {
+    spec.locator = noleax::ipc::CustomHookLocator::kElfSymbol;
+    spec.export_name = *role.symbol;
+  } else if (role.rva.has_value()) {
+    spec.locator = noleax::ipc::CustomHookLocator::kRva;
+    spec.rva = *role.rva;
+  }
+  return spec;
+}
+
+[[nodiscard]] std::vector<noleax::ipc::CustomHookSpec> standalone_custom_hooks(
+    const std::vector<noleax::config::CustomHook>& hooks) {
+  std::vector<noleax::ipc::CustomHookSpec> specs;
+  specs.reserve(hooks.size());
+  for (const auto& hook : hooks) {
+    noleax::ipc::CustomHookSpec spec;
+    spec.module = hook.module;
+    spec.alloc = standalone_custom_hook_role(hook.alloc, hook.module, "alloc");
+    spec.realloc = standalone_custom_hook_role(hook.realloc, hook.module, "realloc");
+    spec.free = standalone_custom_hook_role(hook.free, hook.module, "free");
+    const noleax::config::CustomHookRoleArguments arguments =
+        noleax::config::resolve_custom_hook_arguments(hook);
+    spec.alloc_size_arg = arguments.alloc_size_arg;
+    spec.alloc_count_arg = arguments.alloc_count_arg;
+    spec.realloc_ptr_arg = arguments.realloc_ptr_arg;
+    spec.realloc_size_arg = arguments.realloc_size_arg;
+    spec.free_ptr_arg = arguments.free_ptr_arg;
+    spec.result_arg = hook.result_arg;
+    spec.free_size_arg = hook.free_size_arg;
+    spec.calloc = hook.kind == noleax::config::CustomHookKind::kCalloc;
+    spec.forced = hook.forced;
+    // Round up so a sub-millisecond wait still polls once (the wait itself is 100 ms-granular).
+    spec.wait_module_ms =
+        static_cast<std::uint64_t>((hook.wait_module.count() + 999'999) / 1'000'000);
+    spec.label = noleax::config::custom_hook_label(hook);
+    if (hook.image_identity.has_value()) {
+      spec.image_identity = noleax::ipc::CustomHookImageIdentity{hook.image_identity->timestamp,
+                                                                 hook.image_identity->checksum,
+                                                                 hook.image_identity->image_size};
+    }
+    specs.push_back(std::move(spec));
+  }
+  return specs;
+}
+
 [[nodiscard]] noleax::ipc::StartCaptureRequest standalone_capture_request(
     const noleax::config::Configuration& configuration, noleax::ipc::HookProfile hook_profile) {
   noleax::ipc::StartCaptureRequest request;
@@ -651,15 +714,17 @@ bool session_bootstrap(std::string_view socket_name_without_nul,
         (std::filesystem::current_path() / (stem.string() + ".nlx")).generic_u8string();
     request.trace_path_utf8 = std::string{utf8.begin(), utf8.end()};
   }
+  request.custom_hooks = standalone_custom_hooks(configuration.custom_hooks.value);
   return request;
 }
 
 // Standalone mode honors a fixed subset of the configuration (see
 // docs/LINUX_LAUNCH_INJECTION.md): [capture] hook_profile/max_stack_depth/min_size/
-// duration/memory_counters_interval/memory_map_interval and [trace] path/buffer_size/
-// max_file_size/flush_interval/compression/compression_level. Anything else with a
-// non-default value would be silently ignored, so it is rejected up front. Field names
-// only — never values — so diagnostics cannot leak configured paths or sizes.
+// duration/memory_counters_interval/memory_map_interval, [trace] path/buffer_size/
+// max_file_size/flush_interval/compression/compression_level, and [[custom_hooks]].
+// Anything else with a non-default value would be silently ignored, so it is rejected up
+// front. Field names only — never values — so diagnostics cannot leak configured paths or
+// sizes.
 [[nodiscard]] std::vector<std::string> unsupported_standalone_fields(
     const noleax::config::Configuration& configuration) {
   const noleax::config::Configuration defaults = noleax::config::make_default_configuration();
@@ -691,8 +756,6 @@ bool session_bootstrap(std::string_view socket_name_without_nul,
             "trace.max_files (trace rotation is not implemented)");
   reject_if(different(configuration.trace.on_full, defaults.trace.on_full.value),
             "trace.on_full (trace rotation is not implemented)");
-  reject_if(!configuration.custom_hooks.value.empty(),
-            "custom_hooks (not yet supported in standalone mode)");
   reject_if(different(configuration.symbols.mode, defaults.symbols.mode.value), "symbols.mode");
   reject_if(!configuration.symbols.paths.value.empty(), "symbols.paths");
   reject_if(!configuration.symbols.servers.value.empty(), "symbols.servers");
@@ -785,7 +848,17 @@ bool standalone_bootstrap(const std::string& config_path) {
   }
 
   auto* const runtime = new LinuxCaptureRuntime;
-  const auto request = standalone_capture_request(configuration, *standalone_profile);
+  noleax::ipc::StartCaptureRequest request;
+  try {
+    request = standalone_capture_request(configuration, *standalone_profile);
+  } catch (const std::exception& error) {
+    // A bad declaration (a Windows-only PDB locator, a mixed argument mapping, ...) rejects
+    // the configuration; the target itself must never be taken down by it.
+    std::fprintf(stderr, "noleax-agent: standalone configuration '%s' rejected: %s\n",
+                 config_path.c_str(), error.what());
+    delete runtime;
+    return false;
+  }
   std::array<std::byte, 16U> session_id{};
   const ssize_t random_bytes = ::getrandom(session_id.data(), session_id.size(), 0U);
   static_cast<void>(random_bytes);

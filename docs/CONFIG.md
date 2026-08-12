@@ -119,6 +119,12 @@ ptr_arg = 0
 # kind = "calloc"
 # count_arg = 0
 # free_size_arg = 1
+# 每角色参数位(与 size_arg/ptr_arg/count_arg 互斥,仅 TOML):
+# alloc_size_arg = 1
+# alloc_count_arg = 2
+# realloc_ptr_arg = 1
+# realloc_size_arg = 2
+# free_ptr_arg = 1
 forced = false
 wait_module = "0s"
 ~~~
@@ -132,9 +138,15 @@ wait_module = "0s"
 `[symbols]` 规则解析为 RVA，仅 Windows）、`<role>_sym`（任意 symtab/dynsym 符号，由
 controller 侧解析为模块偏移，仅 Linux）、`<role>_rva`（直接 RVA/模块相对偏移，十六进制或
 十进制整数）。`*_pdb` 与 `*_sym` 互为平台专有，在对面平台出现由配置校验拒绝。参数语义
-按位映射：`size_arg`（alloc/realloc 的 size）、`ptr_arg`（realloc/free
-的指针）、`result_arg`（结果经 `*(void**)argN` 返回时设置，默认取 rax）、`kind = "calloc"`
-配 `count_arg`（语义 size = count × size，带溢出检查）、`free_size_arg`（free 自带 size）。
+按位映射，两种形态二选一：legacy 共享键 `size_arg`（alloc/realloc 的 size）、`ptr_arg`
+（realloc/free 的指针）、`count_arg`（配 `kind = "calloc"`，语义 size = count × size，带
+溢出检查）；或每角色键 `alloc_size_arg`/`alloc_count_arg`/`realloc_ptr_arg`/
+`realloc_size_arg`/`free_ptr_arg`（任写其一即启用，未写槽位默认 0，legacy 键此时必须
+全部缺省或为 0，混写报错）——每角色键表达 C++ 成员 allocator 这类各角色参数位不一致的
+签名（`this` 占参数位 0）。legacy 键展开为 `alloc_size_arg = size_arg`、
+`realloc_size_arg = size_arg`、`realloc_ptr_arg = ptr_arg`、`free_ptr_arg = ptr_arg`、
+`alloc_count_arg = count_arg`。`result_arg`（结果经 `*(void**)argN` 返回时设置，默认取
+rax）与 `free_size_arg`（free 自带 size）两种形态共用。
 参数位 0–3 为 rcx/rdx/r8/r9，4–7 为栈槽。`forced = true` 在 checked relocation 拒绝时允许
 forced relocation；`wait_module` 是安装时模块未加载的等待上限（默认 `"0s"` 立即失败）。
 `patch` 下声明的 PDB 符号在 patch 时解析并随映像 identity 烘焙进输出副本旁的
@@ -260,8 +272,10 @@ CLI subcommand存在时覆盖 operation。若 CLI 和配置均缺失，显示顶
   内存快照采样器，上限 1h；仅 run/attach 可非默认。
 - trace.path 的父目录必须存在或可创建。
 - custom_hooks：alloc 与 free 必填，每角色的定位互斥（导出名 / `_pdb` / `_sym` / `_rva`
-  四选一；`*_pdb` 仅 Windows、`*_sym` 仅 Linux，错配平台即报错），参数位 0–7，`kind = "calloc"` 与
-  `count_arg` 必须同时出现，同一模块不得重复声明（大小写不敏感），一次捕获最多 32 个
+  四选一；`*_pdb` 仅 Windows、`*_sym` 仅 Linux，错配平台即报错），参数位 0–7，legacy 共享键
+  （`size_arg`/`ptr_arg`/`count_arg`）与每角色键（`alloc_size_arg` 等五个）不得混写，
+  `kind = "calloc"` 与
+  `count_arg`（或 `alloc_count_arg`）必须同时出现，同一模块不得重复声明（大小写不敏感），一次捕获最多 32 个
   hook 点；声明 PDB 定位时 `symbols.mode` 不得为 `off`。仅 run/attach/patch 有效，其余
   operation 下必须缺省；声明后 run/attach/patch 允许配置 `[symbols]`。
 

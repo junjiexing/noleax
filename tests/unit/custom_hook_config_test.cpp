@@ -419,3 +419,161 @@ TEST_CASE("parse_rva accepts hexadecimal and decimal and rejects invalid input",
   CHECK_THROWS_AS(noleax::config::parse_rva("0x100000000"), noleax::config::ValueParseError);
   CHECK_THROWS_AS(noleax::config::parse_rva(""), noleax::config::ValueParseError);
 }
+
+TEST_CASE("TOML custom_hooks parse per-role argument keys", "[config][toml][custom-hook]") {
+  TemporaryDirectory temporary;
+  const auto config_path = temporary.path() / "noleax.toml";
+  write_file(config_path, R"toml(schema_version = 1
+
+[[custom_hooks]]
+module = "libmyalloc.so"
+alloc_sym = "_ZN12CxxAllocator6MallocEmm"
+realloc_sym = "_ZN12CxxAllocator7ReallocEPvmm"
+free_sym = "_ZN12CxxAllocator4FreeEPv"
+alloc_size_arg = 1
+realloc_ptr_arg = 1
+realloc_size_arg = 2
+free_ptr_arg = 1
+)toml");
+
+  const auto overrides = noleax::config::load_toml_config(config_path);
+  REQUIRE(overrides.custom_hooks.specified);
+  REQUIRE(overrides.custom_hooks.value.size() == 1U);
+  const auto& hook = overrides.custom_hooks.value.at(0U);
+  REQUIRE(hook.alloc_size_arg.has_value());
+  CHECK(*hook.alloc_size_arg == 1U);
+  CHECK_FALSE(hook.alloc_count_arg.has_value());
+  REQUIRE(hook.realloc_ptr_arg.has_value());
+  CHECK(*hook.realloc_ptr_arg == 1U);
+  REQUIRE(hook.realloc_size_arg.has_value());
+  CHECK(*hook.realloc_size_arg == 2U);
+  REQUIRE(hook.free_ptr_arg.has_value());
+  CHECK(*hook.free_ptr_arg == 1U);
+  CHECK(hook.size_arg == 0U);
+  CHECK(hook.ptr_arg == 0U);
+
+  const auto resolved = noleax::config::resolve_custom_hook_arguments(hook);
+  CHECK(resolved.alloc_size_arg == 1U);
+  CHECK_FALSE(resolved.alloc_count_arg.has_value());
+  CHECK(resolved.realloc_ptr_arg == 1U);
+  CHECK(resolved.realloc_size_arg == 2U);
+  CHECK(resolved.free_ptr_arg == 1U);
+
+  CHECK(load_error(temporary, "schema_version = 1\n\n[[custom_hooks]]\nalloc_size_arg = 8\n")
+            .find("integer is out of range") != std::string::npos);
+}
+
+TEST_CASE("custom hook legacy argument keys expand to the per-role slots",
+          "[config][custom-hook]") {
+  auto hook = export_hook();
+  hook.size_arg = 2U;
+  hook.ptr_arg = 1U;
+  const auto resolved = noleax::config::resolve_custom_hook_arguments(hook);
+  CHECK(resolved.alloc_size_arg == 2U);
+  CHECK(resolved.realloc_size_arg == 2U);
+  CHECK(resolved.realloc_ptr_arg == 1U);
+  CHECK(resolved.free_ptr_arg == 1U);
+  CHECK_FALSE(resolved.alloc_count_arg.has_value());
+
+  // The legacy count_arg pairs with kind = "calloc" and maps to the alloc role's count.
+  hook.kind = noleax::config::CustomHookKind::kCalloc;
+  hook.count_arg = 3U;
+  const auto calloc_resolved = noleax::config::resolve_custom_hook_arguments(hook);
+  REQUIRE(calloc_resolved.alloc_count_arg.has_value());
+  CHECK(*calloc_resolved.alloc_count_arg == 3U);
+  CHECK(calloc_resolved.alloc_size_arg == 2U);
+
+  // A declaration without any argument keys resolves to the zero defaults.
+  const auto defaults = noleax::config::resolve_custom_hook_arguments(export_hook());
+  CHECK(defaults.alloc_size_arg == 0U);
+  CHECK(defaults.realloc_ptr_arg == 0U);
+  CHECK(defaults.realloc_size_arg == 0U);
+  CHECK(defaults.free_ptr_arg == 0U);
+}
+
+TEST_CASE("custom hook argument keys reject mixing legacy and per-role shapes",
+          "[config][custom-hook]") {
+  TemporaryDirectory temporary;
+  const auto target = temporary.path() / "target.exe";
+  write_file(target);
+  auto configuration = run_configuration(target);
+
+  // The helper throws on programmatic misuse.
+  auto hook = export_hook();
+  hook.alloc_size_arg = 1U;
+  hook.size_arg = 1U;
+  CHECK_THROWS_AS(noleax::config::resolve_custom_hook_arguments(hook), std::invalid_argument);
+
+  // Configuration validation reports the mixing rule.
+  configuration.custom_hooks.value = {hook};
+  CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
+                  noleax::config::ConfigError);
+
+  // Legacy ptr_arg with a per-role key mixes too, as do the two count keys.
+  hook.size_arg = 0U;
+  hook.ptr_arg = 1U;
+  configuration.custom_hooks.value = {hook};
+  CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
+                  noleax::config::ConfigError);
+
+  auto counts = export_hook();
+  counts.kind = noleax::config::CustomHookKind::kCalloc;
+  counts.count_arg = 0U;
+  counts.alloc_count_arg = 0U;
+  configuration.custom_hooks.value = {counts};
+  CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
+                  noleax::config::ConfigError);
+
+  // Per-role keys alone validate; kind = "calloc" pairs with alloc_count_arg.
+  hook = export_hook();
+  hook.alloc_size_arg = 1U;
+  hook.realloc_ptr_arg = 1U;
+  hook.realloc_size_arg = 2U;
+  hook.free_ptr_arg = 1U;
+  configuration.custom_hooks.value = {hook};
+  CHECK_NOTHROW(noleax::config::validate_configuration(configuration));
+
+  auto calloc_hook = export_hook();
+  calloc_hook.kind = noleax::config::CustomHookKind::kCalloc;
+  calloc_hook.alloc_size_arg = 1U;
+  calloc_hook.alloc_count_arg = 0U;
+  configuration.custom_hooks.value = {calloc_hook};
+  CHECK_NOTHROW(noleax::config::validate_configuration(configuration));
+
+  // Per-role slots are bounded.
+  hook.alloc_size_arg = 8U;
+  configuration.custom_hooks.value = {hook};
+  CHECK_THROWS_AS(noleax::config::validate_configuration(configuration),
+                  noleax::config::ConfigError);
+}
+
+TEST_CASE("effective TOML serializes and round-trips per-role argument keys",
+          "[config][toml][custom-hook]") {
+  TemporaryDirectory temporary;
+  auto configuration = noleax::config::make_default_configuration();
+  configuration.operation.value = noleax::config::Operation::kDoctor;
+
+  noleax::config::CustomHook hook;
+  hook.module = "libmyalloc.so";
+  hook.alloc.symbol = "_ZN12CxxAllocator6MallocEmm";
+  hook.free.symbol = "_ZN12CxxAllocator4FreeEPv";
+  hook.alloc_size_arg = 1U;
+  hook.realloc_ptr_arg = 1U;
+  hook.realloc_size_arg = 2U;
+  hook.free_ptr_arg = 1U;
+  configuration.custom_hooks.value = {hook};
+  configuration.custom_hooks.source = noleax::config::ValueSource::kCommandLine;
+
+  const auto serialized = noleax::config::serialize_effective_config(configuration);
+  CHECK(serialized.find("alloc_size_arg = 1") != std::string::npos);
+  CHECK(serialized.find("realloc_ptr_arg = 1") != std::string::npos);
+  CHECK(serialized.find("realloc_size_arg = 2") != std::string::npos);
+  CHECK(serialized.find("free_ptr_arg = 1") != std::string::npos);
+
+  const auto path = temporary.path() / "effective.toml";
+  write_file(path, serialized);
+  const auto overrides = noleax::config::load_toml_config(path);
+  REQUIRE(overrides.custom_hooks.specified);
+  REQUIRE(overrides.custom_hooks.value.size() == 1U);
+  CHECK(overrides.custom_hooks.value.at(0U) == hook);
+}

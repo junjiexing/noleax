@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <stdexcept>
 #include <string>
 
 namespace noleax::config {
@@ -54,6 +55,32 @@ std::string custom_hook_label(const CustomHook& hook) {
     return custom_hook_role_label(hook, hook.realloc);
   }
   return hook.module;
+}
+
+CustomHookRoleArguments resolve_custom_hook_arguments(const CustomHook& hook) {
+  const bool per_role = hook.alloc_size_arg.has_value() || hook.alloc_count_arg.has_value() ||
+                        hook.realloc_ptr_arg.has_value() || hook.realloc_size_arg.has_value() ||
+                        hook.free_ptr_arg.has_value();
+  if (per_role) {
+    if (hook.size_arg != 0U || hook.ptr_arg != 0U || hook.count_arg.has_value()) {
+      throw std::invalid_argument{
+          "cannot mix legacy size_arg/ptr_arg with per-role argument fields"};
+    }
+    CustomHookRoleArguments resolved;
+    resolved.alloc_size_arg = hook.alloc_size_arg.value_or(0U);
+    resolved.alloc_count_arg = hook.alloc_count_arg;
+    resolved.realloc_ptr_arg = hook.realloc_ptr_arg.value_or(0U);
+    resolved.realloc_size_arg = hook.realloc_size_arg.value_or(0U);
+    resolved.free_ptr_arg = hook.free_ptr_arg.value_or(0U);
+    return resolved;
+  }
+  CustomHookRoleArguments resolved;
+  resolved.alloc_size_arg = hook.size_arg;
+  resolved.alloc_count_arg = hook.count_arg;
+  resolved.realloc_ptr_arg = hook.ptr_arg;
+  resolved.realloc_size_arg = hook.size_arg;
+  resolved.free_ptr_arg = hook.ptr_arg;
+  return resolved;
 }
 
 std::string_view value_source_name(ValueSource source) noexcept {

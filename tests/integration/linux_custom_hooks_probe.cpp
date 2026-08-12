@@ -69,8 +69,8 @@ std::size_t drain_events(LinuxHeapEventQueue& queue, std::vector<LinuxHeapEvent>
 
 // The fixture allocator: thin wrappers over the libc heap with a 16-byte header word so
 // the block shapes differ from plain malloc. my_realloc/my_free_sized keep the size in
-// argument 0 and the pointer in argument 1 (one size_arg/ptr_arg pair serves every role of
-// the point, per the declaration model); my_malloc_nested deliberately calls the exported
+// argument 0 and the pointer in argument 1 (one shared slot pair serves every role through
+// the per-role argument fields); my_malloc_nested deliberately calls the exported
 // my_malloc to exercise recursion suppression. Written to a file and compiled by the
 // probe with the system compiler.
 const char kFixtureSource[] = R"FIXTURE(
@@ -432,8 +432,10 @@ int main() {
   point0.realloc.export_name = "my_realloc";
   point0.free.locator = CustomHookLocator::kExport;
   point0.free.export_name = "my_free_sized";
-  point0.size_arg = 0U;
-  point0.ptr_arg = 1U;
+  point0.alloc_size_arg = 0U;
+  point0.realloc_size_arg = 0U;
+  point0.realloc_ptr_arg = 1U;
+  point0.free_ptr_arg = 1U;
   point0.free_size_arg = 0U;
   specs.push_back(point0);
 
@@ -443,9 +445,8 @@ int main() {
   point1.free.locator = CustomHookLocator::kExport;
   point1.free.export_name = "my_free_plain";
   point1.calloc = true;
-  point1.count_arg = 0U;
-  point1.size_arg = 1U;
-  point1.ptr_arg = 0U;
+  point1.alloc_count_arg = 0U;
+  point1.alloc_size_arg = 1U;
   specs.push_back(point1);
 
   CustomHookSpec point2 = make_point(module_name.c_str(), "my_alloc_out");
@@ -454,8 +455,7 @@ int main() {
   point2.free.locator = CustomHookLocator::kExport;
   point2.free.export_name = "my_free_out";
   point2.result_arg = 0U;
-  point2.size_arg = 1U;
-  point2.ptr_arg = 0U;
+  point2.alloc_size_arg = 1U;
   specs.push_back(point2);
 
   CustomHookSpec point3 = make_point(module_name.c_str(), "my_rva_alloc");
@@ -463,8 +463,6 @@ int main() {
   point3.alloc.rva = rva_alloc;
   point3.free.locator = CustomHookLocator::kRva;
   point3.free.rva = rva_free;
-  point3.size_arg = 0U;
-  point3.ptr_arg = 0U;
   specs.push_back(point3);
 
   CustomHookSpec point4 = make_point(module_name.c_str(), "my_malloc_nested");
@@ -472,8 +470,6 @@ int main() {
   point4.alloc.export_name = "my_malloc_nested";
   point4.free.locator = CustomHookLocator::kExport;
   point4.free.export_name = "my_free_nested";
-  point4.size_arg = 0U;
-  point4.ptr_arg = 0U;
   specs.push_back(point4);
 
   CustomHookSpec point5 = make_point(module_name.c_str(), "broken");
@@ -481,8 +477,6 @@ int main() {
   point5.alloc.export_name = "my_missing_export";
   point5.free.locator = CustomHookLocator::kExport;
   point5.free.export_name = "my_free_plain";
-  point5.size_arg = 0U;
-  point5.ptr_arg = 0U;
   specs.push_back(point5);
 
   // A module that never loads: its 300 ms wait expires and the whole point fails while
@@ -501,8 +495,8 @@ int main() {
   point7.alloc.export_name = "my_malloc_wide";
   point7.free.locator = CustomHookLocator::kExport;
   point7.free.export_name = "my_free_wide";
-  point7.size_arg = 6U;
-  point7.ptr_arg = 7U;
+  point7.alloc_size_arg = 6U;
+  point7.free_ptr_arg = 7U;
   point7.free_size_arg = 6U;
   specs.push_back(point7);
 
