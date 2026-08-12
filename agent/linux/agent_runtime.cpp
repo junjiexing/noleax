@@ -654,13 +654,121 @@ bool session_bootstrap(std::string_view socket_name_without_nul,
   return request;
 }
 
+// Standalone mode honors a fixed subset of the configuration (see
+// docs/LINUX_LAUNCH_INJECTION.md): [capture] hook_profile/max_stack_depth/min_size/
+// duration/memory_counters_interval/memory_map_interval and [trace] path/buffer_size/
+// max_file_size/flush_interval/compression/compression_level. Anything else with a
+// non-default value would be silently ignored, so it is rejected up front. Field names
+// only — never values — so diagnostics cannot leak configured paths or sizes.
+[[nodiscard]] std::vector<std::string> unsupported_standalone_fields(
+    const noleax::config::Configuration& configuration) {
+  const noleax::config::Configuration defaults = noleax::config::make_default_configuration();
+  std::vector<std::string> unsupported;
+  const auto reject_if = [&unsupported](bool condition, const char* name) {
+    if (condition) {
+      unsupported.emplace_back(name);
+    }
+  };
+  const auto different = [&defaults](const auto& setting, const auto& fallback) {
+    return setting.value != fallback;
+  };
+
+  reject_if(configuration.operation.value.has_value(), "operation");
+  reject_if(configuration.target.path.value.has_value(), "target.path");
+  reject_if(!configuration.target.args.value.empty(), "target.args");
+  reject_if(configuration.target.working_directory.value.has_value(), "target.working_directory");
+  // target.pid keeps its dedicated "standalone attach" message in standalone_bootstrap.
+  reject_if(different(configuration.injection.method, defaults.injection.method.value),
+            "injection.method");
+  reject_if(configuration.injection.agent_path.value.has_value(), "injection.agent_path");
+  reject_if(different(configuration.injection.timeout, defaults.injection.timeout.value),
+            "injection.timeout");
+  reject_if(
+      different(configuration.injection.unload_on_stop, defaults.injection.unload_on_stop.value),
+      "injection.unload_on_stop");
+  reject_if(different(configuration.capture.live, defaults.capture.live.value), "capture.live");
+  reject_if(different(configuration.trace.max_files, defaults.trace.max_files.value),
+            "trace.max_files (trace rotation is not implemented)");
+  reject_if(different(configuration.trace.on_full, defaults.trace.on_full.value),
+            "trace.on_full (trace rotation is not implemented)");
+  reject_if(!configuration.custom_hooks.value.empty(),
+            "custom_hooks (not yet supported in standalone mode)");
+  reject_if(different(configuration.symbols.mode, defaults.symbols.mode.value), "symbols.mode");
+  reject_if(!configuration.symbols.paths.value.empty(), "symbols.paths");
+  reject_if(!configuration.symbols.servers.value.empty(), "symbols.servers");
+  reject_if(!configuration.analysis.inputs.value.empty(), "analysis.inputs");
+  reject_if(different(configuration.analysis.mode, defaults.analysis.mode.value), "analysis.mode");
+  reject_if(different(configuration.analysis.format, defaults.analysis.format.value),
+            "analysis.format");
+  reject_if(configuration.analysis.output.value.has_value(), "analysis.output");
+  reject_if(configuration.analysis.from.value.has_value(), "analysis.from");
+  reject_if(configuration.analysis.to.value.has_value(), "analysis.to");
+  reject_if(configuration.analysis.end.value.has_value(), "analysis.end");
+  reject_if(configuration.analysis.group_by.value.has_value(), "analysis.group_by");
+  reject_if(different(configuration.analysis.sort, defaults.analysis.sort.value), "analysis.sort");
+  reject_if(different(configuration.analysis.trim_agent_frames,
+                      defaults.analysis.trim_agent_frames.value),
+            "analysis.trim_agent_frames");
+  reject_if(configuration.filters.min_size.value.has_value(), "filters.min_size");
+  reject_if(configuration.filters.max_size.value.has_value(), "filters.max_size");
+  reject_if(!configuration.filters.events.value.empty(), "filters.events");
+  reject_if(!configuration.filters.threads.value.empty(), "filters.threads");
+  reject_if(!configuration.filters.apis.value.empty(), "filters.apis");
+  reject_if(!configuration.filters.modules.value.empty(), "filters.modules");
+  reject_if(!configuration.filters.stack_modules.value.empty(), "filters.stack_modules");
+  reject_if(!configuration.filters.allocation_ids.value.empty(), "filters.allocation_ids");
+  reject_if(!configuration.filters.statuses.value.empty(), "filters.statuses");
+  reject_if(configuration.symbol_listing.input.value.has_value(), "symbol_listing.input");
+  reject_if(different(configuration.symbol_listing.format, defaults.symbol_listing.format.value),
+            "symbol_listing.format");
+  reject_if(configuration.symbol_listing.output.value.has_value(), "symbol_listing.output");
+  reject_if(!configuration.symbol_listing.name.value.empty(), "symbol_listing.name");
+  reject_if(
+      different(configuration.symbol_listing.match_case, defaults.symbol_listing.match_case.value),
+      "symbol_listing.match_case");
+  reject_if(!configuration.symbol_listing.kind.value.empty(), "symbol_listing.kind");
+  reject_if(!configuration.symbol_listing.fields.value.empty(), "symbol_listing.fields");
+  reject_if(configuration.patch.input.value.has_value(), "patch.input");
+  reject_if(configuration.patch.output.value.has_value(), "patch.output");
+  reject_if(different(configuration.patch.method, defaults.patch.method.value), "patch.method");
+  reject_if(different(configuration.patch.agent_name, defaults.patch.agent_name.value),
+            "patch.agent_name");
+  reject_if(different(configuration.patch.allow_break_signature,
+                      defaults.patch.allow_break_signature.value),
+            "patch.allow_break_signature");
+  reject_if(different(configuration.patch.verify, defaults.patch.verify.value), "patch.verify");
+  reject_if(different(configuration.patch.standalone, defaults.patch.standalone.value),
+            "patch.standalone");
+  reject_if(different(configuration.diagnostics.log_level, defaults.diagnostics.log_level.value),
+            "diagnostics.log_level");
+  reject_if(different(configuration.diagnostics.color, defaults.diagnostics.color.value),
+            "diagnostics.color");
+  return unsupported;
+}
+
 // Runs on the constructor thread.
 bool standalone_bootstrap(const std::string& config_path) {
   noleax::config::Configuration configuration = noleax::config::make_default_configuration();
-  noleax::config::apply_overrides(configuration, noleax::config::load_toml_config(config_path),
-                                  noleax::config::ValueSource::kConfig);
+  try {
+    noleax::config::apply_overrides(configuration, noleax::config::load_toml_config(config_path),
+                                    noleax::config::ValueSource::kConfig);
+  } catch (const std::exception& error) {
+    std::fprintf(stderr, "noleax-agent: standalone configuration '%s' failed to load: %s\n",
+                 config_path.c_str(), error.what());
+    return false;
+  }
   if (configuration.target.pid.value.has_value()) {
     std::fprintf(stderr, "noleax-agent: standalone attach is not supported on Linux\n");
+    return false;
+  }
+  const std::vector<std::string> unsupported = unsupported_standalone_fields(configuration);
+  if (!unsupported.empty()) {
+    for (const std::string& field : unsupported) {
+      std::fprintf(stderr,
+                   "noleax-agent: standalone configuration '%s' rejected: field '%s' is not "
+                   "supported in standalone mode\n",
+                   config_path.c_str(), field.c_str());
+    }
     return false;
   }
   const auto standalone_profile =
