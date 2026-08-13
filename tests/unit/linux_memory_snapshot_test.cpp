@@ -58,3 +58,82 @@ TEST_CASE("linux memory map walks regions and accounts free gaps", "[agent][memo
 
   ::munmap(reserved, 2U * 1024U * 1024U);
 }
+
+namespace {
+
+using noleax::agent::linux::detail::kCanonicalUserEnd4Level;
+using noleax::agent::linux::detail::kCanonicalUserEnd5Level;
+using noleax::agent::linux::detail::MapsSummaryRegion;
+using noleax::agent::linux::detail::summarize_maps_regions;
+
+// Inclusive canonical end -> exclusive bound used by the aggregation.
+constexpr std::uint64_t kUser4Limit = kCanonicalUserEnd4Level + 1ULL;
+constexpr std::uint64_t kUser5Limit = kCanonicalUserEnd5Level + 1ULL;
+constexpr std::uint64_t kVsyscallBegin = 0xFFFFFFFFFF600000ULL;
+constexpr std::uint64_t kVsyscallEnd = 0xFFFFFFFFFF601000ULL;
+
+}  // namespace
+
+TEST_CASE("linux memory map aggregates ignore the vsyscall gap", "[agent][memory][linux]") {
+  // The SCL field failure: an ordinary user layout followed by [vsyscall]. The gap beyond
+  // the last user mapping must clamp at the canonical end instead of wrapping the totals
+  // toward UINT64_MAX.
+  constexpr std::uint64_t r1b = 0x0000555555554000ULL, r1e = 0x0000555555556000ULL;
+  constexpr std::uint64_t r2b = 0x00007FFFF7DD0000ULL, r2e = 0x00007FFFF7FC0000ULL;
+  constexpr std::uint64_t r3b = 0x00007FFFF7FC0000ULL, r3e = 0x00007FFFF7FC4000ULL;
+  const std::vector<MapsSummaryRegion> regions = {
+      {r1b, r1e, true},
+      {r2b, r2e, true},
+      {r3b, r3e, false},
+      {kVsyscallBegin, kVsyscallEnd, true},
+  };
+  const auto summary = summarize_maps_regions(regions, kCanonicalUserEnd4Level);
+  CHECK(summary.committed_bytes == (r1e - r1b) + (r2e - r2b));
+  CHECK(summary.reserved_bytes == r3e - r3b);
+  // Only the inter-region gap counts (the walk's long-standing semantics); the [vsyscall]
+  // region contributes nothing in either direction.
+  CHECK(summary.free_bytes == r2b - r1e);
+  CHECK(summary.largest_free_bytes == r2b - r1e);
+  CHECK(summary.free_bytes < (1ULL << 48U));
+}
+
+TEST_CASE("linux memory map aggregates cover the five-level canonical range",
+          "[agent][memory][linux]") {
+  // la57 user mappings above the 4-level end are ordinary user space on 5-level systems:
+  // they count, and the totals still cannot wrap.
+  constexpr std::uint64_t r1b = 0x0000555555554000ULL, r1e = 0x0000555555556000ULL;
+  constexpr std::uint64_t r2b = 0x00F00000000000ULL, r2e = r2b + 0x100000ULL;
+  const std::vector<MapsSummaryRegion> regions = {
+      {r1b, r1e, true},
+      {r2b, r2e, true},
+      {kVsyscallBegin, kVsyscallEnd, true},
+  };
+  const auto summary = summarize_maps_regions(regions, kCanonicalUserEnd5Level);
+  CHECK(summary.committed_bytes == (r1e - r1b) + (r2e - r2b));
+  CHECK(summary.free_bytes == r2b - r1e);
+  CHECK(summary.largest_free_bytes == r2b - r1e);
+  CHECK(summary.free_bytes < (1ULL << 57U));
+
+  // The same layout read on a 4-level system: the la57 region is above the user range,
+  // so it joins [vsyscall] in the exclusion set rather than inflating the totals.
+  const auto four_level = summarize_maps_regions(regions, kCanonicalUserEnd4Level);
+  CHECK(four_level.committed_bytes == r1e - r1b);
+  CHECK(four_level.free_bytes == 0U);
+  CHECK(four_level.free_bytes < (1ULL << 48U));
+}
+
+TEST_CASE("linux memory map aggregates handle unsorted and straddling regions",
+          "[agent][memory][linux]") {
+  constexpr std::uint64_t r1b = 0x00007FFFF7DD0000ULL, r1e = 0x00007FFFF7DE0000ULL;
+  constexpr std::uint64_t r2b = 0x0000555555554000ULL, r2e = 0x0000555555556000ULL;
+  constexpr std::uint64_t r3b = kCanonicalUserEnd4Level - 0x1000ULL;
+  const std::vector<MapsSummaryRegion> regions = {
+      {r1b, r1e, true},
+      {r2b, r2e, true},             // out of order: must not produce a negative gap
+      {r3b, kVsyscallBegin, true},  // straddles the canonical boundary: clamped
+  };
+  const auto summary = summarize_maps_regions(regions, kCanonicalUserEnd4Level);
+  CHECK(summary.committed_bytes == (r1e - r1b) + (r2e - r2b) + (kUser4Limit - r3b));
+  CHECK(summary.free_bytes == r3b - r1e);
+  CHECK(summary.largest_free_bytes == r3b - r1e);
+}

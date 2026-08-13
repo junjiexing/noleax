@@ -1,8 +1,11 @@
 #include "noleax/agent/linux/memory_snapshot.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <string_view>
+#include <vector>
 
 namespace noleax::agent::linux {
 namespace {
@@ -120,6 +123,60 @@ struct MapsRegion {
 
 }  // namespace
 
+namespace detail {
+
+MapsSummary summarize_maps_regions(const std::vector<MapsSummaryRegion>& regions,
+                                   std::uint64_t canonical_user_end) noexcept {
+  MapsSummary summary;
+  std::uint64_t previous_end = 0U;
+  for (const MapsSummaryRegion& region : regions) {
+    if (region.end <= region.begin || region.begin >= canonical_user_end) {
+      continue;  // kernel-only mappings (e.g. [vsyscall]) never enter the aggregates
+    }
+    const std::uint64_t end = (std::min)(region.end, canonical_user_end + 1U);
+    // Saturating adds: within the canonical clamp the totals cannot approach 2^64, so
+    // saturation is a defensive bound, not a reachable outcome.
+    const auto add = [](std::uint64_t& total, std::uint64_t delta) noexcept {
+      if (delta > std::numeric_limits<std::uint64_t>::max() - total) {
+        total = std::numeric_limits<std::uint64_t>::max();
+      } else {
+        total += delta;
+      }
+    };
+    if (region.begin > previous_end && previous_end != 0U) {
+      const std::uint64_t gap = region.begin - previous_end;
+      add(summary.free_bytes, gap);
+      if (gap > summary.largest_free_bytes) {
+        summary.largest_free_bytes = gap;
+      }
+    }
+    previous_end = (std::max)(previous_end, end);
+    add(summary.committed_bytes, region.committed ? end - region.begin : 0U);
+    add(summary.reserved_bytes, region.committed ? 0U : end - region.begin);
+  }
+  return summary;
+}
+
+std::uint64_t canonical_user_end() noexcept {
+  static const std::uint64_t cached = [] {
+    std::uint64_t end = kCanonicalUserEnd4Level;
+    if (FILE* const cpuinfo = std::fopen("/proc/cpuinfo", "re")) {
+      char line[2048];
+      while (std::fgets(line, sizeof(line), cpuinfo) != nullptr) {
+        if (std::string_view{line}.find("la57") != std::string_view::npos) {
+          end = kCanonicalUserEnd5Level;
+          break;
+        }
+      }
+      std::fclose(cpuinfo);
+    }
+    return end;
+  }();
+  return cached;
+}
+
+}  // namespace detail
+
 bool capture_memory_counters(noleax::trace::MemoryCounters& counters) noexcept {
   FILE* const status = std::fopen("/proc/self/status", "re");
   if (status == nullptr) {
@@ -153,32 +210,19 @@ bool capture_memory_map(noleax::trace::MemoryMap& map) {
   map.largest_free_bytes = 0U;
   map.regions.clear();
 
+  std::vector<detail::MapsSummaryRegion> summary_regions;
   char line[1024];
-  std::uint64_t previous_end = 0U;
   while (std::fgets(line, sizeof(line), maps) != nullptr) {
     MapsRegion region;
     if (!parse_maps_line(line, region)) {
       continue;
     }
-    if (region.begin > previous_end && previous_end != 0U) {
-      const std::uint64_t gap = region.begin - previous_end;
-      map.free_bytes += gap;
-      if (gap > map.largest_free_bytes) {
-        map.largest_free_bytes = gap;
-      }
-    }
-    previous_end = region.end;
-
     const std::uint64_t size = region.end - region.begin;
     // The first three permission columns carry r/w/x; the fourth (p/s) is not a
     // protection bit. A ---p region is PROT_NONE and reports kReserve.
     const bool readable =
         region.permissions.substr(0U, 3U).find_first_not_of('-') != std::string_view::npos;
-    if (readable) {
-      map.committed_bytes += size;
-    } else {
-      map.reserved_bytes += size;
-    }
+    summary_regions.push_back(detail::MapsSummaryRegion{region.begin, region.end, readable});
     if (map.regions.size() < noleax::trace::kMaximumMemoryMapRegions) {
       noleax::trace::MemoryMapRegion entry;
       entry.base = region.begin;
@@ -206,6 +250,16 @@ bool capture_memory_map(noleax::trace::MemoryMap& map) {
     }
   }
   std::fclose(maps);
+
+  // Aggregates only cover the user canonical range; special kernel mappings above it
+  // (e.g. [vsyscall] at 0xffffffffff600000) stay in the region list but never enter the
+  // totals, so the free-space sum cannot wrap toward UINT64_MAX.
+  const detail::MapsSummary summary =
+      detail::summarize_maps_regions(summary_regions, detail::canonical_user_end());
+  map.committed_bytes = summary.committed_bytes;
+  map.reserved_bytes = summary.reserved_bytes;
+  map.free_bytes = summary.free_bytes;
+  map.largest_free_bytes = summary.largest_free_bytes;
   return true;
 }
 
