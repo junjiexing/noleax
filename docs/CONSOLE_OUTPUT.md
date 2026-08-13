@@ -95,6 +95,24 @@ custom hook 安装失败时，summary 在 warnings 之后追加 `custom-hook-fai
 export-not-found、forwarded-export、invalid-rva、wrong-signature、image-identity-mismatch、
 backend-unavailable、other）与人读 `detail=`。
 
+## 6.1 捕获会话行（Linux）
+
+`run`/`attach` 的汇总行有两种形态：正常收尾输出 `capture finalized:`（trace 为最终路径，
+agent 已在 EndOfTrace + flush + close 成功后把 `.partial` 原子 rename 过去）；最终路径缺失时
+回退到保留的 `.partial` 并输出 `capture incomplete:`，附 `note=` 说明（异常结束或 controller
+分类出的失败原因）。两行都回读 trace 给出 `observed/written/filtered/dropped/bytes`。
+
+`--live` 在等待期间每秒打印一行实时状态：
+
+~~~
+status: state=capturing observed=1442 written=1442 filtered=0 dropped=0 queued=0/16384 high_water=1142 consumed=1442 bytes=62030 last_flush_age_ms=7
+~~~
+
+字段：`state`（idle/starting/capturing/drained/finalized/failed）、守恒计数
+`observed/written/filtered/dropped`、`queued=占用/容量`、`high_water`（消费侧采样的队列占用高
+水位）、`consumed`（累计出队数）、`bytes`（writer 已写字节）、`last_flush_age_ms`（距上次
+flush；从未 flush 显示 `last_flush=never`）。
+
 ## 7. 颜色
 
 ConsoleOptions 只接受已经解析后的 `use_color`。调用方负责把用户的 auto/always/never 转换为布尔值；

@@ -19,17 +19,24 @@
 //   7. custom hooks: two declared points emit CustomHookDefinition records, one noted
 //      install failure emits a CustomHookFailure record and sets completeness bit 10, and
 //      the points' events decode with namespaced allocation ids.
+//   8. writer failure injection (H2): open/write/flush/close/disk-full fault points, the
+//      .partial protocol, the best-effort error tail (Loss + Statistics + abnormal
+//      EndOfTrace), and the dual-error result when the tail itself fails;
+//   9. statistics conservation property: randomized per-API producer counters (including
+//      zero-activity APIs and custom points) must reconcile per API and in aggregate.
 //
 // With an argument, phases 5 and 6 also copy their traces into that directory (for manual
 // CLI cross-checks).
 
 #include <sys/syscall.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -232,6 +239,17 @@ struct Readback {
 [[nodiscard]] std::filesystem::path probe_path(const char* phase) {
   return std::filesystem::temp_directory_path() /
          ("noleax-linux-trace-writer-probe-" + std::to_string(::getpid()) + "-" + phase + ".nlx");
+}
+
+[[nodiscard]] std::filesystem::path partial_probe_path(const std::filesystem::path& path) {
+  std::filesystem::path partial = path;
+  partial += ".partial";
+  return partial;
+}
+
+[[nodiscard]] bool path_exists(const std::filesystem::path& path) {
+  std::error_code error;
+  return std::filesystem::is_regular_file(path, error) && !error;
 }
 
 // Phases 5 and 6 leave a copy of their trace behind when the probe is given a directory,
@@ -694,6 +712,11 @@ bool phase3() {
   check(result.status == LinuxTraceWriterStatus::kFileLimit, "phase 3 status is file limit");
   check_common_result(result, path);
   check(result.trace_dropped_events > 0U, "phase 3 dropped events at the file limit");
+  // The file limit is a normal stop: the reserve held the terminal records, and the
+  // completed trace was promoted off the .partial path.
+  check(result.final_path == path, "phase 3 renamed the completed trace");
+  check(result.partial_path == partial_probe_path(path), "phase 3 reports the partial path");
+  check(!path_exists(partial_probe_path(path)), "phase 3 left no partial behind");
   check(result.statistics.observed_calls == kEventCount, "phase 3 observed every call");
   check(result.statistics.successful_operations == kEventCount, "phase 3 all calls succeeded");
   check(result.statistics.dropped_events == result.trace_dropped_events,
@@ -1327,6 +1350,633 @@ bool phase7() {
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// Phase 8: writer failure injection (docs/HARDENING_PLAN.md H2)
+// ---------------------------------------------------------------------------
+
+struct WriterFaultGuard {
+  ~WriterFaultGuard() { noleax::agent::linux::detail::disarm_writer_fault(); }
+};
+
+// Pushes count simple successful malloc events with distinct result addresses.
+[[nodiscard]] bool push_alloc_events(LinuxHeapEventQueue& queue, std::size_t count,
+                                     std::uint64_t base_ticks, std::uint64_t thread_id) {
+  EventSpec spec{noleax::agent::linux::kMallocApiId,
+                 LinuxHeapEventOperation::kAllocate,
+                 LinuxHeapEventStatus::kSuccess,
+                 0x40U,
+                 0U,
+                 0U,
+                 0U,
+                 0U,
+                 0U};
+  for (std::size_t index = 0U; index < count; ++index) {
+    spec.result_address = 0x5000'4000'0000ULL + index * 0x1000ULL;
+    if (!push_event(queue, make_event(spec, base_ticks + (index + 1U) * 100U, thread_id))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// The error-tail invariants shared by every tail-writable failure: kWriterError +
+// kAbnormalStop and no missing-EndOfTrace, one writer-error Loss record, and exact
+// statistics conservation.
+void check_error_tail_readback(const Readback& readback, std::uint64_t expected_written,
+                               std::uint64_t expected_dropped, const char* scenario) {
+  const auto at = [scenario](const char* what) { return std::string{scenario} + ": " + what; };
+  check(readback.stream.statistics.has_value(), at("statistics record decoded"));
+  check(readback.stream.end_of_trace.has_value(), at("EndOfTrace record decoded"));
+  if (readback.stream.end_of_trace.has_value()) {
+    check(!readback.stream.end_of_trace->normal_stop, at("EndOfTrace is abnormal"));
+  }
+  check(readback.stream.completeness.has(noleax::trace::CompletenessIssue::kWriterError),
+        at("completeness reports the writer error"));
+  check(readback.stream.completeness.has(noleax::trace::CompletenessIssue::kAbnormalStop),
+        at("completeness reports the abnormal stop"));
+  check(!readback.stream.completeness.has(noleax::trace::CompletenessIssue::kMissingEndOfTrace),
+        at("completeness clears the missing EndOfTrace"));
+  bool saw_writer_loss = false;
+  for (const noleax::trace::LossRecord& loss : readback.losses) {
+    if (loss.reason == noleax::trace::LossReason::kWriterError) {
+      saw_writer_loss = true;
+      check(loss.location == noleax::trace::LossLocation::kWriter, at("writer loss location"));
+      if (expected_dropped != 0U) {
+        check(loss.estimated_event_count.has_value() &&
+                  *loss.estimated_event_count == expected_dropped,
+              at("writer loss estimates the in-flight events"));
+      }
+    }
+  }
+  check(saw_writer_loss, at("writer-error Loss record present"));
+  check(readback.stream.event_count == expected_written, at("decoded events == written"));
+  if (readback.stream.statistics.has_value()) {
+    const noleax::trace::CaptureStatistics& statistics = *readback.stream.statistics;
+    check(statistics.observed_calls ==
+              statistics.successful_operations + statistics.failed_operations,
+          at("observed == successful + failed"));
+    check(
+        statistics.observed_calls - statistics.filtered_before_queue - statistics.dropped_events ==
+            expected_written,
+        at("written + filtered + dropped == observed"));
+    check(statistics.dropped_events == expected_dropped, at("dropped matches the result"));
+    for (const noleax::trace::ApiStatistics& api : statistics.per_api) {
+      check(api.observed_calls == api.successful_operations + api.failed_operations,
+            at("per-API conservation"));
+    }
+  }
+}
+
+// 8a: open failures — a real bad path (ENOENT) and the injected fault on a good path.
+bool phase8_open_failure() {
+  std::printf("phase 8a: open failure\n");
+  const std::uint64_t origin = monotonic_now_ns();
+  const std::filesystem::path bad_dir_trace =
+      std::filesystem::temp_directory_path() / "noleax-h2-no-such-dir" / "trace.nlx";
+  {
+    LinuxHeapEventQueue queue{16U};
+    LinuxModuleTracker tracker{origin};
+    try {
+      LinuxTraceWriter writer{queue, tracker, bad_dir_trace, launch_options(origin)};
+      check(false, "8a: a bad output path must fail construction");
+    } catch (const noleax::trace::TraceWriteError& error) {
+      check(error.phase() == noleax::trace::TraceWritePhase::kOpen, "8a: real open failure phase");
+      check(error.system_error() == static_cast<std::uint32_t>(ENOENT),
+            "8a: real open failure errno");
+      check(!error.file_offset().has_value() && !error.chunk_type().has_value(),
+            "8a: open failure carries no file context");
+    }
+  }
+  check(!path_exists(bad_dir_trace) && !path_exists(partial_probe_path(bad_dir_trace)),
+        "8a: a failed open creates no file");
+
+  const std::filesystem::path path = probe_path("p8open");
+  WriterFaultGuard guard;
+  noleax::agent::linux::detail::arm_writer_fault(
+      {noleax::agent::linux::detail::kWriterFaultOpen, 0U, false, 0U});
+  {
+    LinuxHeapEventQueue queue{16U};
+    LinuxModuleTracker tracker{origin};
+    try {
+      LinuxTraceWriter writer{queue, tracker, path, launch_options(origin)};
+      check(false, "8a: the injected open fault must fail construction");
+    } catch (const noleax::trace::TraceWriteError& error) {
+      check(error.phase() == noleax::trace::TraceWritePhase::kOpen,
+            "8a: injected open failure phase");
+      check(error.system_error() == static_cast<std::uint32_t>(EIO),
+            "8a: injected open failure defaults to EIO");
+    }
+  }
+  check(!path_exists(path) && !path_exists(partial_probe_path(path)),
+        "8a: the injected open failure creates no file");
+  return true;
+}
+
+// 8b: a mid-stream write failure with a writable tail: the first two chunk writes
+// (metadata, initial modules) succeed, the third (stack chunk at the first flush tick)
+// fails. The .partial must carry the two chunks, the error tail, and nothing else.
+bool phase8_write_failure() {
+  std::printf("phase 8b: mid-stream write failure\n");
+  const std::filesystem::path path = probe_path("p8write");
+  const std::filesystem::path partial = partial_probe_path(path);
+  const std::uint64_t origin = monotonic_now_ns();
+  const std::uint64_t thread_id = this_thread_id();
+  constexpr std::size_t kEventCount = 8U;
+
+  LinuxTraceWriterResult result;
+  {
+    WriterFaultGuard guard;
+    noleax::agent::linux::detail::arm_writer_fault(
+        {noleax::agent::linux::detail::kWriterFaultWrite, 2U, false, 0U});
+    LinuxHeapEventQueue queue{1024U};
+    LinuxModuleTracker tracker{origin};
+    LinuxTraceWriter writer{queue, tracker, path, launch_options(origin)};
+    writer.begin_capture();
+    if (!push_alloc_events(queue, kEventCount, monotonic_now_ns(), thread_id)) {
+      std::printf("FAIL: phase 8b pushes\n");
+      return false;
+    }
+    // Cross at least one flush tick (10 ms) so the failure hits mid-capture.
+    std::this_thread::sleep_for(std::chrono::milliseconds{60});
+    result = writer.finish();
+  }
+
+  check(result.status == LinuxTraceWriterStatus::kWriterError, "8b: status is writer error");
+  check(!result.error_message.empty(), "8b: error message recorded");
+  check(result.error_phase == noleax::trace::TraceWritePhase::kWrite, "8b: error phase");
+  check(result.error_system_error == static_cast<std::uint32_t>(EIO), "8b: error errno");
+  check(result.error_file_offset.has_value() && *result.error_file_offset > 0U,
+        "8b: error offset recorded");
+  check(result.error_chunk_type.has_value(), "8b: error chunk type recorded");
+  check(result.tail_error_message.empty(), "8b: the tail itself wrote cleanly");
+  check(result.statistics_written && result.end_of_trace_written, "8b: tail records written");
+  check(!path_exists(path) && path_exists(partial), "8b: only the .partial exists");
+  check(result.partial_path == partial && result.final_path.empty(), "8b: result paths");
+  check(result.statistics.observed_calls == kEventCount, "8b: every consumed event observed");
+  check(result.statistics.dropped_events == kEventCount,
+        "8b: consumed-but-unwritten events are drops");
+
+  const Readback readback = read_trace(partial);
+  check_error_tail_readback(readback, 0U, kEventCount, "8b: error tail readback");
+
+  // The analyzer CLI must accept the .partial path explicitly and report incompleteness.
+  const std::string command =
+      "\"" NOLEAX_CLI_PATH "\" analyze --mode events \"" + partial.string() + "\" > /dev/null 2>&1";
+  const int cli_result = std::system(command.c_str());
+  check(WIFEXITED(cli_result) && WEXITSTATUS(cli_result) == 2,
+        "8b: noleax analyze accepts the .partial and exits 2");
+
+  std::error_code error;
+  std::filesystem::remove(partial, error);
+  return true;
+}
+
+// 8c: a one-shot flush failure at the first flush tick: the event chunks are already on
+// disk, so the tail adds the Loss + Statistics + abnormal EndOfTrace and nothing is
+// counted as dropped.
+bool phase8_flush_failure() {
+  std::printf("phase 8c: flush failure\n");
+  const std::filesystem::path path = probe_path("p8flush");
+  const std::filesystem::path partial = partial_probe_path(path);
+  const std::uint64_t origin = monotonic_now_ns();
+  const std::uint64_t thread_id = this_thread_id();
+  constexpr std::size_t kEventCount = 8U;
+
+  LinuxTraceWriterResult result;
+  {
+    WriterFaultGuard guard;
+    // Flush #1 is the begin_capture metadata flush; #2 is the first flush tick.
+    noleax::agent::linux::detail::arm_writer_fault(
+        {noleax::agent::linux::detail::kWriterFaultFlush, 1U, false, 0U});
+    LinuxHeapEventQueue queue{1024U};
+    LinuxModuleTracker tracker{origin};
+    LinuxTraceWriter writer{queue, tracker, path, launch_options(origin)};
+    writer.begin_capture();
+    if (!push_alloc_events(queue, kEventCount, monotonic_now_ns(), thread_id)) {
+      std::printf("FAIL: phase 8c pushes\n");
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds{60});
+    result = writer.finish();
+  }
+
+  check(result.status == LinuxTraceWriterStatus::kWriterError, "8c: status is writer error");
+  check(result.error_phase == noleax::trace::TraceWritePhase::kFlush, "8c: error phase");
+  check(result.tail_error_message.empty(), "8c: the tail retry flush succeeded");
+  check(result.statistics_written && result.end_of_trace_written, "8c: tail records written");
+  check(!path_exists(path) && path_exists(partial), "8c: only the .partial exists");
+  check(result.statistics.observed_calls == kEventCount && result.statistics.dropped_events == 0U,
+        "8c: every event was written before the flush failed");
+
+  const Readback readback = read_trace(partial);
+  check_error_tail_readback(readback, kEventCount, 0U, "8c: error tail readback");
+
+  std::error_code error;
+  std::filesystem::remove(partial, error);
+  return true;
+}
+
+// 8d: the close at commit time fails. The file content is complete — EndOfTrace, normal
+// stop — but the writer refuses to vouch for it: no rename, writer error in the result.
+bool phase8_close_failure() {
+  std::printf("phase 8d: close failure\n");
+  const std::filesystem::path path = probe_path("p8close");
+  const std::filesystem::path partial = partial_probe_path(path);
+  const std::uint64_t origin = monotonic_now_ns();
+  const std::uint64_t thread_id = this_thread_id();
+  constexpr std::size_t kEventCount = 8U;
+
+  LinuxTraceWriterResult result;
+  {
+    WriterFaultGuard guard;
+    noleax::agent::linux::detail::arm_writer_fault(
+        {noleax::agent::linux::detail::kWriterFaultClose, 0U, false, 0U});
+    LinuxHeapEventQueue queue{1024U};
+    LinuxModuleTracker tracker{origin};
+    LinuxTraceWriter writer{queue, tracker, path, launch_options(origin)};
+    writer.begin_capture();
+    if (!push_alloc_events(queue, kEventCount, monotonic_now_ns(), thread_id)) {
+      std::printf("FAIL: phase 8d pushes\n");
+      return false;
+    }
+    result = writer.finish();
+  }
+
+  check(result.status == LinuxTraceWriterStatus::kWriterError, "8d: status is writer error");
+  check(result.error_phase == noleax::trace::TraceWritePhase::kClose, "8d: error phase");
+  check(result.error_system_error == static_cast<std::uint32_t>(EIO), "8d: error errno");
+  check(result.tail_error_message.empty(), "8d: the close failure is the first failure");
+  check(result.statistics_written && result.end_of_trace_written,
+        "8d: terminal records were written before the close");
+  check(!path_exists(path) && path_exists(partial), "8d: no rename after a close failure");
+  check(result.final_path.empty(), "8d: no final path in the result");
+  std::error_code size_error;
+  check(std::filesystem::file_size(partial, size_error) == result.bytes_written && !size_error,
+        "8d: bytes_written matches the partial file");
+
+  const Readback readback = read_trace(partial);
+  check(readback.stream.end_of_trace.has_value() && readback.stream.end_of_trace->normal_stop,
+        "8d: the preserved partial is a complete normal-stop trace");
+  check(readback.stream.event_count == kEventCount, "8d: every event survived the close failure");
+  check(readback.stream.completeness.mask() == 0U, "8d: the preserved partial is complete");
+
+  std::error_code error;
+  std::filesystem::remove(partial, error);
+  return true;
+}
+
+// 8e: a disk-full-flavoured write failure late in a longer stream (ENOSPC after 40 chunk
+// writes). Everything up to the failure survives; the tail accounts the in-flight events.
+bool phase8_late_disk_full() {
+  std::printf("phase 8e: late disk-full write failure\n");
+  const std::filesystem::path path = probe_path("p8full");
+  const std::filesystem::path partial = partial_probe_path(path);
+  const std::uint64_t origin = monotonic_now_ns();
+  const std::uint64_t thread_id = this_thread_id();
+  constexpr std::size_t kEventCount = 2'000U;
+
+  LinuxTraceWriterResult result;
+  {
+    WriterFaultGuard guard;
+    noleax::agent::linux::detail::arm_writer_fault({noleax::agent::linux::detail::kWriterFaultWrite,
+                                                    40U, false,
+                                                    static_cast<std::uint32_t>(ENOSPC)});
+    LinuxHeapEventQueue queue{4096U};
+    LinuxModuleTracker tracker{origin};
+    LinuxTraceWriterOptions options = launch_options(origin);
+    options.compression = noleax::trace::CompressionCodec::kNone;
+    options.flush_interval = std::chrono::milliseconds{5};
+    options.chunk_target_size = 4U * 1024U;
+    LinuxTraceWriter writer{queue, tracker, path, options};
+    writer.begin_capture();
+    if (!push_alloc_events(queue, kEventCount, monotonic_now_ns(), thread_id)) {
+      std::printf("FAIL: phase 8e pushes\n");
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds{300});
+    result = writer.finish();
+  }
+
+  check(result.status == LinuxTraceWriterStatus::kWriterError, "8e: status is writer error");
+  check(result.error_phase == noleax::trace::TraceWritePhase::kWrite, "8e: error phase");
+  check(result.error_system_error == static_cast<std::uint32_t>(ENOSPC), "8e: error is ENOSPC");
+  check(result.tail_error_message.empty(), "8e: the tail wrote cleanly");
+  check(result.end_of_trace_written, "8e: abnormal EndOfTrace written");
+  check(!path_exists(path) && path_exists(partial), "8e: only the .partial exists");
+
+  const noleax::trace::CaptureStatistics& statistics = result.statistics;
+  const std::uint64_t written =
+      statistics.observed_calls - statistics.filtered_before_queue - statistics.dropped_events;
+  check(statistics.observed_calls > 0U && statistics.observed_calls <= kEventCount,
+        "8e: observed is the consumed prefix");
+  check(written > 0U && written < statistics.observed_calls,
+        "8e: a strict prefix of the consumed events survived");
+  check(statistics.dropped_events == statistics.observed_calls - written,
+        "8e: the rest is accounted as dropped");
+
+  const Readback readback = read_trace(partial);
+  check_error_tail_readback(readback, written, statistics.dropped_events, "8e: tail readback");
+  check(readback.orphaned_ends == 0U, "8e: no orphaned generation ends");
+
+  std::error_code error;
+  std::filesystem::remove(partial, error);
+  return true;
+}
+
+// 8f: a sticky write failure — the disk stays full — so the error tail itself cannot
+// write. The result must carry BOTH errors, and the .partial (metadata + modules only)
+// must still decode, now with a missing EndOfTrace.
+bool phase8_tail_unwritable() {
+  std::printf("phase 8f: tail-unwritable write failure\n");
+  const std::filesystem::path path = probe_path("p8sticky");
+  const std::filesystem::path partial = partial_probe_path(path);
+  const std::uint64_t origin = monotonic_now_ns();
+  const std::uint64_t thread_id = this_thread_id();
+  constexpr std::size_t kEventCount = 8U;
+
+  LinuxTraceWriterResult result;
+  {
+    WriterFaultGuard guard;
+    noleax::agent::linux::detail::arm_writer_fault(
+        {noleax::agent::linux::detail::kWriterFaultWrite, 2U, true, 0U});
+    LinuxHeapEventQueue queue{1024U};
+    LinuxModuleTracker tracker{origin};
+    LinuxTraceWriter writer{queue, tracker, path, launch_options(origin)};
+    writer.begin_capture();
+    if (!push_alloc_events(queue, kEventCount, monotonic_now_ns(), thread_id)) {
+      std::printf("FAIL: phase 8f pushes\n");
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds{60});
+    result = writer.finish();
+  }
+
+  check(result.status == LinuxTraceWriterStatus::kWriterError, "8f: status is writer error");
+  check(!result.error_message.empty(), "8f: the original error is recorded");
+  check(result.error_phase == noleax::trace::TraceWritePhase::kWrite, "8f: error phase");
+  check(!result.tail_error_message.empty(), "8f: the tail failure is recorded separately");
+  check(!result.statistics_written && !result.end_of_trace_written,
+        "8f: no tail record reached the disk");
+  check(!path_exists(path) && path_exists(partial), "8f: only the .partial exists");
+  // The in-memory statistics still account every consumed event, even unwritten.
+  check(result.statistics.observed_calls == kEventCount &&
+            result.statistics.dropped_events == kEventCount,
+        "8f: in-memory statistics still conserve");
+
+  const Readback readback = read_trace(partial);
+  check(!readback.stream.end_of_trace.has_value(), "8f: the partial has no EndOfTrace");
+  check(readback.stream.completeness.has(noleax::trace::CompletenessIssue::kMissingEndOfTrace),
+        "8f: the reader reports the missing EndOfTrace");
+  check(readback.stream.event_count == 0U, "8f: no event chunk survived");
+
+  std::error_code error;
+  std::filesystem::remove(partial, error);
+  return true;
+}
+
+bool phase8() {
+  bool ok = phase8_open_failure();
+  ok = phase8_write_failure() && ok;
+  ok = phase8_flush_failure() && ok;
+  ok = phase8_close_failure() && ok;
+  ok = phase8_late_disk_full() && ok;
+  ok = phase8_tail_unwritable() && ok;
+  return ok;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 9: statistics conservation property (H2). Randomized producer counter snapshots
+// — including zero-activity APIs and custom hook points — drive counter_source while the
+// matching events are drained for real; the finalize-time reconciliation must hold per
+// API and in aggregate, in the result and in the decoded trace.
+// ---------------------------------------------------------------------------
+
+struct PropertyApiPlan {
+  noleax::trace::ApiId api_id{0U};
+  std::uint64_t successful{0U};  // includes the filtered calls, like the hook counters
+  std::uint64_t failed{0U};
+  std::uint64_t filtered{0U};  // allocate-family only
+};
+
+class PropertyRandom final {
+ public:
+  explicit PropertyRandom(std::uint64_t seed) : state_{seed == 0U ? 1U : seed} {}
+  [[nodiscard]] std::uint64_t next(std::uint64_t bound) {
+    state_ ^= state_ << 13U;
+    state_ ^= state_ >> 7U;
+    state_ ^= state_ << 17U;
+    return bound == 0U ? 0U : state_ % bound;
+  }
+
+ private:
+  std::uint64_t state_;
+};
+
+[[nodiscard]] bool allocate_family_api(noleax::trace::ApiId api_id) {
+  return api_id == noleax::agent::linux::kMallocApiId ||
+         api_id == noleax::agent::linux::kCallocApiId ||
+         api_id == noleax::agent::linux::kPosixMemalignApiId ||
+         api_id == noleax::agent::linux::kAlignedAllocApiId ||
+         api_id == noleax::agent::linux::kMemalignApiId ||
+         api_id >= noleax::trace::kCustomHookApiIdBase;
+}
+
+// One valid raw event for the API: heap allocate/reallocate/free shapes for the heap
+// family, VM shapes for mmap/munmap/mremap, allocate-only for custom points.
+[[nodiscard]] EventSpec property_event_spec(noleax::trace::ApiId api_id, bool failure,
+                                            std::uint64_t unique_address) {
+  using noleax::agent::linux::kAlignedAllocApiId;
+  using noleax::agent::linux::kCallocApiId;
+  using noleax::agent::linux::kFreeApiId;
+  using noleax::agent::linux::kMallocApiId;
+  using noleax::agent::linux::kMemalignApiId;
+  using noleax::agent::linux::kMmapApiId;
+  using noleax::agent::linux::kMremapApiId;
+  using noleax::agent::linux::kMunmapApiId;
+  using noleax::agent::linux::kPosixMemalignApiId;
+  using noleax::agent::linux::kReallocApiId;
+  using noleax::agent::linux::kReallocarrayApiId;
+  constexpr std::uint64_t kAnonymous = std::numeric_limits<std::uint64_t>::max();
+  const auto status = failure ? LinuxHeapEventStatus::kFailure : LinuxHeapEventStatus::kSuccess;
+  EventSpec spec{api_id, LinuxHeapEventOperation::kAllocate, status};
+  spec.operation_result = failure ? static_cast<std::uint32_t>(ENOMEM) : 0U;
+  if (api_id == kMallocApiId || api_id == kCallocApiId || api_id == kPosixMemalignApiId ||
+      api_id == kAlignedAllocApiId || api_id == kMemalignApiId ||
+      api_id >= noleax::trace::kCustomHookApiIdBase) {
+    spec.operation = LinuxHeapEventOperation::kAllocate;
+    spec.requested_size = failure ? (1ULL << 40U) : 0x40U;
+    spec.result_address = failure ? 0U : unique_address;
+    return spec;
+  }
+  if (api_id == kReallocApiId || api_id == kReallocarrayApiId) {
+    spec.operation = LinuxHeapEventOperation::kReallocate;
+    spec.requested_size = 0x40U;
+    spec.address = failure ? unique_address : 0U;
+    spec.result_address = failure ? 0U : unique_address;
+    return spec;
+  }
+  if (api_id == kFreeApiId) {
+    spec.operation = LinuxHeapEventOperation::kFree;  // free(NULL): unmatched
+    spec.operation_result = 0U;
+    return spec;
+  }
+  if (api_id == kMmapApiId) {
+    spec.operation = LinuxHeapEventOperation::kVmAllocate;
+    spec.requested_size = failure ? (1ULL << 40U) : 0x1000U;
+    spec.protection = 0x3U;
+    spec.map_flags = 0x22U;
+    spec.section_handle = kAnonymous;
+    spec.result_address = failure ? 0U : unique_address;
+    return spec;
+  }
+  if (api_id == kMunmapApiId) {
+    spec.operation = LinuxHeapEventOperation::kVmUnmap;
+    spec.address = unique_address;
+    spec.requested_size = 0x1000U;
+    spec.operation_result = failure ? static_cast<std::uint32_t>(EINVAL) : 0U;
+    return spec;
+  }
+  // mremap: an in-place resize of an untracked range (one wire record).
+  spec.operation = LinuxHeapEventOperation::kVmRemap;
+  spec.address = unique_address;
+  spec.requested_size = 0x1000U;
+  spec.count = 0x2000U;
+  spec.map_flags = 0x1U;
+  spec.result_address = failure ? 0U : unique_address;
+  return spec;
+}
+
+bool phase9_property_run(std::uint64_t seed) {
+  const std::filesystem::path path = probe_path(("p9-" + std::to_string(seed)).c_str());
+  const std::uint64_t origin = monotonic_now_ns();
+  const std::uint64_t thread_id = this_thread_id();
+  PropertyRandom random{seed};
+
+  noleax::ipc::CustomHookSpec custom_hook;
+  custom_hook.module = "libprop.so";
+  custom_hook.alloc.locator = noleax::ipc::CustomHookLocator::kExport;
+  custom_hook.alloc.export_name = "prop_malloc";
+  custom_hook.free.locator = noleax::ipc::CustomHookLocator::kExport;
+  custom_hook.free.export_name = "prop_free";
+  custom_hook.label = "prop_malloc";
+
+  std::vector<PropertyApiPlan> plans;
+  for (const auto& entry : noleax::agent::linux::kLinuxHookRegistry) {
+    PropertyApiPlan plan;
+    plan.api_id = entry.api_id;
+    plan.successful = random.next(8U);
+    plan.failed = entry.api_id == noleax::agent::linux::kFreeApiId ? 0U : random.next(4U);
+    plan.filtered = allocate_family_api(plan.api_id) ? random.next(plan.successful + 1U) : 0U;
+    plans.push_back(plan);
+  }
+  PropertyApiPlan custom_plan;
+  custom_plan.api_id = noleax::trace::kCustomHookApiIdBase;
+  custom_plan.successful = random.next(8U);
+  custom_plan.failed = random.next(4U);
+  custom_plan.filtered = random.next(custom_plan.successful + 1U);
+  plans.push_back(custom_plan);
+
+  std::vector<noleax::agent::linux::LinuxTraceWriterApiCounterSnapshot> snapshots;
+  for (const PropertyApiPlan& plan : plans) {
+    snapshots.push_back(noleax::agent::linux::LinuxTraceWriterApiCounterSnapshot{
+        plan.api_id, plan.successful + plan.failed, plan.successful, plan.failed, plan.filtered,
+        0U});
+  }
+
+  LinuxTraceWriterResult result;
+  {
+    LinuxHeapEventQueue queue{1024U};
+    LinuxModuleTracker tracker{origin};
+    LinuxTraceWriterOptions options = launch_options(origin);
+    options.custom_hooks = {custom_hook};
+    options.counter_source = [&snapshots] { return snapshots; };
+    LinuxTraceWriter writer{queue, tracker, path, options};
+    writer.begin_capture();
+
+    const std::uint64_t base = monotonic_now_ns();
+    std::uint64_t produced = 0U;
+    std::uint64_t next_address = 0x5000'9000'0000ULL;
+    for (const PropertyApiPlan& plan : plans) {
+      // The producer never queues filtered calls: consumed = successful - filtered +
+      // failed events.
+      for (std::uint64_t index = 0U; index < plan.successful - plan.filtered; ++index) {
+        const EventSpec spec = property_event_spec(plan.api_id, false, next_address += 0x1000ULL);
+        if (!push_event(queue, make_event(spec, base + ++produced * 100U, thread_id))) {
+          std::printf("FAIL: phase 9 push\n");
+          return false;
+        }
+      }
+      for (std::uint64_t index = 0U; index < plan.failed; ++index) {
+        const EventSpec spec = property_event_spec(plan.api_id, true, next_address += 0x1000ULL);
+        if (!push_event(queue, make_event(spec, base + ++produced * 100U, thread_id))) {
+          std::printf("FAIL: phase 9 push\n");
+          return false;
+        }
+      }
+    }
+    result = writer.finish();
+  }
+
+  check(result.status == LinuxTraceWriterStatus::kComplete, "phase 9 status is complete");
+  check_common_result(result, path);
+  check(result.trace_dropped_events == 0U && result.queue_dropped_events == 0U,
+        "phase 9 has no drops");
+
+  std::uint64_t expected_observed = 0U;
+  std::uint64_t expected_successful = 0U;
+  std::uint64_t expected_failed = 0U;
+  std::uint64_t expected_filtered = 0U;
+  for (const PropertyApiPlan& plan : plans) {
+    expected_observed += plan.successful + plan.failed;
+    expected_successful += plan.successful;
+    expected_failed += plan.failed;
+    expected_filtered += plan.filtered;
+  }
+
+  const noleax::trace::CaptureStatistics& statistics = result.statistics;
+  check(statistics.observed_calls == expected_observed &&
+            statistics.successful_operations == expected_successful &&
+            statistics.failed_operations == expected_failed &&
+            statistics.filtered_before_queue == expected_filtered &&
+            statistics.dropped_events == 0U,
+        "phase 9 aggregate counters match the synthesized plan");
+  check(
+      statistics.observed_calls == statistics.successful_operations + statistics.failed_operations,
+      "phase 9 aggregate observed == successful + failed");
+  check(statistics.observed_calls - statistics.filtered_before_queue - statistics.dropped_events ==
+            expected_observed - expected_filtered,
+        "phase 9 aggregate written + filtered + dropped == observed");
+  for (const noleax::trace::ApiStatistics& api : statistics.per_api) {
+    check(api.observed_calls == api.successful_operations + api.failed_operations,
+          "phase 9 per-API observed == successful + failed");
+    check(api.dropped_events == 0U, "phase 9 per-API drops are zero");
+  }
+  std::uint64_t per_api_filtered_sum = 0U;
+  for (const noleax::trace::ApiStatistics& api : statistics.per_api) {
+    per_api_filtered_sum += api.filtered_before_queue;
+  }
+  check(per_api_filtered_sum == statistics.filtered_before_queue,
+        "phase 9 aggregate filtered == sum of per-API filtered");
+
+  const Readback readback = read_trace(path);
+  check_common_readback(readback, origin);
+  check(readback.stream.event_count == expected_observed - expected_filtered,
+        "phase 9 decoded events == written");
+
+  std::error_code error;
+  std::filesystem::remove(path, error);
+  return true;
+}
+
+bool phase9() {
+  std::printf("phase 9: statistics conservation property\n");
+  bool ok = true;
+  for (std::uint64_t seed = 1U; seed <= 8U; ++seed) {
+    ok = phase9_property_run(seed * 0x9E3779B97F4A7C15ULL) && ok;
+  }
+  return ok;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1345,6 +1995,8 @@ int main(int argc, char** argv) {
     ok = phase5(keep_dir) && ok;
     ok = phase6(keep_dir) && ok;
     ok = phase7() && ok;
+    ok = phase8() && ok;
+    ok = phase9() && ok;
   } catch (const std::exception& error) {
     std::printf("FAIL: unexpected exception: %s\n", error.what());
     ok = false;

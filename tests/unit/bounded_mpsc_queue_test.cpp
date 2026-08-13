@@ -254,3 +254,50 @@ TEST_CASE("bounded MPSC queue publishes safely to a concurrent consumer", "[agen
   QueueEvent event;
   CHECK_FALSE(queue.try_pop(event));
 }
+
+TEST_CASE("bounded MPSC queue reports live occupancy consumption and high water", "[agent][mpsc]") {
+  noleax::agent::BoundedMpscQueue<QueueEvent> queue{8U};
+  CHECK(queue.occupancy() == 0U);
+  CHECK(queue.consumed_count() == 0U);
+  CHECK(queue.high_water() == 0U);
+
+  for (std::uint32_t index = 0U; index < 3U; ++index) {
+    REQUIRE(queue.try_push(QueueEvent{0U, 0U, index, 0U}));
+  }
+  CHECK(queue.occupancy() == 3U);
+  CHECK(queue.consumed_count() == 0U);
+
+  QueueEvent event;
+  REQUIRE(queue.try_pop(event));
+  CHECK(queue.consumed_count() == 1U);
+  CHECK(queue.occupancy() == 2U);
+  CHECK(queue.high_water() == 3U);  // sampled at pop time, before the dequeue
+
+  REQUIRE(queue.try_pop(event));
+  REQUIRE(queue.try_pop(event));
+  CHECK_FALSE(queue.try_pop(event));
+  CHECK(queue.occupancy() == 0U);
+  CHECK(queue.consumed_count() == 3U);
+  CHECK(queue.high_water() == 3U);
+
+  // A full ring pins the high water at the capacity through the drop path.
+  for (std::uint32_t index = 0U; index < 8U; ++index) {
+    REQUIRE(queue.try_push(QueueEvent{0U, 1U, index, 0U}));
+  }
+  CHECK(queue.occupancy() == 8U);
+  CHECK_FALSE(queue.try_push(QueueEvent{}));
+  CHECK(queue.high_water() == 8U);
+  CHECK(queue.dropped_count() == 1U);
+
+  std::uint64_t drained = 0U;
+  while (queue.try_pop(event)) {
+    ++drained;
+  }
+  CHECK(drained == 8U);
+  CHECK(queue.consumed_count() == 11U);
+
+  queue.reset_quiescent();
+  CHECK(queue.occupancy() == 0U);
+  CHECK(queue.consumed_count() == 0U);
+  CHECK(queue.high_water() == 0U);
+}

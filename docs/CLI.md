@@ -89,6 +89,11 @@ duration 或目标退出。汇总统计从 trace 回读，退出码由 trace 完
 [THREAD_HIJACK_INJECTION.md](THREAD_HIJACK_INJECTION.md)，`entrypoint-code` 的入口补丁与恢复
 语义见 [ENTRYPOINT_INJECTION.md](ENTRYPOINT_INJECTION.md)。
 
+Linux 侧的会话通道始终存在（launch/attach 都经会话 socket bootstrap），`--live` 不改变
+注入时序，而是让控制器在等待期间每秒轮询一次 QueryStatus 并打印一行实时状态（字段见
+[CONSOLE_OUTPUT.md](CONSOLE_OUTPUT.md)）：守恒计数、队列占用/高水位/累计消费、已写字节和距
+上次 flush 的时间。目标退出、duration 到期或 Ctrl+C 的收尾路径与默认模式一致。
+
 ## 5. attach
 
 ~~~
@@ -445,6 +450,30 @@ run 正常完成时优先返回目标进程退出码会与工具退出码冲突�
 - noleax 自身失败时返回上述工具退出码。
 - noleax 自身成功时返回 0，并在摘要中报告 target_exit_code。
 - 未来如需透传目标退出码，新增显式选项，不改变默认行为。
+
+### 12.1 Linux 原子输出与失败分类（H2）
+
+Linux agent 从不直接写目标 trace 路径：它先写 `<path>.partial`，只有在 EndOfTrace 落盘、
+flush、close 全部成功后才原子 rename 成 `<path>`。因此最终路径上的 `.nlx` 必然是文件级完整
+的；失败或被 SIGKILL 的捕获只留下 `.partial`（仍可分析，见
+[TRACE_RECOVERY.md](TRACE_RECOVERY.md)）。CLI 汇总时最终路径缺失会自动回退到 `.partial`，
+输出 `capture incomplete:` 行并附 note。
+
+controller 把捕获会话失败分成五类（`noleax::controller::linux::ControllerFailureKind`），每类
+有稳定的消息前缀，便于脚本匹配：
+
+| 分类 | 稳定消息子串 | 退出码路径 |
+|---|---|---|
+| agent 崩溃/未启动（kAgentCrash） | 握手期 `agent session failed:`；会话期 `agent crashed ` | 3 |
+| writer 失败（kWriterError） | 启动期 `trace writer failed to start:`；收尾期 `trace writer failed in the agent` | 启动期 3；收尾期回退 trace 摘要（通常 2） |
+| hook 安装失败（kHookInstall） | `agent failed to start the capture:` | 3 |
+| 目标退出（kTargetExit） | 握手期 `target exited before the agent handshake completed:`；会话期 `target exited ` | 握手期 3；会话期回退 trace 摘要（exit hook 已收尾，0 或 2） |
+| 协议错误（kProtocol） | `agent protocol violation:` / `agent did not ...` | 3 |
+
+writer 失败的细节在目标进程的 stderr 上（`noleax-agent: trace writer failed: ... (phase=...
+errno=... offset=... chunk=...)`），trace 尾部的 Loss/Statistics/EndOfTrace 记录失败点之前
+的完整账目；会话期目标退出与 agent 崩溃靠目标存活性区分（socket 断开 + 目标已退出 = 目标
+退出，否则 = agent 崩溃）。
 
 ## 13. 示例
 

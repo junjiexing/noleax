@@ -14,11 +14,13 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <charconv>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <fstream>
 #include <limits>
 #include <map>
@@ -26,6 +28,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <unordered_map>
 #include <utility>
@@ -47,6 +50,53 @@
 #include "noleax/trace/wire_format.hpp"
 
 namespace noleax::agent::linux {
+
+namespace detail {
+namespace {
+
+std::atomic<std::uint32_t> g_writer_fault_points{0U};
+std::atomic<std::uint64_t> g_writer_fault_countdown{0U};
+std::atomic<std::uint32_t> g_writer_fault_fired{0U};
+std::atomic<bool> g_writer_fault_sticky{false};
+std::atomic<std::uint32_t> g_writer_fault_errno_value{0U};
+
+}  // namespace
+
+void arm_writer_fault(const WriterFault& fault) noexcept {
+  g_writer_fault_errno_value.store(fault.error_number, std::memory_order_relaxed);
+  g_writer_fault_sticky.store(fault.sticky, std::memory_order_relaxed);
+  g_writer_fault_fired.store(0U, std::memory_order_relaxed);
+  g_writer_fault_countdown.store(fault.operations_until_failure, std::memory_order_relaxed);
+  g_writer_fault_points.store(fault.points, std::memory_order_release);
+}
+
+void disarm_writer_fault() noexcept { g_writer_fault_points.store(0U, std::memory_order_release); }
+
+// Returns the errno the armed fault reports for point, or 0 to let the operation through.
+// The countdown is shared by every armed point: N means "let N armed operations pass".
+[[nodiscard]] std::uint32_t writer_fault_errno(std::uint32_t point) noexcept {
+  if ((g_writer_fault_points.load(std::memory_order_acquire) & point) == 0U) {
+    return 0U;
+  }
+  const std::uint32_t configured = g_writer_fault_errno_value.load(std::memory_order_relaxed);
+  const std::uint32_t error_number =
+      configured != 0U ? configured : static_cast<std::uint32_t>(EIO);
+  if ((g_writer_fault_fired.load(std::memory_order_relaxed) & point) != 0U) {
+    return g_writer_fault_sticky.load(std::memory_order_relaxed) ? error_number : 0U;
+  }
+  std::uint64_t remaining = g_writer_fault_countdown.load(std::memory_order_relaxed);
+  while (remaining != 0U) {
+    if (g_writer_fault_countdown.compare_exchange_weak(
+            remaining, remaining - 1U, std::memory_order_relaxed, std::memory_order_relaxed)) {
+      return 0U;
+    }
+  }
+  g_writer_fault_fired.fetch_or(point, std::memory_order_relaxed);
+  return error_number;
+}
+
+}  // namespace detail
+
 namespace {
 
 // The normalized stack dictionary is platform-neutral code that still lives under
@@ -62,18 +112,27 @@ constexpr std::size_t kMaximumStackDefinitionRecordSize =
     static_cast<std::size_t>(kMaximumCapturedStackDepth) * 32U;
 constexpr std::size_t kMaximumModuleLoadRecordSize = 8U * 1024U;
 constexpr std::size_t kMaximumEventAdditionSize = 152U + 56U;
-constexpr std::uint64_t kMinimumTerminalReserveSize = 1024U;
-// Terminal tail when no custom hooks are declared: the statistics chunk's 48-byte per-API
-// records cover the built-in registry only. Each declared custom hook point adds one more
-// per-API record, and validate_options extends the reserve by exactly that amount.
+// Terminal record sizes (src/trace/record_codec.cpp): a Loss record is the 8-byte record
+// header plus a fixed 48-byte payload; CaptureStatistics adds an 80-byte fixed payload
+// plus 48 bytes per API; EndOfTrace carries a 40-byte payload. Every append validates
+// against the configured maximum_record_size, which these fixed sizes never approach.
+constexpr std::uint64_t kLossRecordSize = noleax::trace::kRecordHeaderSize + 48U;
+constexpr std::uint64_t kStatisticsRecordSize =
+    noleax::trace::kRecordHeaderSize + 80U + kLinuxHookRegistry.size() * 48U;
+constexpr std::uint64_t kEndOfTraceRecordSize = noleax::trace::kRecordHeaderSize + 40U;
+// Sized-on-purpose file reserve for the terminal records (the spec for
+// TraceWriterOptions::reserved_tail_size): the orderly finalize writes up to three Loss
+// records (module drops, queue overflow, trace-full), the writer-error tail writes a
+// fourth (the writer error itself); both then write one Statistics and one EndOfTrace
+// record, each family in its own chunk.
+constexpr std::uint64_t kTerminalReserveBaseSize =
+    (noleax::trace::kChunkHeaderSize + 4U * kLossRecordSize) +
+    (noleax::trace::kChunkHeaderSize + kStatisticsRecordSize) +
+    (noleax::trace::kChunkHeaderSize + kEndOfTraceRecordSize);
+// Each declared custom hook point adds one more 48-byte per-API statistics record;
+// validate_options extends the reserve by exactly that amount.
 constexpr std::uint64_t kTerminalReservePerCustomHook = 48U;
-constexpr std::uint64_t kMaximumTerminalTailSize =
-    (noleax::trace::kChunkHeaderSize + 3U * 56U) +
-    (noleax::trace::kChunkHeaderSize + 8U + 80U + kLinuxHookRegistry.size() * 48U) +
-    (noleax::trace::kChunkHeaderSize + 8U + 40U);
 constexpr auto kEmptyPollInterval = std::chrono::milliseconds{1};
-
-static_assert(kMaximumTerminalTailSize <= kMinimumTerminalReserveSize);
 
 [[nodiscard]] LinuxHeapEventQueue& validate_event_queue(LinuxHeapEventQueue& event_queue) {
   if (!hook_guard_runtime_is_ready()) {
@@ -96,10 +155,23 @@ static_assert(kMaximumTerminalTailSize <= kMinimumTerminalReserveSize);
          static_cast<std::int64_t>(value.tv_nsec);
 }
 
+[[nodiscard]] std::filesystem::path partial_output_path(const std::filesystem::path& final_path) {
+  std::filesystem::path partial = final_path;
+  partial += ".partial";
+  return partial;
+}
+
 [[nodiscard]] std::ofstream open_trace_output(const std::filesystem::path& path) {
+  if (const std::uint32_t injected = detail::writer_fault_errno(detail::kWriterFaultOpen)) {
+    throw noleax::trace::TraceWriteError{"cannot create the trace output file",
+                                         noleax::trace::TraceWritePhase::kOpen, injected};
+  }
+  errno = 0;
   std::ofstream output{path, std::ios::binary | std::ios::trunc};
   if (!output) {
-    throw std::runtime_error{"cannot create the trace output file"};
+    throw noleax::trace::TraceWriteError{"cannot create the trace output file",
+                                         noleax::trace::TraceWritePhase::kOpen,
+                                         static_cast<std::uint32_t>(errno)};
   }
   return output;
 }
@@ -168,7 +240,7 @@ static_assert(kMaximumTerminalTailSize <= kMinimumTerminalReserveSize);
   }
   options.trace.reserved_tail_size = (std::max)(
       options.trace.reserved_tail_size,
-      kMinimumTerminalReserveSize + options.custom_hooks.size() * kTerminalReservePerCustomHook);
+      kTerminalReserveBaseSize + options.custom_hooks.size() * kTerminalReservePerCustomHook);
   return options;
 }
 
@@ -251,6 +323,26 @@ void checked_add(std::uint64_t& value, std::uint64_t addition, const char* subje
   return result;
 }
 
+[[nodiscard]] const char* chunk_type_name(noleax::trace::ChunkType type) noexcept {
+  switch (type) {
+    case noleax::trace::ChunkType::kMetadata:
+      return "metadata";
+    case noleax::trace::ChunkType::kModule:
+      return "module";
+    case noleax::trace::ChunkType::kStack:
+      return "stack";
+    case noleax::trace::ChunkType::kEvent:
+      return "event";
+    case noleax::trace::ChunkType::kStatistics:
+      return "statistics";
+    case noleax::trace::ChunkType::kEnd:
+      return "end";
+    case noleax::trace::ChunkType::kMemory:
+      return "memory";
+  }
+  return "unknown";
+}
+
 struct LiveModule {
   noleax::trace::ModuleId module_id;
   std::uint64_t base{0U};
@@ -290,7 +382,9 @@ class LinuxTraceWriter::Implementation final {
         module_tracker_{module_tracker},
         options_{validate_options(options)},
         custom_definitions_{make_custom_hook_definitions(options_.custom_hooks)},
-        output_{open_trace_output(output_path)},
+        final_path_{output_path},
+        partial_path_{partial_output_path(output_path)},
+        output_{open_trace_output(partial_path_)},
         monotonic_origin_{options_.monotonic_origin != 0U ? options_.monotonic_origin
                                                           : monotonic_now_ns()},
         dictionary_{options_.stack_dictionary_capacity},
@@ -300,6 +394,7 @@ class LinuxTraceWriter::Implementation final {
     module_payload_.reserve(options_.chunk_target_size);
     stack_payload_.reserve(options_.chunk_target_size);
     event_payload_.reserve(options_.chunk_target_size);
+    status_bytes_written_.store(writer_.bytes_written(), std::memory_order_relaxed);
     worker_ = std::thread{[this] { thread_main(); }};
     std::unique_lock lock{state_mutex_};
     state_changed_.wait(lock, [this] { return thread_ready_; });
@@ -310,6 +405,9 @@ class LinuxTraceWriter::Implementation final {
     if (worker_.joinable()) {
       worker_.join();
     }
+    // Destruction without finish() still honors the atomic output protocol: promote a
+    // cleanly finalized trace, keep a failed one as .partial.
+    commit_output();
   }
 
   void begin_capture() {
@@ -321,6 +419,9 @@ class LinuxTraceWriter::Implementation final {
       throw std::logic_error{"trace writer is already stopping"};
     }
     write_metadata();
+    // Durability floor: header + scope must reach the disk before the capture starts, so
+    // a .partial left by a kill is always a decodable trace.
+    flush_stream();
     capture_begun_ = true;
     state_changed_.notify_all();
   }
@@ -354,6 +455,7 @@ class LinuxTraceWriter::Implementation final {
     if (worker_.joinable()) {
       worker_.join();
     }
+    commit_output();
     finalized_ = true;
     return result_;
   }
@@ -372,16 +474,26 @@ class LinuxTraceWriter::Implementation final {
       } else {
         finalize_empty_trace();
       }
+    } catch (const noleax::trace::TraceWriteError& error) {
+      record_writer_error(error);
     } catch (const std::exception& error) {
-      record_inline_error(error.what());
+      record_writer_error(error.what());
     } catch (...) {
-      record_inline_error("unknown trace writer failure");
+      record_writer_error("unknown trace writer failure");
     }
+    commit_output();
     return result_;
   }
 
   [[nodiscard]] bool is_running() const noexcept {
     return running_.load(std::memory_order_acquire);
+  }
+
+  [[nodiscard]] LinuxTraceWriterLiveStatus live_status() const noexcept {
+    LinuxTraceWriterLiveStatus status;
+    status.bytes_written = status_bytes_written_.load(std::memory_order_relaxed);
+    status.last_flush_monotonic_ns = last_flush_monotonic_ns_.load(std::memory_order_relaxed);
+    return status;
   }
 
  private:
@@ -408,13 +520,324 @@ class LinuxTraceWriter::Implementation final {
     finalize_trace();
   }
 
-  void record_inline_error(const char* message) noexcept {
-    result_.error_message = message;
-    result_.status = LinuxTraceWriterStatus::kWriterError;
-    fill_result_counters();
+  // First writer failure wins: the enriched error (phase/errno/offset/chunk type plus the
+  // human-readable message) lands in the result, one line goes to stderr — the only
+  // always-available channel inside a target (game) process — and the best-effort error
+  // tail runs once. Later failures never overwrite the first error, and a tail failure is
+  // reported separately in tail_error_message. No exception ever escapes: the writer
+  // thread shares the process with the target.
+  void record_writer_error(const noleax::trace::TraceWriteError& error) noexcept {
     try {
-      writer_.flush();
+      record_writer_error_impl(std::string{error.what()}, error.phase(), error.system_error(),
+                               error.file_offset(), error.chunk_type());
     } catch (...) {
+      result_.status = LinuxTraceWriterStatus::kWriterError;
+    }
+  }
+
+  void record_writer_error(const char* message) noexcept {
+    try {
+      record_writer_error_impl(std::string{message}, noleax::trace::TraceWritePhase::kNone, 0U,
+                               std::nullopt, std::nullopt);
+    } catch (...) {
+      result_.status = LinuxTraceWriterStatus::kWriterError;
+    }
+  }
+
+  void record_writer_error_impl(std::string message, noleax::trace::TraceWritePhase phase,
+                                std::uint32_t system_error,
+                                std::optional<std::uint64_t> file_offset,
+                                std::optional<noleax::trace::ChunkType> chunk_type) {
+    if (!error_recorded_) {
+      error_recorded_ = true;
+      result_.status = LinuxTraceWriterStatus::kWriterError;
+      result_.error_message = std::move(message);
+      result_.error_phase = phase;
+      result_.error_system_error = system_error;
+      result_.error_file_offset = file_offset;
+      result_.error_chunk_type = chunk_type;
+      report_writer_error_to_stderr();
+    }
+    try {
+      write_error_tail();
+      // One last durability attempt; if this fails the tail records may not have reached
+      // the disk either, which is a tail failure.
+      flush_stream();
+    } catch (const std::exception& tail_error) {
+      if (result_.tail_error_message.empty()) {
+        result_.tail_error_message = tail_error.what();
+      }
+    } catch (...) {
+      if (result_.tail_error_message.empty()) {
+        result_.tail_error_message = "unknown trace tail failure";
+      }
+    }
+    fill_result_counters();
+  }
+
+  void report_writer_error_to_stderr() const noexcept {
+    try {
+      std::string line{"noleax-agent: trace writer failed: "};
+      line.append(result_.error_message);
+      line.append(" (phase=");
+      line.append(noleax::trace::trace_write_phase_name(result_.error_phase));
+      if (result_.error_system_error != 0U) {
+        line.append(" errno=");
+        line.append(std::to_string(result_.error_system_error));
+      }
+      if (result_.error_file_offset.has_value()) {
+        line.append(" offset=");
+        line.append(std::to_string(*result_.error_file_offset));
+      }
+      if (result_.error_chunk_type.has_value()) {
+        line.append(" chunk=");
+        line.append(chunk_type_name(*result_.error_chunk_type));
+      }
+      line.push_back(')');
+      std::fprintf(stderr, "%s\n", line.c_str());
+      std::fflush(stderr);
+    } catch (...) {
+    }
+  }
+
+  // Events the writer consumed but never wrote: the discarded pending buffer plus an
+  // event that was mid-processing when the failure hit, excluding the trace-full drops
+  // (they carry their own Loss record). Zero means "nothing was in flight".
+  [[nodiscard]] std::uint64_t consumed_but_unwritten_events() const {
+    std::uint64_t consumed = 0U;
+    std::uint64_t written = 0U;
+    for (const ApiCounters& counters : api_counters_) {
+      checked_add(consumed, counters.successful, "error-tail consumed count overflow");
+      checked_add(consumed, counters.failed, "error-tail consumed count overflow");
+      checked_add(written, counters.written, "error-tail written count overflow");
+    }
+    if (consumed < written + trace_dropped_events_) {
+      return 0U;  // accounting disagreement: report no estimate rather than a wrong one
+    }
+    return consumed - written - trace_dropped_events_;
+  }
+
+  // Preserve a parseable, explicitly incomplete trace when the writer fails. Buffered
+  // payload is deliberately discarded because an exception may have interrupted a record
+  // mid-write; the tail Statistics accounts every consumed-but-unwritten event as
+  // dropped, so observed = successful + failed and written + filtered + dropped =
+  // observed hold exactly like an orderly finalize. Every stage is best-effort: a stage
+  // failure is remembered and the remaining stages still run (an EndOfTrace attempt
+  // matters even when the statistics could not be computed).
+  void write_error_tail() {
+    if (error_tail_attempted_ || result_.end_of_trace_written) {
+      return;
+    }
+    error_tail_attempted_ = true;
+    writer_.release_file_reserve();
+    std::string first_failure;
+    const auto note_failure = [&first_failure](const char* what) {
+      if (first_failure.empty()) {
+        first_failure = what;
+      }
+    };
+
+    try {
+      std::vector<std::byte> loss_payload;
+      append_collected_loss_records(loss_payload);
+      noleax::trace::LossRecord writer_loss;
+      writer_loss.reason = noleax::trace::LossReason::kWriterError;
+      writer_loss.location = noleax::trace::LossLocation::kWriter;
+      // A known count of zero is not encodable (validate_loss_record), so absence of the
+      // estimate means "nothing was in flight".
+      if (const std::uint64_t unwritten = consumed_but_unwritten_events()) {
+        writer_loss.estimated_event_count = unwritten;
+      }
+      completeness_.observe_loss(writer_loss);
+      noleax::trace::append_loss_record(loss_payload, writer_loss, options_.maximum_record_size);
+      static_cast<void>(write_terminal_chunk(noleax::trace::ChunkType::kEvent, loss_payload));
+    } catch (const std::exception& error) {
+      note_failure(error.what());
+    } catch (...) {
+      note_failure("unknown writer-error loss failure");
+    }
+
+    if (!result_.statistics_written) {
+      try {
+        const noleax::trace::CaptureStatistics statistics = make_error_statistics();
+        noleax::trace::validate_statistics(statistics);
+        result_.statistics = statistics;
+        result_.per_api.clear();
+        for (std::size_t index = 0U; index < statistics.per_api.size(); ++index) {
+          const noleax::trace::ApiStatistics& api = statistics.per_api[index];
+          result_.per_api.push_back(LinuxTraceWriterApiResult{
+              api.api_id, api.observed_calls, api_counters_[index].written,
+              api.filtered_before_queue, api.dropped_events});
+        }
+        std::vector<std::byte> statistics_payload;
+        noleax::trace::append_statistics_record(statistics_payload, statistics,
+                                                options_.maximum_record_size);
+        result_.statistics_written =
+            write_terminal_chunk(noleax::trace::ChunkType::kStatistics, statistics_payload);
+      } catch (const std::exception& error) {
+        note_failure(error.what());
+      } catch (...) {
+        note_failure("unknown writer-error statistics failure");
+      }
+    }
+
+    try {
+      noleax::trace::EndOfTrace end;
+      end.final_sequence = noleax::trace::Sequence{last_wire_sequence_};
+      end.final_monotonic_ticks =
+          (std::max)((std::max)((std::max)(last_ticks_, last_module_ticks_), last_memory_ticks_),
+                     monotonic_origin_);
+      end.normal_stop = false;
+      end.aggregate_completeness = completeness_.report();
+      end.aggregate_completeness.add(noleax::trace::CompletenessIssue::kAbnormalStop);
+      end.aggregate_completeness.remove(noleax::trace::CompletenessIssue::kMissingEndOfTrace);
+      std::vector<std::byte> end_payload;
+      noleax::trace::append_end_of_trace_record(end_payload, end, options_.maximum_record_size);
+      result_.end_of_trace_written =
+          write_terminal_chunk(noleax::trace::ChunkType::kEnd, end_payload);
+      result_.completeness_mask = result_.end_of_trace_written ? end.aggregate_completeness.mask()
+                                                               : completeness_.report().mask();
+    } catch (const std::exception& error) {
+      note_failure(error.what());
+      result_.completeness_mask = completeness_.report().mask();
+    } catch (...) {
+      note_failure("unknown writer-error EndOfTrace failure");
+      result_.completeness_mask = completeness_.report().mask();
+    }
+
+    if (!first_failure.empty()) {
+      throw std::runtime_error{first_failure};
+    }
+  }
+
+  // Statistics at the failure point. With an authoritative producer snapshot every
+  // observed-but-unwritten event is a drop (queue drops, trace-full drops, the discarded
+  // pending buffer, and events still queued when the writer died); without one the
+  // drained counters bound the same accounting. Both branches keep the per-API and
+  // aggregate conservations exact.
+  [[nodiscard]] noleax::trace::CaptureStatistics make_error_statistics() const {
+    std::vector<LinuxTraceWriterApiCounterSnapshot> counter_snapshots;
+    if (options_.counter_source) {
+      counter_snapshots = options_.counter_source();
+    }
+    noleax::trace::CaptureStatistics statistics;
+    for (std::size_t index = 0U; index < api_counters_.size(); ++index) {
+      const ApiCounters& counters = api_counters_[index];
+      const noleax::trace::ApiId api_id =
+          index < kLinuxHookRegistry.size()
+              ? kLinuxHookRegistry[index].api_id
+              : custom_definitions_[index - kLinuxHookRegistry.size()].api_id;
+      const LinuxTraceWriterApiCounterSnapshot* snapshot = nullptr;
+      for (const auto& candidate : counter_snapshots) {
+        if (candidate.api_id == api_id) {
+          snapshot = &candidate;
+          break;
+        }
+      }
+      noleax::trace::ApiStatistics api;
+      api.api_id = api_id;
+      if (snapshot != nullptr) {
+        if (snapshot->recordable_calls != snapshot->successful_calls + snapshot->failed_calls) {
+          throw std::runtime_error{
+              "glibc heap hook counters do not reconcile (recordable "
+              "!= successful + failed)"};
+        }
+        api.observed_calls = snapshot->recordable_calls;
+        api.successful_operations = snapshot->successful_calls;
+        api.failed_operations = snapshot->failed_calls;
+        api.filtered_before_queue = snapshot->filtered_calls;
+        if (counters.written > api.observed_calls ||
+            api.filtered_before_queue > api.observed_calls - counters.written) {
+          throw std::runtime_error{
+              "glibc heap hook counters do not reconcile with drained trace events"};
+        }
+        api.dropped_events = api.observed_calls - counters.written - api.filtered_before_queue;
+      } else {
+        api.observed_calls = counters.successful;
+        checked_add(api.observed_calls, counters.failed,
+                    "error-tail observed operation count overflow");
+        api.successful_operations = counters.successful;
+        api.failed_operations = counters.failed;
+        api.filtered_before_queue = 0U;
+        if (counters.written > api.observed_calls) {
+          throw std::runtime_error{"error-tail written event count exceeds observed operations"};
+        }
+        api.dropped_events = api.observed_calls - counters.written;
+      }
+      statistics.per_api.push_back(api);
+      checked_add(statistics.observed_calls, api.observed_calls,
+                  "error-tail aggregate observed count overflow");
+      checked_add(statistics.successful_operations, api.successful_operations,
+                  "error-tail aggregate success count overflow");
+      checked_add(statistics.failed_operations, api.failed_operations,
+                  "error-tail aggregate failure count overflow");
+      checked_add(statistics.filtered_before_queue, api.filtered_before_queue,
+                  "error-tail aggregate filtered count overflow");
+      checked_add(statistics.dropped_events, api.dropped_events,
+                  "error-tail aggregate drop count overflow");
+    }
+    statistics.unique_stacks = unique_stacks_;
+    statistics.reused_stacks = reused_stacks_;
+    statistics.written_uncompressed_bytes = writer_.uncompressed_payload_bytes_written();
+    statistics.written_stored_bytes = writer_.stored_payload_bytes_written();
+    return statistics;
+  }
+
+  // Atomically promotes the partial trace after a successful finalize: close the stream
+  // first (a close failure means the last flush never reached the disk), then rename.
+  // Any failure leaves the .partial file in place for the analyzer.
+  void commit_output() noexcept {
+    if (output_committed_) {
+      return;
+    }
+    output_committed_ = true;
+    try {
+      result_.partial_path = partial_path_;
+      if (output_.is_open()) {
+        const std::uint32_t injected = detail::writer_fault_errno(detail::kWriterFaultClose);
+        errno = 0;
+        output_.close();
+        const std::uint32_t close_error =
+            injected != 0U ? injected : static_cast<std::uint32_t>(errno);
+        if (injected != 0U) {
+          output_.setstate(std::ios_base::failbit);  // the injected close failure
+        }
+        if (!output_) {
+          record_commit_failure("trace output stream close failed",
+                                noleax::trace::TraceWritePhase::kClose, close_error);
+          return;
+        }
+      }
+      if (result_.status == LinuxTraceWriterStatus::kWriterError) {
+        return;  // a failed capture's trace stays .partial on purpose
+      }
+      std::error_code error;
+      std::filesystem::rename(partial_path_, final_path_, error);
+      if (error) {
+        record_commit_failure("cannot promote the completed partial trace to its final path",
+                              noleax::trace::TraceWritePhase::kClose,
+                              static_cast<std::uint32_t>(error.value()));
+        return;
+      }
+      result_.final_path = final_path_;
+    } catch (...) {
+    }
+  }
+
+  void record_commit_failure(const char* message, noleax::trace::TraceWritePhase phase,
+                             std::uint32_t system_error) {
+    if (!error_recorded_) {
+      error_recorded_ = true;
+      result_.status = LinuxTraceWriterStatus::kWriterError;
+      result_.error_message = message;
+      result_.error_phase = phase;
+      result_.error_system_error = system_error;
+      result_.error_file_offset = writer_.bytes_written();
+      result_.error_chunk_type = std::nullopt;
+      report_writer_error_to_stderr();
+    } else if (result_.tail_error_message.empty()) {
+      // Finishing the failed trace failed too; the first error still stands.
+      result_.tail_error_message = message;
     }
   }
 
@@ -469,22 +892,12 @@ class LinuxTraceWriter::Implementation final {
       } else {
         finalize_empty_trace();
       }
+    } catch (const noleax::trace::TraceWriteError& error) {
+      record_writer_error(error);
     } catch (const std::exception& error) {
-      result_.error_message = error.what();
-      result_.status = LinuxTraceWriterStatus::kWriterError;
-      fill_result_counters();
-      try {
-        writer_.flush();
-      } catch (...) {
-      }
+      record_writer_error(error.what());
     } catch (...) {
-      result_.error_message = "unknown trace writer failure";
-      result_.status = LinuxTraceWriterStatus::kWriterError;
-      fill_result_counters();
-      try {
-        writer_.flush();
-      } catch (...) {
-      }
+      record_writer_error("unknown trace writer failure");
     }
     running_.store(false, std::memory_order_release);
   }
@@ -521,6 +934,9 @@ class LinuxTraceWriter::Implementation final {
       const auto now = std::chrono::steady_clock::now();
       if (now >= next_flush) {
         flush_pending();
+        // Durability tick: after a kill, the .partial stays analyzable up to the last
+        // successful stream flush.
+        flush_stream();
         next_flush = now + options_.flush_interval;
       }
       const bool counters_due =
@@ -568,8 +984,9 @@ class LinuxTraceWriter::Implementation final {
   // first). Sampling runs on the writer thread (an internal thread), so its own allocations
   // and API calls are never recorded. A failed or throwing sampler skips its record; a
   // failed chunk write degrades to the usual file-limit handling. Sampling never aborts
-  // the capture.
-  void capture_memory_snapshot(bool want_counters, bool want_map) noexcept {
+  // the capture — but a TraceWriteError is a writer failure, not a sampler failure, and
+  // must reach the error tail.
+  void capture_memory_snapshot(bool want_counters, bool want_map) {
     if (file_limit_reached_) {
       return;
     }
@@ -607,6 +1024,9 @@ class LinuxTraceWriter::Implementation final {
         }
         memory_payload_.clear();
       }
+    } catch (const noleax::trace::TraceWriteError&) {
+      memory_payload_.clear();
+      throw;
     } catch (...) {
       memory_payload_.clear();
     }
@@ -1316,6 +1736,11 @@ class LinuxTraceWriter::Implementation final {
                                  noleax::trace::CompressionCodec codec,
                                  std::uint64_t sequence_begin = 0U,
                                  std::uint64_t sequence_end = 0U) {
+    if (const std::uint32_t injected = detail::writer_fault_errno(detail::kWriterFaultWrite)) {
+      throw noleax::trace::TraceWriteError{"trace output stream write failed",
+                                           noleax::trace::TraceWritePhase::kWrite, injected,
+                                           writer_.bytes_written(), type};
+    }
     noleax::trace::ChunkDescriptor descriptor;
     descriptor.type = type;
     descriptor.codec = codec;
@@ -1325,7 +1750,20 @@ class LinuxTraceWriter::Implementation final {
       file_limit_reached_ = true;
       return false;
     }
+    status_bytes_written_.store(writer_.bytes_written(), std::memory_order_relaxed);
     return true;
+  }
+
+  // Flushes the output stream and stamps the live status; a flush failure is a writer
+  // failure like any other.
+  void flush_stream() {
+    if (const std::uint32_t injected = detail::writer_fault_errno(detail::kWriterFaultFlush)) {
+      throw noleax::trace::TraceWriteError{"trace output stream flush failed",
+                                           noleax::trace::TraceWritePhase::kFlush, injected,
+                                           writer_.bytes_written()};
+    }
+    writer_.flush();
+    last_flush_monotonic_ns_.store(monotonic_now_ns(), std::memory_order_relaxed);
   }
 
   [[nodiscard]] bool write_data_chunk(noleax::trace::ChunkType type,
@@ -1453,25 +1891,28 @@ class LinuxTraceWriter::Implementation final {
     write_terminal_records(statistics);
   }
 
-  void finalize_trace() {
-    writer_.release_file_reserve();
-    noleax::trace::LossRecord module_loss;
+  // Appends Loss records for every drop source collected so far — module notification
+  // drops, event-queue overflow, trace-full drops — and observes them in the completeness
+  // tracker. Shared by the orderly finalize and the writer-error tail.
+  void append_collected_loss_records(std::vector<std::byte>& payload) {
     if (module_notification_drops_ != 0U) {
+      noleax::trace::LossRecord module_loss;
       module_loss.reason = noleax::trace::LossReason::kQueueFull;
       module_loss.location = noleax::trace::LossLocation::kAgentQueue;
       module_loss.estimated_event_count = module_notification_drops_;
       completeness_.observe_loss(module_loss);
+      noleax::trace::append_loss_record(payload, module_loss, options_.maximum_record_size);
     }
-    noleax::trace::LossRecord queue_loss;
     if (queue_dropped_events_ != 0U) {
+      noleax::trace::LossRecord queue_loss;
       queue_loss.reason = noleax::trace::LossReason::kQueueFull;
       queue_loss.location = noleax::trace::LossLocation::kAgentQueue;
       queue_loss.estimated_event_count = queue_dropped_events_;
       completeness_.observe_loss(queue_loss);
+      noleax::trace::append_loss_record(payload, queue_loss, options_.maximum_record_size);
     }
-
-    noleax::trace::LossRecord trace_loss;
     if (trace_dropped_events_ != 0U) {
+      noleax::trace::LossRecord trace_loss;
       trace_loss.reason = noleax::trace::LossReason::kTraceFull;
       trace_loss.location = noleax::trace::LossLocation::kWriter;
       trace_loss.estimated_event_count = trace_dropped_events_;
@@ -1481,20 +1922,15 @@ class LinuxTraceWriter::Implementation final {
       trace_loss.tick_range =
           noleax::trace::TickRange{trace_drop_tick_begin_, trace_drop_tick_end_};
       completeness_.observe_loss(trace_loss);
+      noleax::trace::append_loss_record(payload, trace_loss, options_.maximum_record_size);
     }
+  }
 
-    if (module_notification_drops_ != 0U || queue_dropped_events_ != 0U ||
-        trace_dropped_events_ != 0U) {
-      std::vector<std::byte> loss_payload;
-      if (module_notification_drops_ != 0U) {
-        noleax::trace::append_loss_record(loss_payload, module_loss, options_.maximum_record_size);
-      }
-      if (queue_dropped_events_ != 0U) {
-        noleax::trace::append_loss_record(loss_payload, queue_loss, options_.maximum_record_size);
-      }
-      if (trace_dropped_events_ != 0U) {
-        noleax::trace::append_loss_record(loss_payload, trace_loss, options_.maximum_record_size);
-      }
+  void finalize_trace() {
+    writer_.release_file_reserve();
+    std::vector<std::byte> loss_payload;
+    append_collected_loss_records(loss_payload);
+    if (!loss_payload.empty()) {
       const std::uint64_t sequence_begin =
           trace_dropped_events_ == 0U ? 0U : trace_drop_sequence_begin_;
       const std::uint64_t sequence_end =
@@ -1570,6 +2006,8 @@ class LinuxTraceWriter::Implementation final {
                   "aggregate successful operation count overflow");
       checked_add(statistics.failed_operations, api.failed_operations,
                   "aggregate failed operation count overflow");
+      checked_add(statistics.filtered_before_queue, api.filtered_before_queue,
+                  "aggregate filtered operation count overflow");
       checked_add(statistics.dropped_events, api.dropped_events,
                   "aggregate dropped event count overflow");
     }
@@ -1621,7 +2059,7 @@ class LinuxTraceWriter::Implementation final {
     result_.end_of_trace_written =
         write_terminal_chunk(noleax::trace::ChunkType::kEnd, end_payload);
 
-    writer_.flush();
+    flush_stream();
     result_.status = file_limit_reached_ ? LinuxTraceWriterStatus::kFileLimit
                                          : LinuxTraceWriterStatus::kComplete;
     result_.completeness_mask = end.aggregate_completeness.mask();
@@ -1673,6 +2111,8 @@ class LinuxTraceWriter::Implementation final {
   LinuxModuleTracker& module_tracker_;
   const LinuxTraceWriterOptions options_;
   const std::vector<noleax::trace::CustomHookDefinition> custom_definitions_;
+  const std::filesystem::path final_path_;
+  const std::filesystem::path partial_path_;
   std::ofstream output_;
   const std::uint64_t monotonic_origin_;
   NormalizedStackDictionary dictionary_;
@@ -1696,6 +2136,9 @@ class LinuxTraceWriter::Implementation final {
   std::condition_variable state_changed_;
   std::atomic<bool> stop_requested_{false};
   std::atomic<bool> running_{true};
+  // Live telemetry mirrors, read by live_status() from any thread.
+  std::atomic<std::uint64_t> status_bytes_written_{0U};
+  std::atomic<std::uint64_t> last_flush_monotonic_ns_{0U};
   bool thread_ready_{false};
   bool capture_begun_{false};
   bool metadata_written_{false};
@@ -1703,6 +2146,9 @@ class LinuxTraceWriter::Implementation final {
   bool initial_modules_processed_{false};
   bool inline_finalize_done_{false};
   bool finalized_{false};
+  bool error_tail_attempted_{false};
+  bool error_recorded_{false};
+  bool output_committed_{false};
 
   LinuxTraceWriterResult result_;
   std::uint64_t next_allocation_id_{1U};
@@ -1765,5 +2211,9 @@ LinuxTraceWriterResult LinuxTraceWriter::finish_after_worker_exit() {
 }
 
 bool LinuxTraceWriter::is_running() const noexcept { return implementation_->is_running(); }
+
+LinuxTraceWriterLiveStatus LinuxTraceWriter::live_status() const noexcept {
+  return implementation_->live_status();
+}
 
 }  // namespace noleax::agent::linux

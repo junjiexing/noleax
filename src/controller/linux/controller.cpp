@@ -144,7 +144,31 @@ struct ChildEnvironment {
 ControllerError::ControllerError(const std::string& message, std::uint32_t system_error)
     : std::runtime_error{message}, system_error_{system_error} {}
 
+ControllerError::ControllerError(const std::string& message, ControllerFailureKind failure_kind,
+                                 std::uint32_t system_error)
+    : std::runtime_error{message}, system_error_{system_error}, failure_kind_{failure_kind} {}
+
 std::uint32_t ControllerError::system_error() const noexcept { return system_error_; }
+
+ControllerFailureKind ControllerError::failure_kind() const noexcept { return failure_kind_; }
+
+const char* controller_failure_kind_name(ControllerFailureKind kind) noexcept {
+  switch (kind) {
+    case ControllerFailureKind::kNone:
+      return "none";
+    case ControllerFailureKind::kAgentCrash:
+      return "agent-crash";
+    case ControllerFailureKind::kWriterError:
+      return "writer-error";
+    case ControllerFailureKind::kHookInstall:
+      return "hook-install";
+    case ControllerFailureKind::kTargetExit:
+      return "target-exit";
+    case ControllerFailureKind::kProtocol:
+      return "protocol";
+  }
+  return "unknown";
+}
 
 class CaptureSession::Impl {
  public:
@@ -202,14 +226,7 @@ class CaptureSession::Impl {
           static_cast<std::uint32_t>(*exec_error)};
     }
 
-    try {
-      complete_handshake(capture);
-    } catch (const noleax::ipc::linux::SocketError& error) {
-      throw ControllerError{std::string{"agent session failed: "} + error.what(),
-                            error.system_error()};
-    } catch (const noleax::ipc::ProtocolError& error) {
-      throw ControllerError{std::string{"agent protocol violation: "} + error.what()};
-    }
+    run_handshake(capture);
   }
 
   // Attach path: inject the agent into a running process and let its attach bootstrap
@@ -237,14 +254,66 @@ class CaptureSession::Impl {
     std::memcpy(parameter_bytes.data(), &parameters, sizeof(parameters));
     PtraceInjector::inject(process_id, capture.agent_path, parameter_bytes);
 
+    run_handshake(capture);
+  }
+
+  // Classified handshake: a broken session socket means the target died (kTargetExit) or
+  // the agent never came up (kAgentCrash); a decode failure is a protocol error.
+  void run_handshake(const CaptureOptions& capture) {
     try {
       complete_handshake(capture);
     } catch (const noleax::ipc::linux::SocketError& error) {
+      if (note_target_exit()) {
+        throw ControllerError{
+            "target exited before the agent handshake completed: " + std::string{error.what()},
+            ControllerFailureKind::kTargetExit, error.system_error()};
+      }
       throw ControllerError{std::string{"agent session failed: "} + error.what(),
-                            error.system_error()};
+                            ControllerFailureKind::kAgentCrash, error.system_error()};
     } catch (const noleax::ipc::ProtocolError& error) {
-      throw ControllerError{std::string{"agent protocol violation: "} + error.what()};
+      throw ControllerError{std::string{"agent protocol violation: "} + error.what(),
+                            ControllerFailureKind::kProtocol};
     }
+  }
+
+  // Re-checks target liveness after a session failure: a dead target broke the socket by
+  // exiting; a live one means the agent died (or never came up) inside it.
+  [[nodiscard]] bool note_target_exit() {
+    if (target_exited_) {
+      return true;
+    }
+    int status = 0;
+    const pid_t result = ::waitpid(static_cast<pid_t>(process_id_), &status, WNOHANG);
+    if (result == static_cast<pid_t>(process_id_)) {
+      target_exited_ = true;
+      if (WIFEXITED(status)) {
+        target_exit_code_ = static_cast<std::uint32_t>(WEXITSTATUS(status));
+      } else if (WIFSIGNALED(status)) {
+        target_exit_code_ = 128U + static_cast<std::uint32_t>(WTERMSIG(status));
+      }
+      return true;
+    }
+    if (result < 0 && errno == ECHILD) {
+      // Attached targets are not our children: watch the process directory instead.
+      const std::string proc_dir = "/proc/" + std::to_string(process_id_);
+      if (::access(proc_dir.c_str(), F_OK) != 0) {
+        target_exited_ = true;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // A session socket that broke mid-capture: the target exiting and the agent crashing
+  // look identical on the wire, so liveness decides the classification.
+  [[nodiscard]] ControllerError session_broken_error(const char* context,
+                                                     const noleax::ipc::linux::SocketError& error) {
+    if (note_target_exit()) {
+      return ControllerError{std::string{"target exited "} + context + ": " + error.what(),
+                             ControllerFailureKind::kTargetExit, error.system_error()};
+    }
+    return ControllerError{std::string{"agent crashed "} + context + ": " + error.what(),
+                           ControllerFailureKind::kAgentCrash, error.system_error()};
   }
 
   void complete_handshake(const CaptureOptions& capture) {
@@ -253,18 +322,20 @@ class CaptureSession::Impl {
 
     noleax::ipc::Message hello = channel_->receive(capture.timeout);
     if (hello.type != MessageType::kAgentHello) {
-      throw ControllerError{"agent did not start the session with a hello"};
+      throw ControllerError{"agent did not start the session with a hello",
+                            ControllerFailureKind::kProtocol};
     }
     const auto hello_payload = noleax::ipc::decode_agent_hello(hello.payload);
     if (hello_payload.session_token != token_ ||
         hello_payload.agent_abi_version != noleax::kAgentAbiVersion ||
         hello_payload.pointer_width != sizeof(void*) ||
         hello_payload.architecture != noleax::ipc::Architecture::kX64) {
-      throw ControllerError{"agent hello failed validation"};
+      throw ControllerError{"agent hello failed validation", ControllerFailureKind::kProtocol};
     }
     agent_thread_id_ = hello_payload.worker_thread_id;
     if (channel_->client_process_id() != process_id_) {
-      throw ControllerError{"agent connection did not come from the target process"};
+      throw ControllerError{"agent connection did not come from the target process",
+                            ControllerFailureKind::kProtocol};
     }
 
     noleax::ipc::Message start;
@@ -275,11 +346,15 @@ class CaptureSession::Impl {
     noleax::ipc::Message ready = channel_->receive(capture.timeout);
     if (ready.type == MessageType::kError) {
       const auto error = noleax::ipc::decode_error_response(ready.payload);
+      if (error.error_code == noleax::ipc::kAgentStartErrorTraceWriter) {
+        throw ControllerError{"trace writer failed to start: " + error.message,
+                              ControllerFailureKind::kWriterError, error.system_error};
+      }
       throw ControllerError{"agent failed to start the capture: " + error.message,
-                            error.error_code};
+                            ControllerFailureKind::kHookInstall, error.error_code};
     }
     if (ready.type != MessageType::kCaptureReady) {
-      throw ControllerError{"agent did not signal capture ready"};
+      throw ControllerError{"agent did not signal capture ready", ControllerFailureKind::kProtocol};
     }
   }
 
@@ -294,12 +369,23 @@ class CaptureSession::Impl {
     noleax::ipc::Message request;
     request.type = MessageType::kQueryStatus;
     request.request_id = ++next_request_id_;
-    channel_->send(request, 5s);
-    const noleax::ipc::Message response = channel_->receive(5s);
-    if (response.type != MessageType::kCaptureStatus) {
-      throw ControllerError{"agent did not answer the status query"};
+    noleax::ipc::Message response;
+    try {
+      channel_->send(request, 5s);
+      response = channel_->receive(5s);
+    } catch (const noleax::ipc::linux::SocketError& error) {
+      throw session_broken_error("while the controller queried the capture status", error);
     }
-    return noleax::ipc::decode_capture_status(response.payload);
+    if (response.type != MessageType::kCaptureStatus) {
+      throw ControllerError{"agent did not answer the status query",
+                            ControllerFailureKind::kProtocol};
+    }
+    try {
+      return noleax::ipc::decode_capture_status(response.payload);
+    } catch (const noleax::ipc::ProtocolError& error) {
+      throw ControllerError{std::string{"agent protocol violation: "} + error.what(),
+                            ControllerFailureKind::kProtocol};
+    }
   }
 
   [[nodiscard]] noleax::ipc::CaptureStatus stop() {
@@ -309,23 +395,39 @@ class CaptureSession::Impl {
     noleax::ipc::Message request;
     request.request_id = ++next_request_id_;
 
-    request.type = MessageType::kStopCapture;
-    channel_->send(request, 30s);
-    noleax::ipc::Message response = channel_->receive(30s);
-    if (response.type != MessageType::kCaptureDrained) {
-      throw ControllerError{"agent did not drain the capture"};
-    }
-    last_status_ = noleax::ipc::decode_capture_status(response.payload);
+    try {
+      request.type = MessageType::kStopCapture;
+      channel_->send(request, 30s);
+      const noleax::ipc::Message drained = channel_->receive(30s);
+      if (drained.type != MessageType::kCaptureDrained) {
+        throw ControllerError{"agent did not drain the capture", ControllerFailureKind::kProtocol};
+      }
+      last_status_ = noleax::ipc::decode_capture_status(drained.payload);
 
-    request.request_id = ++next_request_id_;
-    request.type = MessageType::kFinalizeHooks;
-    channel_->send(request, 30s);
-    response = channel_->receive(30s);
-    if (response.type != MessageType::kCaptureFinalized) {
-      throw ControllerError{"agent did not finalize the capture"};
+      request.request_id = ++next_request_id_;
+      request.type = MessageType::kFinalizeHooks;
+      channel_->send(request, 30s);
+      const noleax::ipc::Message finalized = channel_->receive(30s);
+      if (finalized.type != MessageType::kCaptureFinalized) {
+        throw ControllerError{"agent did not finalize the capture",
+                              ControllerFailureKind::kProtocol};
+      }
+      last_status_ = noleax::ipc::decode_capture_status(finalized.payload);
+    } catch (const noleax::ipc::linux::SocketError& error) {
+      throw session_broken_error("while the capture was stopping", error);
+    } catch (const noleax::ipc::ProtocolError& error) {
+      throw ControllerError{std::string{"agent protocol violation: "} + error.what(),
+                            ControllerFailureKind::kProtocol};
     }
-    last_status_ = noleax::ipc::decode_capture_status(response.payload);
     stopped_ = true;
+    if (last_status_.state == noleax::ipc::AgentState::kFailed) {
+      // The agent already preserved the capture into the trace tail; the controller only
+      // learns that the writer failed, not why (the target's stderr has the detail).
+      throw ControllerError{
+          "trace writer failed in the agent; the partial trace preserves "
+          "the capture up to the failure",
+          ControllerFailureKind::kWriterError};
+    }
     return last_status_;
   }
 

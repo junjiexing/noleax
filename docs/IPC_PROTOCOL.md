@@ -48,6 +48,19 @@ ABI 5 把 `custom_hooks` 元素的共享参数位（size_arg/ptr_arg/count_arg�
 Linux）：符号名经角色的 export 名字段传输，agent 对模块磁盘映像做 symtab/dynsym 流式查找
 （必要时经 `.gnu_debuglink` 伴生文件，GNU CRC32 + Build ID 校验）并换算为运行时地址。
 
+ABI 5 在任何发布之前原地扩展 `CaptureStatus`（版本号不升）：在既有字段之后追加五个 uint64
+——`queued_events`（队列当前占用）、`queue_capacity`、`queue_high_water_events`（消费侧采
+样的占用高水位，队列满丢弃时钉在容量）、`consumed_events`（累计出队数）、
+`last_flush_monotonic_ns`（agent writer 上次成功 flush 的 CLOCK_MONOTONIC 纳秒，0 表示从未
+flush）。agent 侧尚无队列或 writer 时这些字段为零。编解码仍要求完整消费 payload，两侧同版
+本构建因此总是同形。
+
+agent 在 drain 后把 writer 失败映射到会话状态：`CaptureDrained`/`CaptureFinalized` 携带的
+`AgentState` 为 `kFailed` 表示 writer 失败（trace 尾部保有细节），controller 据此分类为
+writer-error；`StartCapture` 的 `ErrorResponse` 错误码约定为 1=一般 agent 错误、3=内置
+profile hook 安装失败、5=不支持的 hook profile、6=trace writer 启动失败（此时
+`system_error` 携带 open 阶段的 errno）。
+
 ## 3. 传输和安全边界
 
 - pipe 名由 128-bit session token 生成，并使用 `PIPE_REJECT_REMOTE_CLIENTS`；

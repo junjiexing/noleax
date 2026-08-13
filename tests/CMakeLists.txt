@@ -305,6 +305,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     ${CMAKE_DL_LIBS}
   )
   noleax_set_project_warnings(noleax-linux-trace-writer-probe)
+  # Phase 8 shell-checks that the CLI accepts a preserved .partial trace.
+  add_dependencies(noleax-linux-trace-writer-probe noleax)
+  target_compile_definitions(noleax-linux-trace-writer-probe PRIVATE
+    NOLEAX_CLI_PATH="$<TARGET_FILE:noleax>"
+  )
   add_test(NAME agent.linux-trace-writer-probe
     COMMAND noleax-linux-trace-writer-probe
   )

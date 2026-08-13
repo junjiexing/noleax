@@ -181,6 +181,16 @@ struct CaptureStatus {
   std::uint64_t filtered_calls{0U};
   std::uint64_t dropped_events{0U};
   std::uint64_t bytes_written{0U};
+  // Live queue and writer telemetry (in-place ABI 5 extension; ABI 5 predates any
+  // release, so the same version number covers both shapes). Zeros before the queue or
+  // the writer exist.
+  std::uint64_t queued_events{0U};
+  std::uint64_t queue_capacity{0U};
+  std::uint64_t queue_high_water_events{0U};
+  std::uint64_t consumed_events{0U};
+  // CLOCK_MONOTONIC nanoseconds of the agent writer's last successful stream flush;
+  // 0 = never flushed.
+  std::uint64_t last_flush_monotonic_ns{0U};
 
   bool operator==(const CaptureStatus&) const = default;
 };
@@ -192,6 +202,13 @@ struct ErrorResponse {
 
   bool operator==(const ErrorResponse&) const = default;
 };
+
+// Stable agent-side codes for the ErrorResponse answering StartCapture: the agent sends
+// them and the controller maps them onto its failure classification (docs/CLI.md §12).
+inline constexpr std::uint32_t kAgentStartErrorGeneric = 1U;
+inline constexpr std::uint32_t kAgentStartErrorHookInstall = 3U;
+inline constexpr std::uint32_t kAgentStartErrorUnsupportedProfile = 5U;
+inline constexpr std::uint32_t kAgentStartErrorTraceWriter = 6U;
 
 class ProtocolError final : public std::runtime_error {
  public:

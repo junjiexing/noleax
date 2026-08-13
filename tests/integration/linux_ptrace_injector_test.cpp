@@ -27,6 +27,7 @@
 
 #include "noleax/agent/linux/bootstrap.hpp"
 #include "noleax/analyzer/event_stream.hpp"
+#include "noleax/controller/linux/controller.hpp"
 #include "noleax/controller/linux/ptrace_injector.hpp"
 #include "noleax/ipc/linux/unix_socket.hpp"
 #include "noleax/ipc/protocol.hpp"
@@ -206,11 +207,22 @@ TEST_CASE("linux ptrace injector attaches the agent to a running process",
   const auto capturing = noleax::ipc::decode_capture_status(status.payload);
   CHECK(capturing.state == noleax::ipc::AgentState::kCapturing);
   CHECK(capturing.observed_calls > 0U);
+  // H2 live telemetry: the default 16 MiB buffer floors to 16384 640-byte slots; the
+  // writer flushes on its flush interval, so bytes and the flush stamp are live.
+  CHECK(capturing.queue_capacity == 16'384U);
+  CHECK(capturing.queued_events <= capturing.queue_capacity);
+  CHECK(capturing.queue_high_water_events >= capturing.queued_events);
+  CHECK(capturing.queue_high_water_events <= capturing.queue_capacity);
+  CHECK(capturing.consumed_events > 0U);
+  CHECK(capturing.bytes_written > 0U);
+  CHECK(capturing.last_flush_monotonic_ns > 0U);
 
   const noleax::ipc::Message drained = roundtrip(channel, MessageType::kStopCapture, 3U);
   REQUIRE(drained.type == MessageType::kCaptureDrained);
   const noleax::ipc::Message finalized = roundtrip(channel, MessageType::kFinalizeHooks, 4U);
   REQUIRE(finalized.type == MessageType::kCaptureFinalized);
+  CHECK(noleax::ipc::decode_capture_status(finalized.payload).state ==
+        noleax::ipc::AgentState::kFinalized);
 
   // Orderly fixture exit: release it and check its own exit code and report survived the
   // injection (the only thread was hijacked, restored, and detached mid-run).
@@ -273,5 +285,119 @@ TEST_CASE("linux ptrace injector attaches the agent to a running process",
   }
   if (report_pipe[0] >= 0) {
     ::close(report_pipe[0]);
+  }
+}
+
+// H2 failure classification: the controller must say WHY a capture failed. An uncreatable
+// trace path surfaces as a StartCapture error with the trace-writer code, and a SIGKILLed
+// target mid-capture classifies as target-exit (not a bare broken pipe).
+TEST_CASE("linux controller classifies writer start failures and target exit",
+          "[controller][linux][classification]") {
+  const auto stamp = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+  const std::filesystem::path trace =
+      std::filesystem::temp_directory_path() / ("noleax-classify-" + stamp + ".nlx");
+
+  // Case 1: the agent cannot create the trace file -> kWriterError at the handshake.
+  {
+    int release_pipe[2] = {-1, -1};
+    int report_pipe[2] = {-1, -1};
+    REQUIRE(::pipe(release_pipe) == 0);
+    REQUIRE(::pipe(report_pipe) == 0);
+    const pid_t child = ::fork();
+    if (child == 0) {
+      ::close(release_pipe[1]);
+      ::close(report_pipe[0]);
+      fixture_child(release_pipe[0], report_pipe[1]);
+    }
+    REQUIRE(child > 0);
+    ::close(release_pipe[0]);
+    ::close(report_pipe[1]);
+    ChildGuard guard{child};
+    std::this_thread::sleep_for(200ms);
+
+    noleax::controller::linux::CaptureOptions capture;
+    capture.agent_path = NOLEAX_AGENT_PATH;
+    capture.timeout = 10s;
+    capture.start.capture_kind = noleax::ipc::CaptureKind::kAttach;
+    capture.start.hook_profile = noleax::ipc::HookProfile::kLinuxGlibcHeap;
+    capture.start.trace_path_utf8 = "/noleax-h2-no-such-dir/trace.nlx";
+    try {
+      auto session = noleax::controller::linux::CaptureSession::attach(
+          static_cast<std::uint32_t>(child), capture);
+      FAIL("expected a classified ControllerError");
+    } catch (const noleax::controller::linux::ControllerError& error) {
+      CHECK(error.failure_kind() == noleax::controller::linux::ControllerFailureKind::kWriterError);
+      CHECK(std::string{error.what()}.find("trace writer failed to start") != std::string::npos);
+      CHECK(error.system_error() == static_cast<std::uint32_t>(ENOENT));
+    }
+    const ssize_t released = ::write(release_pipe[1], "x", 1U);
+    REQUIRE(released == 1);
+    ::close(release_pipe[1]);
+    int exit_status = 0;
+    ::waitpid(child, &exit_status, 0);
+    guard.pid = -1;
+    // The report pipe stays open until the fixture's final write has landed.
+    ::close(report_pipe[0]);
+    CHECK(WIFEXITED(exit_status));  // the target survived the failed capture start
+  }
+
+  // Case 2: SIGKILL the target mid-capture -> the next session operation reports
+  // kTargetExit (liveness decides), not a raw socket error.
+  {
+    int release_pipe[2] = {-1, -1};
+    int report_pipe[2] = {-1, -1};
+    REQUIRE(::pipe(release_pipe) == 0);
+    REQUIRE(::pipe(report_pipe) == 0);
+    const pid_t child = ::fork();
+    if (child == 0) {
+      ::close(release_pipe[1]);
+      ::close(report_pipe[0]);
+      fixture_child(release_pipe[0], report_pipe[1]);
+    }
+    REQUIRE(child > 0);
+    ::close(release_pipe[0]);
+    ::close(report_pipe[1]);
+    ChildGuard guard{child};
+    std::this_thread::sleep_for(200ms);
+
+    noleax::controller::linux::CaptureOptions capture;
+    capture.agent_path = NOLEAX_AGENT_PATH;
+    capture.timeout = 10s;
+    capture.start.capture_kind = noleax::ipc::CaptureKind::kAttach;
+    capture.start.hook_profile = noleax::ipc::HookProfile::kLinuxGlibcHeap;
+    capture.start.trace_path_utf8 = trace.string();
+    auto session = noleax::controller::linux::CaptureSession::attach(
+        static_cast<std::uint32_t>(child), capture);
+    REQUIRE(session.query_status().state == noleax::ipc::AgentState::kCapturing);
+
+    REQUIRE(::kill(child, SIGKILL) == 0);
+    bool classified = false;
+    for (int attempt = 0; attempt != 50 && !classified; ++attempt) {
+      try {
+        static_cast<void>(session.query_status());
+        std::this_thread::sleep_for(20ms);  // the socket may die a beat after the kill
+      } catch (const noleax::controller::linux::ControllerError& error) {
+        classified = true;
+        CHECK(error.failure_kind() ==
+              noleax::controller::linux::ControllerFailureKind::kTargetExit);
+        CHECK(std::string{error.what()}.find("target exited") != std::string::npos);
+      }
+    }
+    CHECK(classified);
+    CHECK(session.target_exited());
+    // SIGKILL leaves the trace as a .partial the analyzer can still open.
+    const std::filesystem::path partial = trace.string() + ".partial";
+    std::error_code error;
+    if (std::filesystem::is_regular_file(partial, error)) {
+      std::ifstream input{partial, std::ios::binary};
+      REQUIRE(input.good());
+      static_cast<void>(noleax::analyzer::analyze_event_stream(input));
+      std::filesystem::remove(partial, error);
+    }
+    ::close(release_pipe[1]);
+    ::close(report_pipe[0]);
+    int exit_status = 0;
+    ::waitpid(child, &exit_status, 0);  // already reaped by the session: ECHILD is fine
+    guard.pid = -1;
   }
 }

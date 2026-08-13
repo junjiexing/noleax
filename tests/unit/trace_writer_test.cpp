@@ -7,8 +7,10 @@
 #include <array>
 #include <bit>
 #include <catch2/catch_test_macros.hpp>
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
+#include <ostream>
 #include <span>
 #include <sstream>
 #include <string>
@@ -288,4 +290,120 @@ TEST_CASE("wire format validation rejects invalid headers descriptors and record
       noleax::trace::TraceWriter(invalid_options_output, minimal_file_header(), invalid_options),
       noleax::trace::TraceWriteError);
   CHECK(stream_bytes(invalid_options_output).empty());
+}
+
+namespace {
+
+// A streambuf stand-in for a full disk: writes succeed until the byte budget runs out,
+// then fail with ENOSPC; sync (flush) fails once armed.
+class BudgetFailBuffer final : public std::streambuf {
+ public:
+  explicit BudgetFailBuffer(std::size_t budget, bool fail_sync = false)
+      : budget_{budget}, fail_sync_{fail_sync} {}
+
+ protected:
+  std::streamsize xsputn(const char* data, std::streamsize count) override {
+    const auto allowed =
+        static_cast<std::streamsize>((std::min)(budget_, static_cast<std::size_t>(count)));
+    sink_.append(data, static_cast<std::size_t>(allowed));
+    budget_ -= static_cast<std::size_t>(allowed);
+    if (allowed < count) {
+      errno = ENOSPC;
+    }
+    return allowed;
+  }
+
+  int_type overflow(int_type value) override {
+    if (budget_ == 0U) {
+      errno = ENOSPC;
+      return traits_type::eof();
+    }
+    --budget_;
+    sink_.push_back(traits_type::to_char_type(value));
+    return value;
+  }
+
+  int sync() override {
+    if (fail_sync_) {
+      errno = EIO;
+      return -1;
+    }
+    return 0;
+  }
+
+ private:
+  std::size_t budget_;
+  bool fail_sync_;
+  std::string sink_;
+};
+
+}  // namespace
+
+TEST_CASE("trace write errors carry phase errno offset and chunk type", "[trace][writer]") {
+  // Header phase: no budget at all, so the constructor's header write fails.
+  {
+    BudgetFailBuffer buffer{0U};
+    std::ostream output{&buffer};
+    try {
+      noleax::trace::TraceWriter writer{output, minimal_file_header(), {}};
+      FAIL("expected a TraceWriteError");
+    } catch (const noleax::trace::TraceWriteError& error) {
+      CHECK(error.phase() == noleax::trace::TraceWritePhase::kHeader);
+      CHECK(error.system_error() == static_cast<std::uint32_t>(ENOSPC));
+      CHECK(error.file_offset().has_value());
+      CHECK(*error.file_offset() == 0U);
+      CHECK(!error.chunk_type().has_value());
+    }
+  }
+
+  // Write phase: the budget covers the file header only; the first chunk write fails.
+  {
+    BudgetFailBuffer buffer{noleax::trace::kFileHeaderSize};
+    std::ostream output{&buffer};
+    noleax::trace::TraceWriter writer{output, minimal_file_header(), {}};
+    try {
+      static_cast<void>(writer.write_chunk(descriptor(noleax::trace::CompressionCodec::kNone),
+                                           compressible_payload()));
+      FAIL("expected a TraceWriteError");
+    } catch (const noleax::trace::TraceWriteError& error) {
+      CHECK(error.phase() == noleax::trace::TraceWritePhase::kWrite);
+      CHECK(error.system_error() == static_cast<std::uint32_t>(ENOSPC));
+      CHECK(error.file_offset().has_value());
+      CHECK(*error.file_offset() == noleax::trace::kFileHeaderSize);
+      CHECK(error.chunk_type().has_value());
+      CHECK(*error.chunk_type() == noleax::trace::ChunkType::kEvent);
+    }
+  }
+
+  // Flush phase: writes fit the budget; the stream flush fails.
+  {
+    BudgetFailBuffer buffer{1024U * 1024U, true};
+    std::ostream output{&buffer};
+    noleax::trace::TraceWriter writer{output, minimal_file_header(), {}};
+    REQUIRE(writer.write_chunk(descriptor(noleax::trace::CompressionCodec::kNone),
+                               compressible_payload()) ==
+            noleax::trace::ChunkWriteResult::kWritten);
+    try {
+      writer.flush();
+      FAIL("expected a TraceWriteError");
+    } catch (const noleax::trace::TraceWriteError& error) {
+      CHECK(error.phase() == noleax::trace::TraceWritePhase::kFlush);
+      CHECK(error.system_error() == static_cast<std::uint32_t>(EIO));
+      CHECK(error.file_offset().has_value());
+      CHECK(*error.file_offset() == writer.bytes_written());
+    }
+  }
+
+  // The message-only constructor stays source compatible and defaults to "no context".
+  {
+    const noleax::trace::TraceWriteError legacy{"plain failure"};
+    CHECK(std::string_view{legacy.what()} == "plain failure");
+    CHECK(legacy.phase() == noleax::trace::TraceWritePhase::kNone);
+    CHECK(legacy.system_error() == 0U);
+    CHECK(!legacy.file_offset().has_value());
+    CHECK(!legacy.chunk_type().has_value());
+  }
+
+  CHECK(std::string_view{noleax::trace::trace_write_phase_name(
+            noleax::trace::TraceWritePhase::kCompression)} == "compression");
 }

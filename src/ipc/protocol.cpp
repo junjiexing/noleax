@@ -510,6 +510,11 @@ std::vector<std::byte> encode_capture_status(const CaptureStatus& status) {
   writer.integer(status.filtered_calls);
   writer.integer(status.dropped_events);
   writer.integer(status.bytes_written);
+  writer.integer(status.queued_events);
+  writer.integer(status.queue_capacity);
+  writer.integer(status.queue_high_water_events);
+  writer.integer(status.consumed_events);
+  writer.integer(status.last_flush_monotonic_ns);
   return std::move(writer).finish();
 }
 
@@ -525,6 +530,11 @@ CaptureStatus decode_capture_status(std::span<const std::byte> payload) {
   status.filtered_calls = reader.integer<std::uint64_t>();
   status.dropped_events = reader.integer<std::uint64_t>();
   status.bytes_written = reader.integer<std::uint64_t>();
+  status.queued_events = reader.integer<std::uint64_t>();
+  status.queue_capacity = reader.integer<std::uint64_t>();
+  status.queue_high_water_events = reader.integer<std::uint64_t>();
+  status.consumed_events = reader.integer<std::uint64_t>();
+  status.last_flush_monotonic_ns = reader.integer<std::uint64_t>();
   reader.finish();
   if (!valid_agent_state(status.state) || reserved8 != 0U || reserved16 != 0U || reserved32 != 0U) {
     throw ProtocolError{"capture status contains invalid fields"};

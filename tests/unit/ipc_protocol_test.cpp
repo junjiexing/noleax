@@ -97,7 +97,7 @@ TEST_CASE("IPC payload codecs preserve capture contracts", "[ipc][protocol]") {
   CHECK(noleax::ipc::decode_start_capture(noleax::ipc::encode_start_capture(start)) == start);
 
   const noleax::ipc::CaptureStatus status{
-      noleax::ipc::AgentState::kCapturing, 10U, 9U, 1U, 0U, 4096U};
+      noleax::ipc::AgentState::kCapturing, 10U, 9U, 1U, 0U, 4096U, 3U, 1024U, 7U, 6U, 123'456'789U};
   CHECK(noleax::ipc::decode_capture_status(noleax::ipc::encode_capture_status(status)) == status);
 
   const noleax::ipc::ErrorResponse error{7U, 5U, "access denied"};
