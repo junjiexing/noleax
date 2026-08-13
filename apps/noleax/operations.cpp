@@ -1411,10 +1411,50 @@ class InterruptHandlerGuard final {
   return capture;
 }
 
+[[nodiscard]] const char* agent_state_name(noleax::ipc::AgentState state) noexcept {
+  switch (state) {
+    case noleax::ipc::AgentState::kIdle:
+      return "idle";
+    case noleax::ipc::AgentState::kStarting:
+      return "starting";
+    case noleax::ipc::AgentState::kCapturing:
+      return "capturing";
+    case noleax::ipc::AgentState::kDrained:
+      return "drained";
+    case noleax::ipc::AgentState::kFinalized:
+      return "finalized";
+    case noleax::ipc::AgentState::kFailed:
+      return "failed";
+  }
+  return "unknown";
+}
+
+// One --live status line. steady_clock is CLOCK_MONOTONIC on Linux, the same clock the
+// agent stamps last_flush_monotonic_ns on, so the flush age is a direct subtraction.
+void print_live_status(const noleax::ipc::CaptureStatus& status) {
+  std::cout << "status: state=" << agent_state_name(status.state)
+            << " observed=" << status.observed_calls << " written=" << status.written_events
+            << " filtered=" << status.filtered_calls << " dropped=" << status.dropped_events
+            << " queued=" << status.queued_events << "/" << status.queue_capacity
+            << " high_water=" << status.queue_high_water_events
+            << " consumed=" << status.consumed_events << " bytes=" << status.bytes_written;
+  if (status.last_flush_monotonic_ns == 0U) {
+    std::cout << " last_flush=never";
+  } else {
+    const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::steady_clock::now().time_since_epoch())
+                            .count();
+    const auto age_ns = static_cast<std::uint64_t>((std::max)(
+        now_ns - static_cast<std::int64_t>(status.last_flush_monotonic_ns), std::int64_t{0}));
+    std::cout << " last_flush_age_ms=" << age_ns / 1'000'000U;
+  }
+  std::cout << std::endl;
+}
+
 [[nodiscard]] int print_capture_summary(const std::filesystem::path& trace_path, std::uint32_t pid,
                                         bool target_exited,
                                         std::optional<std::uint32_t> target_exit_code,
-                                        bool detached) {
+                                        bool detached, std::string_view failure_note = {}) {
   if (detached) {
     std::cout << "capture detached: trace=" << noleax::config::path_to_utf8(trace_path)
               << " pid=" << pid
@@ -1422,15 +1462,33 @@ class InterruptHandlerGuard final {
                  "exits\n";
     return 2;
   }
+  // The agent streams into <trace>.partial and renames it only after a clean finalize;
+  // a failed or killed capture leaves the partial file, which stays analyzable.
+  std::filesystem::path effective_path = trace_path;
+  bool partial = false;
   std::ifstream input{trace_path, std::ios::binary};
   if (!input) {
+    std::filesystem::path partial_path = trace_path;
+    partial_path += ".partial";
+    input.open(partial_path, std::ios::binary);
+    if (input) {
+      effective_path = std::move(partial_path);
+      partial = true;
+    }
+  }
+  if (!input) {
     std::cout << "capture produced no trace: trace=" << noleax::config::path_to_utf8(trace_path)
-              << " pid=" << pid << " note=the agent may have failed to start\n";
+              << " pid=" << pid << " note=";
+    if (failure_note.empty()) {
+      std::cout << "the agent may have failed to start\n";
+    } else {
+      std::cout << failure_note << '\n';
+    }
     return 2;
   }
   const auto analyzed = noleax::analyzer::analyze_event_stream(input);
-  std::cout << "capture finalized: trace=" << noleax::config::path_to_utf8(trace_path)
-            << " pid=" << pid;
+  std::cout << (partial ? "capture incomplete: " : "capture finalized: ")
+            << "trace=" << noleax::config::path_to_utf8(effective_path) << " pid=" << pid;
   if (analyzed.statistics.has_value()) {
     const auto& statistics = *analyzed.statistics;
     std::cout << " observed=" << statistics.observed_calls << " written="
@@ -1444,6 +1502,11 @@ class InterruptHandlerGuard final {
     std::cout << " target_exit_code=" << *target_exit_code;
   } else if (!target_exited) {
     std::cout << " target_state=running";
+  }
+  if (partial && failure_note.empty()) {
+    std::cout << " note=the capture ended abnormally; reporting the preserved partial trace";
+  } else if (!failure_note.empty()) {
+    std::cout << " note=" << failure_note;
   }
   std::cout << '\n';
   return analyzed.completeness.recommended_exit_code();
@@ -1478,8 +1541,8 @@ class InterruptHandlerGuard final {
   ensure_output_directory(trace_path);
   const auto capture = linux_capture_options(configuration, trace_path);
   InterruptHandlerGuard interrupts;
+  std::optional<noleax::controller::linux::CaptureSession> session;
   try {
-    std::optional<noleax::controller::linux::CaptureSession> session;
     if (is_attach) {
       session.emplace(noleax::controller::linux::CaptureSession::attach(
           *configuration.target.pid.value, capture));
@@ -1494,13 +1557,16 @@ class InterruptHandlerGuard final {
 
     // Wait for the target exit, the capture duration, or Ctrl+C (detach), whichever
     // comes first. On duration the controller drives the stop/finalize handshake; the
-    // target then keeps running with hooks reverted.
+    // target then keeps running with hooks reverted. --live polls QueryStatus once a
+    // second and prints the conservation and queue telemetry.
     bool target_exited = false;
     bool detached = false;
+    const bool live = configuration.capture.live.value;
     const auto deadline =
         configuration.capture.duration.value.has_value()
             ? std::chrono::steady_clock::now() + *configuration.capture.duration.value
             : std::chrono::steady_clock::time_point::max();
+    auto next_status_poll = std::chrono::steady_clock::now() + std::chrono::seconds{1};
     for (;;) {
       if (session->wait_for_target(50ms)) {
         target_exited = true;
@@ -1510,7 +1576,12 @@ class InterruptHandlerGuard final {
         detached = true;
         break;
       }
-      if (std::chrono::steady_clock::now() >= deadline) {
+      const auto now = std::chrono::steady_clock::now();
+      if (live && now >= next_status_poll && !session->stopped()) {
+        print_live_status(session->query_status());
+        next_status_poll = now + std::chrono::seconds{1};
+      }
+      if (now >= deadline) {
         static_cast<void>(session->stop());
         break;
       }
@@ -1523,6 +1594,23 @@ class InterruptHandlerGuard final {
                                  detached);
   } catch (const ApplicationError&) {
     throw;
+  } catch (const noleax::controller::linux::ControllerError& error) {
+    // A classified mid-session failure still leaves an analyzable trace (the agent's
+    // exit hook or the writer-error tail): report from the trace itself. A failure
+    // before the session existed (handshake phase) has no trace to fall back to.
+    const auto kind = error.failure_kind();
+    if (session.has_value() &&
+        (kind == noleax::controller::linux::ControllerFailureKind::kTargetExit ||
+         kind == noleax::controller::linux::ControllerFailureKind::kWriterError)) {
+      const bool exited = kind == noleax::controller::linux::ControllerFailureKind::kTargetExit ||
+                          session->target_exited();
+      return print_capture_summary(trace_path, session->process_id(), exited,
+                                   exited && !is_attach && session->target_exited()
+                                       ? std::optional<std::uint32_t>{session->target_exit_code()}
+                                       : std::nullopt,
+                                   false, error.what());
+    }
+    throw ApplicationError{3, std::string{"capture failed: "} + error.what()};
   } catch (const std::exception& error) {
     throw ApplicationError{3, std::string{"capture failed: "} + error.what()};
   }

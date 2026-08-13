@@ -3,6 +3,7 @@
 #include <lz4.h>
 #include <zstd.h>
 
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -16,17 +17,20 @@
 namespace noleax::trace {
 namespace {
 
-void write_bytes(std::ostream& output, std::span<const std::byte> bytes) {
+void write_bytes(std::ostream& output, std::span<const std::byte> bytes, TraceWritePhase phase,
+                 std::uint64_t file_offset, std::optional<ChunkType> chunk_type) {
   if (bytes.empty()) {
     return;
   }
   if (bytes.size() > static_cast<std::size_t>(std::numeric_limits<std::streamsize>::max())) {
-    throw TraceWriteError{"write size exceeds std::streamsize"};
+    throw TraceWriteError{"write size exceeds std::streamsize", phase, 0U, file_offset, chunk_type};
   }
+  errno = 0;
   output.write(reinterpret_cast<const char*>(bytes.data()),
                static_cast<std::streamsize>(bytes.size()));
   if (!output) {
-    throw TraceWriteError{"trace output stream write failed"};
+    throw TraceWriteError{"trace output stream write failed", phase,
+                          static_cast<std::uint32_t>(errno), file_offset, chunk_type};
   }
 }
 
@@ -40,12 +44,14 @@ void write_bytes(std::ostream& output, std::span<const std::byte> bytes) {
   }
   if (payload.size() > static_cast<std::size_t>(LZ4_MAX_INPUT_SIZE) ||
       payload.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
-    throw TraceWriteError{"LZ4 input exceeds its supported size"};
+    throw TraceWriteError{"LZ4 input exceeds its supported size", TraceWritePhase::kCompression,
+                          0U};
   }
   const int source_size = static_cast<int>(payload.size());
   const int bound = LZ4_compressBound(source_size);
   if (bound <= 0) {
-    throw TraceWriteError{"LZ4 could not compute a compression bound"};
+    throw TraceWriteError{"LZ4 could not compute a compression bound",
+                          TraceWritePhase::kCompression, 0U};
   }
 
   std::vector<std::byte> stored(static_cast<std::size_t>(bound));
@@ -53,7 +59,7 @@ void write_bytes(std::ostream& output, std::span<const std::byte> bytes) {
       LZ4_compress_default(reinterpret_cast<const char*>(payload.data()),
                            reinterpret_cast<char*>(stored.data()), source_size, bound);
   if (compressed_size <= 0) {
-    throw TraceWriteError{"LZ4 compression failed"};
+    throw TraceWriteError{"LZ4 compression failed", TraceWritePhase::kCompression, 0U};
   }
   stored.resize(static_cast<std::size_t>(compressed_size));
   return stored;
@@ -66,18 +72,21 @@ void write_bytes(std::ostream& output, std::span<const std::byte> bytes) {
   }
   const int level = configured_level == 0 ? 1 : configured_level;
   if (level != 1) {
-    throw TraceWriteError{"V1 trace writer supports Zstd level 1"};
+    throw TraceWriteError{"V1 trace writer supports Zstd level 1", TraceWritePhase::kCompression,
+                          0U};
   }
   const std::size_t bound = ZSTD_compressBound(payload.size());
   if (ZSTD_isError(bound) != 0U) {
-    throw TraceWriteError{"Zstd could not compute a compression bound"};
+    throw TraceWriteError{"Zstd could not compute a compression bound",
+                          TraceWritePhase::kCompression, 0U};
   }
   std::vector<std::byte> stored(bound);
   const std::size_t compressed_size =
       ZSTD_compress(stored.data(), stored.size(), payload.data(), payload.size(), level);
   if (ZSTD_isError(compressed_size) != 0U) {
-    throw TraceWriteError{"Zstd compression failed: " +
-                          std::string{ZSTD_getErrorName(compressed_size)}};
+    throw TraceWriteError{
+        "Zstd compression failed: " + std::string{ZSTD_getErrorName(compressed_size)},
+        TraceWritePhase::kCompression, 0U};
   }
   stored.resize(compressed_size);
   return stored;
@@ -94,7 +103,7 @@ void write_bytes(std::ostream& output, std::span<const std::byte> bytes) {
     case CompressionCodec::kZstd:
       return compress_zstd(payload, zstd_level);
   }
-  throw TraceWriteError{"unsupported compression codec"};
+  throw TraceWriteError{"unsupported compression codec", TraceWritePhase::kCompression, 0U};
 }
 
 [[nodiscard]] bool exceeds_file_limit(std::uint64_t bytes_written, std::uint64_t stored_size,
@@ -108,6 +117,26 @@ void write_bytes(std::ostream& output, std::span<const std::byte> bytes) {
 }
 
 }  // namespace
+
+const char* trace_write_phase_name(TraceWritePhase phase) noexcept {
+  switch (phase) {
+    case TraceWritePhase::kNone:
+      return "none";
+    case TraceWritePhase::kOpen:
+      return "open";
+    case TraceWritePhase::kWrite:
+      return "write";
+    case TraceWritePhase::kFlush:
+      return "flush";
+    case TraceWritePhase::kClose:
+      return "close";
+    case TraceWritePhase::kCompression:
+      return "compression";
+    case TraceWritePhase::kHeader:
+      return "header";
+  }
+  return "unknown";
+}
 
 TraceWriter::TraceWriter(std::ostream& output, const FileHeader& header, TraceWriterOptions options)
     : output_{output}, options_{options} {
@@ -124,20 +153,22 @@ TraceWriter::TraceWriter(std::ostream& output, const FileHeader& header, TraceWr
     throw TraceWriteError{"reserved trace tail does not fit after the file header"};
   }
   const auto encoded_header = encode_file_header(header);
-  write_bytes(output_, encoded_header);
+  write_bytes(output_, encoded_header, TraceWritePhase::kHeader, 0U, std::nullopt);
   bytes_written_ = encoded_header.size();
 }
 
 ChunkWriteResult TraceWriter::write_chunk(const ChunkDescriptor& descriptor,
                                           std::span<const std::byte> uncompressed_payload) {
   if (uncompressed_payload.size() > options_.max_uncompressed_chunk_size) {
-    throw TraceWriteError{"uncompressed chunk exceeds its configured size limit"};
+    throw TraceWriteError{"uncompressed chunk exceeds its configured size limit",
+                          TraceWritePhase::kWrite, 0U, bytes_written_, descriptor.type};
   }
 
   const auto stored_payload =
       compress_payload(descriptor.codec, uncompressed_payload, options_.zstd_level);
   if (stored_payload.size() > options_.max_stored_chunk_size) {
-    throw TraceWriteError{"stored chunk exceeds its configured size limit"};
+    throw TraceWriteError{"stored chunk exceeds its configured size limit", TraceWritePhase::kWrite,
+                          0U, bytes_written_, descriptor.type};
   }
   const auto stored_size = static_cast<std::uint64_t>(stored_payload.size());
 
@@ -154,11 +185,13 @@ ChunkWriteResult TraceWriter::write_chunk(const ChunkDescriptor& descriptor,
   }
   if (uncompressed_payload.size() >
       std::numeric_limits<std::uint64_t>::max() - uncompressed_payload_bytes_written_) {
-    throw TraceWriteError{"cumulative uncompressed payload size overflow"};
+    throw TraceWriteError{"cumulative uncompressed payload size overflow", TraceWritePhase::kWrite,
+                          0U, bytes_written_, descriptor.type};
   }
 
-  write_bytes(output_, encoded_header);
-  write_bytes(output_, stored_payload);
+  write_bytes(output_, encoded_header, TraceWritePhase::kWrite, bytes_written_, descriptor.type);
+  write_bytes(output_, stored_payload, TraceWritePhase::kWrite,
+              bytes_written_ + encoded_header.size(), descriptor.type);
   bytes_written_ += static_cast<std::uint64_t>(encoded_header.size()) + stored_size;
   uncompressed_payload_bytes_written_ += uncompressed_payload.size();
   stored_payload_bytes_written_ += stored_size;
@@ -168,9 +201,11 @@ ChunkWriteResult TraceWriter::write_chunk(const ChunkDescriptor& descriptor,
 void TraceWriter::release_file_reserve() noexcept { options_.reserved_tail_size = 0U; }
 
 void TraceWriter::flush() {
+  errno = 0;
   output_.flush();
   if (!output_) {
-    throw TraceWriteError{"trace output stream flush failed"};
+    throw TraceWriteError{"trace output stream flush failed", TraceWritePhase::kFlush,
+                          static_cast<std::uint32_t>(errno), bytes_written_, std::nullopt};
   }
 }
 

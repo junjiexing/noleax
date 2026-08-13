@@ -13,13 +13,37 @@
 
 namespace noleax::controller::linux {
 
+// Stable classification of capture-session failures (docs/CLI.md §12): each kind maps to
+// a stable message prefix and a documented exit-code path, so a dead agent no longer
+// surfaces as a bare "recv failed: Broken pipe".
+enum class ControllerFailureKind : std::uint8_t {
+  kNone = 0U,
+  // Session socket EOF/reset at an unexpected point while the target keeps running.
+  kAgentCrash = 1U,
+  // The agent reported a trace writer failure (StartCapture error code 6, or the
+  // drained/finalized status in AgentState::kFailed).
+  kWriterError = 2U,
+  // StartCapture error response / capture-ready failure (hook installation).
+  kHookInstall = 3U,
+  // The target process exited while the controller talked to the agent.
+  kTargetExit = 4U,
+  // Frame decode or state-machine validation failure.
+  kProtocol = 5U,
+};
+
+[[nodiscard]] const char* controller_failure_kind_name(ControllerFailureKind kind) noexcept;
+
 class ControllerError final : public std::runtime_error {
  public:
   explicit ControllerError(const std::string& message, std::uint32_t system_error = 0U);
+  ControllerError(const std::string& message, ControllerFailureKind failure_kind,
+                  std::uint32_t system_error = 0U);
   [[nodiscard]] std::uint32_t system_error() const noexcept;
+  [[nodiscard]] ControllerFailureKind failure_kind() const noexcept;
 
  private:
   std::uint32_t system_error_{0U};
+  ControllerFailureKind failure_kind_{ControllerFailureKind::kNone};
 };
 
 struct LaunchOptions {

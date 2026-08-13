@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -110,7 +111,60 @@ struct LinuxTraceWriterResult {
   bool statistics_written{false};
   bool end_of_trace_written{false};
   std::string error_message;
+  // Structured context of the first writer failure (error_message): the phase the writer
+  // was in, the errno where the stream provided one (0 = none), the byte offset in the
+  // output file, and the chunk type being written. kNone/empty mark failures without
+  // that context (internal validation, option errors).
+  noleax::trace::TraceWritePhase error_phase{noleax::trace::TraceWritePhase::kNone};
+  std::uint32_t error_system_error{0U};
+  std::optional<std::uint64_t> error_file_offset;
+  std::optional<noleax::trace::ChunkType> error_chunk_type;
+  // The best-effort error tail (Loss + Statistics + EndOfTrace) can itself fail — the
+  // disk stays full, the stream stays broken. That failure lands here and never
+  // overwrites error_message, so a doubly-failed finish reports both.
+  std::string tail_error_message;
+  // Atomic output protocol: the writer streams into partial_path from the start and
+  // renames it to the requested path only after a successful EndOfTrace + flush + close.
+  // final_path stays empty on any failure; the .partial file then holds everything up to
+  // the failure point and remains analyzable (docs/TRACE_RECOVERY.md).
+  std::filesystem::path partial_path;
+  std::filesystem::path final_path;
 };
+
+// Live writer telemetry for CaptureStatus (QueryStatus while the capture runs). Both
+// values are zero before the first chunk write / stream flush.
+struct LinuxTraceWriterLiveStatus {
+  std::uint64_t bytes_written{0U};
+  // CLOCK_MONOTONIC nanoseconds of the last successful stream flush; 0 = never flushed.
+  std::uint64_t last_flush_monotonic_ns{0U};
+};
+
+namespace detail {
+
+// Test-only fault injection for the writer failure paths (docs/HARDENING_PLAN.md H2).
+// Inert by default: a zero point mask never fails. Arm before constructing the writer
+// under test and disarm right after finish; the state is process-global, so tests must
+// not arm it concurrently.
+inline constexpr std::uint32_t kWriterFaultOpen = 1U << 0U;
+inline constexpr std::uint32_t kWriterFaultWrite = 1U << 1U;
+inline constexpr std::uint32_t kWriterFaultFlush = 1U << 2U;
+inline constexpr std::uint32_t kWriterFaultClose = 1U << 3U;
+
+struct WriterFault {
+  std::uint32_t points{0U};
+  // Armed operations to let through before the first injected failure (0 = fail the
+  // first one).
+  std::uint64_t operations_until_failure{0U};
+  // Once triggered, keep failing every armed operation (a full disk does not recover).
+  bool sticky{false};
+  // errno the injected failure reports; 0 maps to EIO.
+  std::uint32_t error_number{0U};
+};
+
+void arm_writer_fault(const WriterFault& fault) noexcept;
+void disarm_writer_fault() noexcept;
+
+}  // namespace detail
 
 // Drains the shared glibc heap + virtual memory event queue and the poll-based module
 // tracker on an internal worker thread and writes a bounded .nlx trace through the
@@ -141,6 +195,9 @@ class LinuxTraceWriter final {
   // worker and without touching locks the dead worker may have held.
   [[nodiscard]] LinuxTraceWriterResult finish_after_worker_exit();
   [[nodiscard]] bool is_running() const noexcept;
+  // Atomic snapshot of the live writer telemetry; safe to call from the session thread
+  // while the writer thread runs.
+  [[nodiscard]] LinuxTraceWriterLiveStatus live_status() const noexcept;
 
  private:
   class Implementation;

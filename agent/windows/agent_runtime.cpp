@@ -389,6 +389,15 @@ class CaptureRuntime final {
   [[nodiscard]] noleax::ipc::CaptureStatus status() const noexcept {
     noleax::ipc::CaptureStatus status;
     status.state = state_;
+    if (hooks_ != nullptr) {
+      const auto& queue = hooks_->event_queue();
+      status.queued_events = queue.occupancy();
+      status.queue_capacity = queue.capacity();
+      status.queue_high_water_events = queue.high_water();
+      status.consumed_events = queue.consumed_count();
+      // last_flush_monotonic_ns stays 0: the Windows writer does not stream-flush on a
+      // timer yet (the Linux H2 writer protocol), so there is no honest value to report.
+    }
     if (result_.has_value()) {
       status.observed_calls = result_->statistics.observed_calls;
       status.filtered_calls = result_->statistics.filtered_before_queue;

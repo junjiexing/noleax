@@ -61,6 +61,12 @@ using namespace std::chrono_literals;
 
 std::atomic<bool> bootstrap_started{false};
 
+// Alias the wire-contract codes once; the controller maps them to its failure kinds.
+using noleax::ipc::kAgentStartErrorGeneric;
+using noleax::ipc::kAgentStartErrorHookInstall;
+using noleax::ipc::kAgentStartErrorTraceWriter;
+using noleax::ipc::kAgentStartErrorUnsupportedProfile;
+
 class HookGuardRuntimeLease final {
  public:
   HookGuardRuntimeLease() { ready_ = noleax::agent::acquire_hook_guard_runtime(); }
@@ -191,8 +197,8 @@ class LinuxCaptureRuntime {
     const bool want_vm = request.hook_profile == noleax::ipc::HookProfile::kLinuxVirtualMemory ||
                          request.hook_profile == noleax::ipc::HookProfile::kLinuxNative;
     if (!want_heap && !want_vm) {
-      start_error_ =
-          noleax::ipc::ErrorResponse{5U, 0U, "unsupported hook profile for the Linux agent"};
+      start_error_ = noleax::ipc::ErrorResponse{kAgentStartErrorUnsupportedProfile, 0U,
+                                                "unsupported hook profile for the Linux agent"};
       return false;
     }
     state_ = noleax::ipc::AgentState::kStarting;
@@ -224,6 +230,7 @@ class LinuxCaptureRuntime {
     }
     noleax::agent::linux::LinuxHeapEventQueue& event_queue =
         heap_hooks_ != nullptr ? heap_hooks_->event_queue() : vm_hooks_->event_queue();
+    event_queue_ = &event_queue;
 
     noleax::agent::linux::LinuxTraceWriterOptions writer_options;
     writer_options.compression = wire_compression(request.compression);
@@ -243,12 +250,29 @@ class LinuxCaptureRuntime {
     writer_options.utc_origin_ns = utc_now_ns();
     writer_options.counter_source = [this] { return counter_snapshot(); };
     writer_options.custom_hooks = request.custom_hooks;
-    writer_ = std::make_unique<noleax::agent::linux::LinuxTraceWriter>(
-        event_queue, *tracker_, request.trace_path_utf8, writer_options);
+    // Writer setup failures (an uncreatable trace file, invalid limits) are reported to
+    // the controller with the dedicated trace-writer error code instead of dying silently
+    // in the bootstrap catch-all.
+    try {
+      writer_ = std::make_unique<noleax::agent::linux::LinuxTraceWriter>(
+          event_queue, *tracker_, request.trace_path_utf8, writer_options);
+    } catch (const noleax::trace::TraceWriteError& error) {
+      start_error_ =
+          noleax::ipc::ErrorResponse{kAgentStartErrorTraceWriter, error.system_error(),
+                                     std::string{"cannot start the trace writer: "} + error.what()};
+      state_ = noleax::ipc::AgentState::kFailed;
+      return false;
+    } catch (const std::exception& error) {
+      start_error_ =
+          noleax::ipc::ErrorResponse{kAgentStartErrorGeneric, 0U,
+                                     std::string{"cannot start the trace writer: "} + error.what()};
+      state_ = noleax::ipc::AgentState::kFailed;
+      return false;
+    }
 
     if (heap_hooks_ != nullptr && !heap_hooks_->install()) {
-      start_error_ =
-          noleax::ipc::ErrorResponse{3U, 0U, "failed to install the linux-glibc-heap hooks"};
+      start_error_ = noleax::ipc::ErrorResponse{kAgentStartErrorHookInstall, 0U,
+                                                "failed to install the linux-glibc-heap hooks"};
       state_ = noleax::ipc::AgentState::kFailed;
       return false;
     }
@@ -256,8 +280,8 @@ class LinuxCaptureRuntime {
       if (heap_hooks_ != nullptr) {
         static_cast<void>(heap_hooks_->uninstall());
       }
-      start_error_ =
-          noleax::ipc::ErrorResponse{3U, 0U, "failed to install the linux-virtual-memory hooks"};
+      start_error_ = noleax::ipc::ErrorResponse{kAgentStartErrorHookInstall, 0U,
+                                                "failed to install the linux-virtual-memory hooks"};
       state_ = noleax::ipc::AgentState::kFailed;
       return false;
     }
@@ -272,7 +296,21 @@ class LinuxCaptureRuntime {
     }
     install_exit_hooks();
 
-    writer_->begin_capture();
+    try {
+      writer_->begin_capture();
+    } catch (const noleax::trace::TraceWriteError& error) {
+      start_error_ =
+          noleax::ipc::ErrorResponse{kAgentStartErrorTraceWriter, error.system_error(),
+                                     std::string{"cannot start the trace writer: "} + error.what()};
+      state_ = noleax::ipc::AgentState::kFailed;
+      return false;
+    } catch (const std::exception& error) {
+      start_error_ =
+          noleax::ipc::ErrorResponse{kAgentStartErrorGeneric, 0U,
+                                     std::string{"cannot start the trace writer: "} + error.what()};
+      state_ = noleax::ipc::AgentState::kFailed;
+      return false;
+    }
     state_ = noleax::ipc::AgentState::kCapturing;
     return true;
   }
@@ -284,6 +322,17 @@ class LinuxCaptureRuntime {
   [[nodiscard]] noleax::ipc::CaptureStatus status() const noexcept {
     noleax::ipc::CaptureStatus status;
     status.state = state_;
+    if (event_queue_ != nullptr) {
+      status.queued_events = event_queue_->occupancy();
+      status.queue_capacity = event_queue_->capacity();
+      status.queue_high_water_events = event_queue_->high_water();
+      status.consumed_events = event_queue_->consumed_count();
+    }
+    if (writer_ != nullptr) {
+      const noleax::agent::linux::LinuxTraceWriterLiveStatus live = writer_->live_status();
+      status.bytes_written = live.bytes_written;
+      status.last_flush_monotonic_ns = live.last_flush_monotonic_ns;
+    }
     if (writer_ != nullptr && state_ != noleax::ipc::AgentState::kCapturing) {
       const auto result = writer_result_;
       status.observed_calls = result.statistics.observed_calls;
@@ -337,7 +386,11 @@ class LinuxCaptureRuntime {
       static_cast<void>(custom_hooks_->stop_recording());
     }
     writer_result_ = writer_->finish();
-    state_ = noleax::ipc::AgentState::kDrained;
+    // A writer failure stays visible in the session status so the controller classifies
+    // it instead of reporting a clean drain.
+    state_ = writer_result_.status == noleax::agent::linux::LinuxTraceWriterStatus::kWriterError
+                 ? noleax::ipc::AgentState::kFailed
+                 : noleax::ipc::AgentState::kDrained;
   }
 
   // Physical teardown: revert every patch and shut the backend down.
@@ -345,9 +398,10 @@ class LinuxCaptureRuntime {
     if (state_ == noleax::ipc::AgentState::kCapturing) {
       drain();
     }
-    if (state_ != noleax::ipc::AgentState::kDrained) {
+    if (state_ != noleax::ipc::AgentState::kDrained && state_ != noleax::ipc::AgentState::kFailed) {
       return;
     }
+    const bool writer_failed = state_ == noleax::ipc::AgentState::kFailed;
     if (custom_hooks_ != nullptr) {
       static_cast<void>(custom_hooks_->uninstall());
     }
@@ -358,7 +412,7 @@ class LinuxCaptureRuntime {
       static_cast<void>(heap_hooks_->uninstall());
     }
     static_cast<void>(backend_->shutdown());
-    state_ = noleax::ipc::AgentState::kFinalized;
+    state_ = writer_failed ? noleax::ipc::AgentState::kFailed : noleax::ipc::AgentState::kFinalized;
   }
 
   [[nodiscard]] noleax::ipc::AgentState state() const noexcept { return state_; }
@@ -443,6 +497,9 @@ class LinuxCaptureRuntime {
   std::unique_ptr<noleax::agent::linux::LinuxCustomSymbolHooks> custom_hooks_;
   std::unique_ptr<noleax::agent::linux::LinuxModuleTracker> tracker_;
   std::unique_ptr<noleax::agent::linux::LinuxTraceWriter> writer_;
+  // Non-owning handle of the active capture's queue (owned by heap_hooks_ or vm_hooks_),
+  // for the live status telemetry.
+  noleax::agent::linux::LinuxHeapEventQueue* event_queue_{nullptr};
   noleax::agent::linux::LinuxTraceWriterResult writer_result_{};
   noleax::ipc::AgentState state_{noleax::ipc::AgentState::kIdle};
   noleax::ipc::ErrorResponse start_error_{};
@@ -588,7 +645,8 @@ bool session_bootstrap(std::string_view socket_name_without_nul,
   const HookGuardRuntimeLease guard_lease;
   if (!guard_lease.ready()) {
     send_error(channel, start.request_id,
-               noleax::ipc::ErrorResponse{1U, 0U, "hook guard runtime is unavailable"});
+               noleax::ipc::ErrorResponse{kAgentStartErrorGeneric, 0U,
+                                          "hook guard runtime is unavailable"});
     delete runtime;
     return false;
   }
