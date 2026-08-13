@@ -18,6 +18,9 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     linux/controller.cpp
     linux/diagnostics.cpp
     linux/ptrace_injector.cpp
+    # Also compiled into the hook backend for the agent; the injector's patch-window
+    # sweep resolves `_sym` custom hook targets with the same self-contained scanner.
+    ${PROJECT_SOURCE_DIR}/agent/linux/elf_symbol_lookup.cpp
   )
 else()
   target_sources(noleax-controller PRIVATE

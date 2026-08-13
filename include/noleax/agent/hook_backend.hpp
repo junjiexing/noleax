@@ -82,6 +82,12 @@ class HookBackendError final : public std::runtime_error {
 
 class HookBackend {
  public:
+  // Marks the current thread's patch transactions as protected by an out-of-process
+  // stop-the-world mechanism such as a ptrace seizure (thread-local in hoox). While set,
+  // hoox skips its in-process peer park entirely — only ever set this while every peer
+  // thread is provably frozen, and clear it before that freeze ends.
+  static void set_external_thread_suspension(bool enabled) noexcept;
+
   HookBackend();
   ~HookBackend();
 

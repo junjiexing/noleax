@@ -10,6 +10,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <exception>
 #include <optional>
 #include <span>
 #include <string>
@@ -230,7 +231,11 @@ class CaptureSession::Impl {
   }
 
   // Attach path: inject the agent into a running process and let its attach bootstrap
-  // call back over the session socket.
+  // call back over the session socket. H1-B: the bootstrap runs synchronously inside the
+  // injector's stop window, so inject() blocks until the handshake and hook installation
+  // have completed — it runs on a worker while this thread drives the session handshake
+  // concurrently. Both error channels are captured; the handshake error (it carries the
+  // agent's own start-failure detail) is reported first when both fail.
   Impl(std::uint32_t process_id, const CaptureOptions& capture) {
     if (capture.agent_path.empty()) {
       throw ControllerError{"agent path must not be empty", EINVAL};
@@ -252,9 +257,28 @@ class CaptureSession::Impl {
 
     std::vector<std::byte> parameter_bytes(sizeof(parameters));
     std::memcpy(parameter_bytes.data(), &parameters, sizeof(parameters));
-    PtraceInjector::inject(process_id, capture.agent_path, parameter_bytes);
-
-    run_handshake(capture);
+    std::exception_ptr injection_error;
+    std::thread injection_worker{[this, process_id, &capture, &parameter_bytes, &injection_error] {
+      try {
+        PtraceInjector::inject(process_id, capture.agent_path, parameter_bytes, capture.timeout,
+                               capture.start.custom_hooks);
+      } catch (...) {
+        injection_error = std::current_exception();
+      }
+    }};
+    std::exception_ptr handshake_error;
+    try {
+      run_handshake(capture);
+    } catch (...) {
+      handshake_error = std::current_exception();
+    }
+    injection_worker.join();
+    if (handshake_error != nullptr) {
+      std::rethrow_exception(handshake_error);
+    }
+    if (injection_error != nullptr) {
+      std::rethrow_exception(injection_error);
+    }
   }
 
   // Classified handshake: a broken session socket means the target died (kTargetExit) or

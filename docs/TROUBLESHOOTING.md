@@ -26,6 +26,7 @@ Noleax 的完整 stderr、退出码和 capture summary。
 | `run` 返回 3，报 `unix socket accept timed out` | 目标是静态链接二进制：没有动态加载器，LD_PRELOAD 不生效，agent 从未加载 | 用 `doctor --target` 确认（静态目标报 `static target: LD_PRELOAD injection is impossible`）；静态目标无法注入，改用动态链接构建 |
 | setuid/setgid 目标 `run` 返回 3（与静态目标相同的握手超时） | 提权执行时加载器按 AT_SECURE 规则忽略 LD_PRELOAD，agent 从未加载（属主与调用者相同、不提权时不受影响） | doctor 的 target 检查对 setuid/setgid 位给 warning；以不提权的普通副本运行目标 |
 | attach 返回 3（EPERM/EACCES） | ptrace 权限不足：`ptrace_scope=2/3`、跨用户目标或容器 seccomp 拦截 ptrace | 以与目标相同的用户运行；确认 `/proc/sys/kernel/yama/ptrace_scope` 不大于 1，或以 `CAP_SYS_PTRACE` 运行；doctor 的 ptrace-scope 项给出当前状态 |
+| attach 报 `wedged inside the agent bootstrap ... must be restarted`（返回 3） | bootstrap 在注入超时 + 一倍 grace 预算后仍未完成：目标被留在 ptrace 停核状态以防内存损坏（injector 没有恢复任何线程的寄存器） | 重启该目标进程；若反复出现，调大 `injection.timeout` 并上报当时的机器负载 |
 | 调用栈只显示 module+offset | 目标被 strip：仅剩 `.dynsym` 时非导出函数无法命名（`exports_only`），彻底 strip 则全部如此（`no_symbols`）；或在 Linux 上分析 Windows 录制的 trace | 换用带 `.symtab` 的构建重录；Windows trace 需在 Windows 上分析（Linux 只读 ELF 映像，模块状态为 `image_not_found`/`load_failed`） |
 | 安装或收尾卸载 hook 期间目标偶发一次 `EINTR` | 信号停核（park）打断了 `poll`/`select`/`nanosleep` 等慢系统调用；信号以 SA_RESTART 安装，多数调用自动重启，但这几类仍可能向应用返回一次 EINTR | 预期行为，窗口仅停核期间（微秒级）；按 POSIX 规则处理 EINTR 的代码不受影响，不需要处理 |
 | Ctrl+C detach 之后捕获不再按 `--capture-duration` 到点停止 | v1 的 duration 定时器由控制器侧驱动，detach 后随之失效，agent 继续捕获到目标退出 | 需要定时停止时保持控制器前台存活；detach 只在你接受"录到目标退出"时使用 |

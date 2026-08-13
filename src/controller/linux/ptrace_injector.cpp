@@ -49,15 +49,16 @@
 #include <utility>
 #include <vector>
 
+#include "noleax/agent/linux/elf_symbol_lookup.hpp"
+#include "noleax/agent/linux/hook_registry.hpp"
 #include "noleax/controller/linux/controller.hpp"
+#include "noleax/ipc/protocol.hpp"
 
 namespace noleax::controller::linux {
 namespace {
 
 using Clock = std::chrono::steady_clock;
 
-// One bounded budget for the whole injection; every wait runs against this deadline.
-constexpr std::chrono::milliseconds kInjectionTimeout{10'000};
 // Separate small budget for re-stopping a thread an error path left resumed.
 constexpr std::chrono::milliseconds kReleaseStopTimeout{2'000};
 
@@ -448,11 +449,13 @@ void set_registers(pid_t tid, const user_regs_struct& regs) {
 }
 
 struct ThreadStop {
-  enum class Kind : std::uint8_t { kStopped, kExited, kSignaled, kGone };
+  enum class Kind : std::uint8_t { kStopped, kExited, kSignaled, kGone, kTimedOut };
   Kind kind{Kind::kGone};
   int signal{0};
 };
 
+// Reports kTimedOut instead of throwing when the deadline passes, so the stub runner can
+// grant the in-flight call its grace budget before declaring the stub wedged.
 [[nodiscard]] ThreadStop wait_for_thread(pid_t tid, Clock::time_point deadline) {
   for (;;) {
     int status = 0;
@@ -477,8 +480,7 @@ struct ThreadStop {
       throw_errno("waitpid failed for thread " + std::to_string(tid), errno);
     }
     if (Clock::now() >= deadline) {
-      throw ControllerError{"timed out waiting for thread " + std::to_string(tid) +
-                            " to stop (injection budget exhausted)"};
+      return ThreadStop{ThreadStop::Kind::kTimedOut, 0};
     }
     std::this_thread::sleep_for(std::chrono::milliseconds{1});
   }
@@ -514,6 +516,26 @@ class Seizure final {
   Seizure& operator=(const Seizure&) = delete;
 
   [[nodiscard]] std::vector<SeizedThread>& threads() noexcept { return threads_; }
+
+  // Wedged-stub path (H1-B): a thread is still inside the injected call after the
+  // injection budget plus the grace budget. Restoring its pre-hijack registers would
+  // teleport it out of mid-agent code (memory corruption), so abandon the whole seizure
+  // instead: best-effort re-stop the wedged thread, then leave every thread seized and
+  // stopped — nothing is restored, nothing is detached, the process stays frozen.
+  void abandon(SeizedThread& wedged) noexcept {
+    if (wedged.running) {
+      if (::ptrace(PTRACE_INTERRUPT, wedged.tid, nullptr, nullptr) == 0) {
+        try {
+          wedged.stopped = wait_for_thread(wedged.tid, Clock::now() + kReleaseStopTimeout).kind ==
+                           ThreadStop::Kind::kStopped;
+        } catch (...) {
+          wedged.stopped = false;
+        }
+      }
+      wedged.running = false;
+    }
+    abandon_ = true;
+  }
 
  private:
   void seize_all(pid_t pid, Clock::time_point deadline) {
@@ -554,6 +576,10 @@ class Seizure final {
     }
     for (SeizedThread& thread : threads_) {
       const ThreadStop stop = wait_for_thread(thread.tid, deadline);
+      if (stop.kind == ThreadStop::Kind::kTimedOut) {
+        throw ControllerError{"timed out waiting for thread " + std::to_string(thread.tid) +
+                              " to stop (injection budget exhausted)"};
+      }
       if (stop.kind != ThreadStop::Kind::kStopped) {
         continue;  // exited between seize and wait: nothing to restore or inject into
       }
@@ -568,6 +594,13 @@ class Seizure final {
   }
 
   void release_all() noexcept {
+    if (abandon_) {
+      // Wedged stub: leave the whole process seized and stopped. The attach must be
+      // retried against a restarted target; detaching here would either resume a thread
+      // inside mid-agent code or strand the rest with no diagnosis.
+      threads_.clear();
+      return;
+    }
     for (SeizedThread& thread : threads_) {
       if (thread.running) {
         // An error path left the thread resumed: re-stop it before touching registers
@@ -593,21 +626,43 @@ class Seizure final {
   }
 
   std::vector<SeizedThread> threads_;
+  bool abandon_{false};
 };
 
 // Resumes the thread and waits for our SIGTRAP (the stub's int3 or the single-step
 // trap). Unrelated asynchronous signals are kept pending for detach and the wait
 // continues; a synchronous fault means the stub itself went wrong and fails fast;
 // the thread dying mid-stub or the deadline expiring is an injection failure.
-[[nodiscard]] user_regs_struct run_to_trap(pid_t tid, SeizedThread& thread,
-                                           Clock::time_point deadline, bool single_step) {
+//
+// Deadline handling (H1-B): an expiry while the thread is still inside the stub is NOT
+// proof of a wedge — the injected call is finite (bounded connect + bounded install) and
+// may legitimately outlive the main budget on a loaded machine. The thread therefore gets
+// one additional grace budget (grace_deadline) to reach the int3. Only a stub that
+// outlives the grace is wedged: the seizure is abandoned (no register restore, no
+// detach, process left stopped) and the failure is raised as a loud, distinct error —
+// restoring the pre-hijack registers here would teleport a thread out of mid-agent code.
+[[nodiscard]] user_regs_struct run_to_trap(Seizure& seizure, pid_t tid, SeizedThread& thread,
+                                           Clock::time_point deadline,
+                                           Clock::time_point grace_deadline, bool single_step) {
   for (;;) {
     if (::ptrace(single_step ? PTRACE_SINGLESTEP : PTRACE_CONT, tid, nullptr, nullptr) != 0) {
       throw_errno("cannot resume thread " + std::to_string(tid), errno);
     }
     thread.running = true;
     thread.stopped = false;
-    const ThreadStop stop = wait_for_thread(tid, deadline);
+    ThreadStop stop = wait_for_thread(tid, deadline);
+    if (stop.kind == ThreadStop::Kind::kTimedOut && Clock::now() < grace_deadline) {
+      stop = wait_for_thread(tid, grace_deadline);
+    }
+    if (stop.kind == ThreadStop::Kind::kTimedOut) {
+      seizure.abandon(thread);
+      throw ControllerError{
+          "the injected call on thread " + std::to_string(tid) +
+          " did not reach its completion trap within the injection timeout plus one grace "
+          "budget; the thread is wedged inside the agent bootstrap. The target process is "
+          "INCONSISTENT: it was left stopped under ptrace with no registers restored and "
+          "no threads detached, and it must be restarted before the controller exits"};
+    }
     thread.running = false;
     thread.stopped = stop.kind == ThreadStop::Kind::kStopped;
     if (stop.kind != ThreadStop::Kind::kStopped) {
@@ -697,6 +752,144 @@ constexpr std::size_t kCallStubSize = 37U;
   return stub;
 }
 
+// ---------------------------------------------------------------------------
+// patch-window evacuation (H1-B)
+// ---------------------------------------------------------------------------
+
+// A fast-hook transaction overwrites the whole instructions covering the redirect
+// sequence (a 5-byte near jump plus at most one straddling instruction — never more than
+// ~20 bytes on x86-64); 32 covers every hoox overwrite with margin. The window starts at
+// symbol+1: a thread parked exactly at the entry resumes into the new redirect, which is
+// safe in both patch directions (mirrors hoox's own guard-interval convention).
+constexpr std::uint64_t kPatchWindowSize = 32U;
+// Bound on the single-step evacuation per thread: a thread that has not left the window
+// by then is looping inside it, and the attach must fail (pre-patch, so restore+detach
+// stays safe) instead of corrupting it.
+constexpr unsigned kMaxEvacuationSteps = 64U;
+
+using PatchWindow = std::pair<std::uint64_t, std::uint64_t>;  // half-open [begin, end)
+
+// With hoox's external thread suspension set, its in-process park AND the park-driven
+// PC-in-prologue guard scan are both skipped — that is the point of the stop window. The
+// price: this injector must guarantee that no ptrace-stopped thread sits with its rip
+// inside a to-be-overwritten prologue, or the resume after detach would decode the middle
+// of the redirect bytes (observed in the field as a SIGILL minutes into the capture).
+// The sweep below single-steps every such thread out of the window BEFORE any stub runs
+// a patch; the steps execute the thread's own instructions, so the stepped state becomes
+// its new saved state and the detach-time restore lands safely outside the window.
+[[nodiscard]] bool inside_patch_window(std::uint64_t rip,
+                                       const std::vector<PatchWindow>& windows) noexcept {
+  return std::any_of(windows.begin(), windows.end(), [rip](const PatchWindow& window) {
+    return rip >= window.first && rip < window.second;
+  });
+}
+
+void add_patch_window(std::vector<PatchWindow>& windows, std::uint64_t function_address) {
+  windows.emplace_back(function_address + 1U, function_address + 1U + kPatchWindowSize);
+}
+
+// Best-effort runtime address of one custom-hook role: the agent resolves the same
+// declaration at install time; the injector mirrors it so the evacuation sweep also
+// covers custom targets (a churning third-party allocator is exactly the hot case).
+void add_custom_hook_windows(const noleax::ipc::CustomHookSpec& spec,
+                             const std::vector<ProcessMapping>& mappings,
+                             std::vector<PatchWindow>& windows) {
+  const ProcessMapping* module_mapping = nullptr;
+  for (const ProcessMapping& mapping : mappings) {
+    if (mapping.file_offset != 0U || mapping.path.empty()) {
+      continue;
+    }
+    if (mapping.path == spec.module || base_name(mapping.path) == spec.module) {
+      module_mapping = &mapping;
+      break;
+    }
+  }
+  if (module_mapping == nullptr) {
+    return;  // not loaded (yet): the agent's own resolution degrades the point
+  }
+  std::optional<ElfFile> image;
+  std::optional<std::uint64_t> bias;
+  const auto resolve = [&](const noleax::ipc::CustomHookRoleSpec& role) {
+    if (role.locator == noleax::ipc::CustomHookLocator::kRva) {
+      windows.emplace_back(module_mapping->start + role.rva + 1U,
+                           module_mapping->start + role.rva + 1U + kPatchWindowSize);
+      return;
+    }
+    if (role.locator != noleax::ipc::CustomHookLocator::kExport &&
+        role.locator != noleax::ipc::CustomHookLocator::kElfSymbol) {
+      return;
+    }
+    if (!image.has_value()) {
+      image.emplace(module_mapping->path);
+      bias = module_mapping->start - image->minimum_load_vaddr();
+    }
+    std::optional<std::uint64_t> vaddr =
+        role.locator == noleax::ipc::CustomHookLocator::kExport
+            ? image->find_dynamic_symbol(role.export_name)
+            : noleax::agent::linux::find_elf_symbol_vaddr(module_mapping->path, role.export_name);
+    if (vaddr.has_value()) {
+      add_patch_window(windows, *bias + *vaddr);
+    }
+  };
+  resolve(spec.alloc);
+  resolve(spec.realloc);
+  resolve(spec.free);
+}
+
+// Single-steps one seized thread until its rip leaves every patch window. Runs before any
+// patch is written, so every failure here is an ordinary pre-stub failure (restore +
+// detach is still safe). The stepped state is adopted into saved_regs after every stop,
+// so the detach-time restore never rewinds real target progress into a patched window.
+void evacuate_thread_from_patch_windows(SeizedThread& thread,
+                                        const std::vector<PatchWindow>& windows,
+                                        Clock::time_point deadline) {
+  for (unsigned steps = 0U;;) {
+    const user_regs_struct current = get_registers(thread.tid);
+    if (!inside_patch_window(current.rip, windows)) {
+      thread.saved_regs = current;
+      return;
+    }
+    if (steps == kMaxEvacuationSteps) {
+      throw ControllerError{"thread " + std::to_string(thread.tid) +
+                            " of the attach target does not leave the patch window at rip=" +
+                            hex_address(current.rip) +
+                            "; the attach was aborted before any patch was written"};
+    }
+    ++steps;
+    if (::ptrace(PTRACE_SINGLESTEP, thread.tid, nullptr, nullptr) != 0) {
+      if (errno == ESRCH) {
+        thread.regs_valid = false;  // died mid-evacuation: nothing to restore for it
+        return;
+      }
+      throw_errno("cannot single-step thread " + std::to_string(thread.tid), errno);
+    }
+    thread.running = true;
+    thread.stopped = false;
+    const ThreadStop stop = wait_for_thread(thread.tid, deadline);
+    if (stop.kind == ThreadStop::Kind::kTimedOut) {
+      // Keep running=true so the error path re-stops the thread before restoring. Only a
+      // stuck (uninterruptible) instruction gets here, and the adopted state rewinds at
+      // most the one in-flight instruction.
+      thread.running = true;
+      throw ControllerError{"timed out single-stepping thread " + std::to_string(thread.tid) +
+                            " out of a patch window (injection budget exhausted)"};
+    }
+    thread.running = false;
+    thread.stopped = stop.kind == ThreadStop::Kind::kStopped;
+    if (stop.kind != ThreadStop::Kind::kStopped) {
+      thread.regs_valid = false;  // exited or died mid-step: never restore over it
+      return;
+    }
+    if (stop.signal != SIGTRAP) {
+      // A real signal interrupted the step; keep it pending for detach. The instruction
+      // may not have executed — the loop re-reads the rip and decides again.
+      if (thread.pending_signal == 0) {
+        thread.pending_signal = stop.signal;
+      }
+    }
+  }
+}
+
 // Reject threads parked inside ld.so (possible loader-lock holders); prefer a thread
 // blocked in a syscall. Better to refuse than to inject into a risky thread.
 [[nodiscard]] SeizedThread& select_injection_thread(
@@ -731,7 +924,9 @@ constexpr std::size_t kCallStubSize = 37U;
 }  // namespace
 
 void PtraceInjector::inject(std::uint32_t process_id, const std::filesystem::path& agent_path,
-                            const std::vector<std::byte>& bootstrap_parameters) {
+                            const std::vector<std::byte>& bootstrap_parameters,
+                            std::chrono::milliseconds timeout,
+                            const std::vector<noleax::ipc::CustomHookSpec>& custom_hooks) {
   if (process_id == 0U) {
     throw ControllerError{"process id must not be zero", EINVAL};
   }
@@ -747,6 +942,9 @@ void PtraceInjector::inject(std::uint32_t process_id, const std::filesystem::pat
         "the bootstrap parameter blob is empty or larger than the stub "
         "page area",
         EINVAL};
+  }
+  if (timeout <= std::chrono::milliseconds::zero()) {
+    throw ControllerError{"injection timeout must be positive", EINVAL};
   }
 
   // Everything that can fail before touching the target fails here (same rule as the
@@ -768,7 +966,11 @@ void PtraceInjector::inject(std::uint32_t process_id, const std::filesystem::pat
                           "' does not export noleax_agent_attach_bootstrap"};
   }
 
-  const Clock::time_point deadline = Clock::now() + kInjectionTimeout;
+  // One configured budget covers the whole sequence (seizure → dlopen → bootstrap →
+  // handshake → install). A deadline expiry mid-stub is not yet a wedge: the in-flight
+  // call is finite, so it gets one extra timeout-sized grace budget to reach its int3.
+  const Clock::time_point deadline = Clock::now() + timeout;
+  const Clock::time_point grace_deadline = deadline + timeout;
   Seizure seizure{pid, deadline};
   const std::vector<ProcessMapping> mappings = read_mappings(pid);
 
@@ -821,6 +1023,37 @@ void PtraceInjector::inject(std::uint32_t process_id, const std::filesystem::pat
     throw ControllerError{"no int3 byte found in the target's libc"};
   }
 
+  // Evacuate every seized thread that is stopped inside a patch window BEFORE the first
+  // stub runs: the bootstrap installs its hooks under hoox's external thread suspension,
+  // which disables the in-process park AND its PC-in-prologue guard scan, so this sweep
+  // is the only thing standing between a stopped thread and a resume into the middle of
+  // an overwritten prologue. The window set covers every function the agent can patch
+  // inside the stop window: the built-in registry symbols resolved from the target's
+  // libc, the exit/_exit self-finalize hooks, and the declared custom hook targets.
+  std::vector<PatchWindow> patch_windows;
+  for (const noleax::agent::linux::LinuxHookRegistryEntry& entry :
+       noleax::agent::linux::kLinuxHookRegistry) {
+    for (const std::string_view name : entry.exports()) {
+      if (const auto vaddr = libc->image.find_dynamic_symbol(name); vaddr.has_value()) {
+        add_patch_window(patch_windows, libc->bias + *vaddr);
+      }
+    }
+  }
+  for (const std::string_view name : {std::string_view{"exit"}, std::string_view{"_exit"}}) {
+    if (const auto vaddr = libc->image.find_dynamic_symbol(name); vaddr.has_value()) {
+      add_patch_window(patch_windows, libc->bias + *vaddr);
+    }
+  }
+  for (const noleax::ipc::CustomHookSpec& spec : custom_hooks) {
+    add_custom_hook_windows(spec, mappings, patch_windows);
+  }
+  for (SeizedThread& thread : seizure.threads()) {
+    if (!thread.stopped || !thread.regs_valid) {
+      continue;
+    }
+    evacuate_thread_from_patch_windows(thread, patch_windows, deadline);
+  }
+
   SeizedThread& hijack = select_injection_thread(seizure.threads(), pid, linker_ranges);
   const pid_t tid = hijack.tid;
   const std::uint64_t gadget_address = libc->bias + *gadget_vaddr;
@@ -843,10 +1076,10 @@ void PtraceInjector::inject(std::uint32_t process_id, const std::filesystem::pat
   regs.r9 = 0U;
   regs.rsp = frame_rsp;
   set_registers(tid, regs);
-  regs = run_to_trap(tid, hijack, deadline, /*single_step=*/true);
+  regs = run_to_trap(seizure, tid, hijack, deadline, grace_deadline, /*single_step=*/true);
   if (regs.rax == static_cast<std::uint64_t>(SYS_mmap)) {
     // Stopped before the syscall executed: run on; the fake frame catches the ret.
-    regs = run_to_trap(tid, hijack, deadline, /*single_step=*/false);
+    regs = run_to_trap(seizure, tid, hijack, deadline, grace_deadline, /*single_step=*/false);
   }
   const auto mmap_result = static_cast<std::int64_t>(regs.rax);
   if (mmap_result < 0 && mmap_result >= -4095L) {
@@ -868,7 +1101,7 @@ void PtraceInjector::inject(std::uint32_t process_id, const std::filesystem::pat
                               static_cast<std::uint64_t>(RTLD_NOW | RTLD_LOCAL)));
   regs = redirect_registers(hijack.saved_regs, stub_page + kStubCodeOffset);
   set_registers(tid, regs);
-  regs = run_to_trap(tid, hijack, deadline, /*single_step=*/false);
+  regs = run_to_trap(seizure, tid, hijack, deadline, grace_deadline, /*single_step=*/false);
   if (regs.rax == 0U) {
     throw ControllerError{"dlopen('" + agent_file + "') failed inside the target process"};
   }
@@ -884,12 +1117,14 @@ void PtraceInjector::inject(std::uint32_t process_id, const std::filesystem::pat
                make_call_stub(*agent_bias + *bootstrap_vaddr, stub_page + kStubParamsOffset, 0U));
   regs = redirect_registers(hijack.saved_regs, stub_page + kStubCodeOffset);
   set_registers(tid, regs);
-  regs = run_to_trap(tid, hijack, deadline, /*single_step=*/false);
+  regs = run_to_trap(seizure, tid, hijack, deadline, grace_deadline, /*single_step=*/false);
   const auto bootstrap_result = static_cast<std::uint32_t>(regs.rax);
   if (bootstrap_result != 0U) {
     throw ControllerError{"noleax_agent_attach_bootstrap returned " +
                           std::to_string(bootstrap_result)};
   }
+  // The synchronous attach bootstrap returned only after installing every hook inside
+  // the stop window, so no business thread can meet a half-written prologue on resume.
   // Seizure's destructor restores every thread's saved registers and detaches.
 }
 
