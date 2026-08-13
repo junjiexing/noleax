@@ -10,6 +10,7 @@
 #include <windows.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -423,7 +424,7 @@ FastHookResult RtlFreeHeapHook::install() {
   return result;
 }
 
-HookUninstallStatus RtlFreeHeapHook::uninstall(std::uint32_t flush_attempts) noexcept {
+HookUninstallStatus RtlFreeHeapHook::uninstall(QuiescenceDeadline deadline) noexcept {
   const InternalThreadScope internal_thread;
   if (state_ == State::kInactive || state_ == State::kRetired) {
     return HookUninstallStatus::kNotInstalled;
@@ -438,30 +439,31 @@ HookUninstallStatus RtlFreeHeapHook::uninstall(std::uint32_t flush_attempts) noe
   // Never let Hoox flush here: a replacement paused before its original call is invisible to
   // Hoox's trampoline usage counter. Revert first, publish the restored-target route, then wait
   // for Noleax replacement quiescence before releasing the lifetime lease.
-  const HookUninstallStatus backend_status = backend_->uninstall(target_, 0U);
+  const HookUninstallStatus backend_status =
+      backend_->uninstall(target_, std::chrono::steady_clock::now());
   replacement_lifecycle.route_to_target();
   backend_teardown_complete_ = backend_status == HookUninstallStatus::kUninstalled;
 
-  return try_finish_teardown(flush_attempts) ? HookUninstallStatus::kUninstalled
-                                             : HookUninstallStatus::kTeardownPending;
+  return try_finish_teardown(deadline) ? HookUninstallStatus::kUninstalled
+                                       : HookUninstallStatus::kTeardownPending;
 }
 
-bool RtlFreeHeapHook::flush(std::uint32_t max_attempts) noexcept {
+bool RtlFreeHeapHook::flush(QuiescenceDeadline deadline) noexcept {
   if (state_ == State::kInactive || state_ == State::kRetired) {
     return true;
   }
   if (state_ == State::kInstalled) {
     return false;
   }
-  return try_finish_teardown(max_attempts);
+  return try_finish_teardown(deadline);
 }
 
-bool RtlFreeHeapHook::stop_recording(std::uint32_t max_attempts) noexcept {
+bool RtlFreeHeapHook::stop_recording(QuiescenceDeadline deadline) noexcept {
   if (state_ != State::kInstalled) {
     return state_ == State::kInactive || state_ == State::kRetired;
   }
   replacement_lifecycle.stop_recording();
-  return replacement_lifecycle.wait_for_recording_quiescence(max_attempts);
+  return replacement_lifecycle.wait_for_recording_quiescence(deadline);
 }
 
 bool RtlFreeHeapHook::is_installed() const noexcept { return state_ == State::kInstalled; }
@@ -540,9 +542,9 @@ const RtlHeapEventQueue& RtlFreeHeapHook::event_queue() const noexcept {
 
 void* RtlFreeHeapHook::target_address() const noexcept { return target_; }
 
-bool RtlFreeHeapHook::try_finish_teardown(std::uint32_t max_attempts) noexcept {
+bool RtlFreeHeapHook::try_finish_teardown(QuiescenceDeadline deadline) noexcept {
   if (!replacement_quiescent_) {
-    if (!replacement_lifecycle.wait_for_quiescence(max_attempts)) {
+    if (!replacement_lifecycle.wait_for_quiescence(deadline)) {
       return false;
     }
     replacement_quiescent_ = true;
@@ -552,7 +554,7 @@ bool RtlFreeHeapHook::try_finish_teardown(std::uint32_t max_attempts) noexcept {
     }
   }
   if (!backend_teardown_complete_) {
-    backend_teardown_complete_ = backend_->flush(max_attempts);
+    backend_teardown_complete_ = backend_->flush(deadline);
   }
   if (!backend_teardown_complete_) {
     return false;

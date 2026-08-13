@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -148,9 +149,8 @@ int main() {
     static_cast<void>(free_heap(heap, 0U, normal));
   }
 
-  auto uninstall_status = hook.uninstall(0U);
-  if (uninstall_status == noleax::agent::HookUninstallStatus::kTeardownPending &&
-      hook.flush(100'000U)) {
+  auto uninstall_status = hook.uninstall(std::chrono::steady_clock::now());
+  if (uninstall_status == noleax::agent::HookUninstallStatus::kTeardownPending && hook.flush()) {
     uninstall_status = noleax::agent::HookUninstallStatus::kUninstalled;
   }
   const bool shutdown = backend.shutdown();

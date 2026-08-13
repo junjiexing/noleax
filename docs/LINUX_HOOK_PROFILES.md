@@ -66,6 +66,38 @@ glibc 公开符号为隘口。实测确认（glibc 2.43，`nm -D` 地址比对 +
 - 支持两阶段停止（逻辑停录 → 物理卸载），替换函数全部位于 `.nlxhk` 段（patch
   rendezvous 覆盖）。
 
+## 4.1 停止顺序与 quiescence 预算（H1-A）
+
+所有 quiescence 等待（`GlibcHeapHooks`/`VirtualMemoryHooks`/`LinuxCustomSymbolHooks` 的
+`stop_recording`/`uninstall`/`flush`，以及 `HookBackend` 的 flush/uninstall/shutdown）一律使用
+`std::chrono::steady_clock` 绝对 deadline 参数：等待方睡眠在 quiescence epoch 上（Linux 为
+`FUTEX_WAIT_BITSET` 绝对超时，Windows 为 `WaitOnAddress`），任一被等待计数归零时由
+zero-transition notify 唤醒——**不再有 yield 计数自旋**。每个等待返回 bool；deadline 耗尽
+必须走安全回退（保留 patch、上报不完整），绝不无限忙等。预算常量：
+`kDefaultQuiescenceBudget`（30 s，单次 teardown 操作）与 `kDrainQuiescenceBudget`
+（120 s，capture stop 的 drain——不可重试，必须等完慢的在飞行调用）；测试接缝
+`NOLEAX_DRAIN_BUDGET_MS` 可在 bootstrap 缩小 drain 预算。
+
+capture 生命周期在 IPC 显式可见（`AgentState`，见 [IPC_PROTOCOL.md](IPC_PROTOCOL.md)）：
+
+- **逻辑停止（drain）**：`kCapturing → kDraining → kDrained`。全部 profile 先路由
+  `record → original`，再在共享 drain deadline 内等 `recording_in_flight` 归零，最后 writer
+  final drain、写 Statistics/EndOfTrace。超时：置 `CaptureStatus.flags` 的
+  `kDrainIncomplete`，照常收尾；仍在飞行的调用迟到后只能写进已退役的队列（事件不被消费），
+  其计数残差由 writer 对账 fail-closed 兜住（error tail + `.partial`，trace 保留到停止点）。
+- **物理卸载（finalize，仅 launch）**：`kDrained → kUnpatching → kFinalized`。逐一 revert、
+  等待完整 in-flight 归零、释放 lease、backend flush/shutdown。任一步在
+  `kDefaultQuiescenceBudget` 内无法证明完成：不崩溃、不无限重试，落 `kDormant` 并置
+  `kUnpatchIncomplete`（已 revert 的 target 保持恢复，hook 对象与 trampoline 按进程生命期
+  保留）。
+- **attach 捕获从不 live-unpatch**：ptrace 停核窗口之外没有安全的运行中撤钩，finalize 直接
+  `kDrained → kDormant`——patch 保持安装但已 dormant（drain 已把 replacement 路由回
+  original，目标正常续跑）。`unload_on_stop` 因此在 Linux 上被配置校验与 agent 双侧拒绝
+  （错误码 7）。
+- **standalone duration 与进程退出路径只做 drain-only 收尾**（目标继续运行/正在退出，patch
+  dormant），状态落 `kDormant`；`kFinalized` 只出现在 launch 捕获的 controller 驱动
+  finalize 之后。
+
 逐 API 语义（calloc 溢出检查时机、realloc(p,0)、free(NULL)、posix_memalign 返回码等）
 见 [LINUX_HOOK_API_MATRIX.md](LINUX_HOOK_API_MATRIX.md)。
 

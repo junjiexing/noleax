@@ -161,7 +161,10 @@ completeness `custom_hook_install_failed`（退出码 2）。
 
 当前 Windows x64 对尚未实现但已为后续阶段预留的组合返回 5：`trace.on_full` 仅支持 `stop`、
 `trace.max_files` 仅支持 1，`injection.unload_on_stop` 仅 attach 支持，analysis
-每次仅支持一个 input。`injection.method` 的取值按平台划分：Windows 的 run 支持
+每次仅支持一个 input。Linux 上 `injection.unload_on_stop` 被彻底拒绝（H1-A：ptrace 停核
+窗口之外没有安全的进程外撤钩，agent 模块无法从运行中的目标卸载；运行、attach 一律在注入前
+报错"no safe out-of-process unpatch"，agent 侧对绕过 CLI 的手写 controller 同样以
+`StartCapture` 错误码 7 拒绝）。`injection.method` 的取值按平台划分：Windows 的 run 支持
 `remote-thread`、`thread-hijack`、`entrypoint-code` 和 `static-pe-patch`（后者要求
 `noleax patch` 产物），attach 支持 `remote-thread` 和 `thread-hijack`；Linux 的 run 只有
 `ld-preload`，attach 只有 `ptrace`（Linux attach 的缺省方法自动升级为 `ptrace`）。默认值

@@ -244,7 +244,8 @@ class CaptureRuntime final {
     if (state_ != noleax::ipc::AgentState::kCapturing) {
       throw std::logic_error{"capture session is not recording"};
     }
-    if (!noleax::agent::ReplacementQuiescenceGate::close_and_wait(10'000U)) {
+    if (!noleax::agent::ReplacementQuiescenceGate::close_and_wait(
+            noleax::agent::quiescence_deadline_after())) {
       const std::uint64_t active = noleax::agent::ReplacementQuiescenceGate::active_call_count();
       const std::uint64_t transitions =
           noleax::agent::ReplacementQuiescenceGate::transition_count();
@@ -255,7 +256,7 @@ class CaptureRuntime final {
     }
     finalize_gate_closed_ = true;
     try {
-      if (!hooks_->stop_recording(1'000'000U)) {
+      if (!hooks_->stop_recording()) {
         throw std::runtime_error{"recording callbacks did not become quiescent"};
       }
       capture_ready.store(false, std::memory_order_release);
@@ -267,7 +268,8 @@ class CaptureRuntime final {
       if (!*output_) {
         throw std::runtime_error{"trace output could not be closed cleanly"};
       }
-      if (!noleax::agent::ReplacementQuiescenceGate::close_and_wait(1'000'000U)) {
+      if (!noleax::agent::ReplacementQuiescenceGate::close_and_wait(
+              noleax::agent::quiescence_deadline_after())) {
         noleax::agent::ReplacementQuiescenceGate::open();
         throw std::runtime_error{"logically stopped callbacks did not reach the finalize gate"};
       }
@@ -287,7 +289,7 @@ class CaptureRuntime final {
       throw std::logic_error{"replacement finalize gate is not closed"};
     }
     try {
-      if (!hooks_->uninstall(1'000'000U)) {
+      if (!hooks_->uninstall()) {
         throw std::runtime_error{"physical hook teardown did not become quiescent"};
       }
       if (!backend_->shutdown()) {
@@ -297,7 +299,8 @@ class CaptureRuntime final {
       // patch rendezvous. Reopen the gate and let runnable parked threads drain through the
       // restored-target route before releasing the hook instances they are about to touch.
       release_finalize_gate();
-      if (!noleax::agent::ReplacementQuiescenceGate::wait_for_drain(10'000U)) {
+      if (!noleax::agent::ReplacementQuiescenceGate::wait_for_drain(
+              noleax::agent::quiescence_deadline_after())) {
         // Remaining waiters are frozen by the controller and will wake onto the lifecycle
         // counters only after this finalize returns. Transfer the profile to process lifetime
         // instead of freeing state they can still dereference.
@@ -322,13 +325,14 @@ class CaptureRuntime final {
     if (state_ != noleax::ipc::AgentState::kCapturing) {
       return;
     }
-    if (!noleax::agent::ReplacementQuiescenceGate::close_and_wait(10'000U)) {
+    if (!noleax::agent::ReplacementQuiescenceGate::close_and_wait(
+            noleax::agent::quiescence_deadline_after())) {
       noleax::agent::ReplacementQuiescenceGate::open();
       throw std::runtime_error{"replacement callbacks did not reach the finalize gate"};
     }
     finalize_gate_closed_ = true;
     try {
-      if (!hooks_->stop_recording(1'000'000U)) {
+      if (!hooks_->stop_recording()) {
         throw std::runtime_error{"recording callbacks did not become quiescent"};
       }
       release_finalize_gate();
@@ -348,7 +352,7 @@ class CaptureRuntime final {
   void finalize_timed() {
     finalize_graceful();
     if (hooks_ != nullptr) {
-      static_cast<void>(hooks_->uninstall(1'000'000U));
+      static_cast<void>(hooks_->uninstall());
       hooks_.reset();
     }
     if (backend_ != nullptr) {
@@ -376,7 +380,7 @@ class CaptureRuntime final {
     }
     state_ = noleax::ipc::AgentState::kDrained;
     try {
-      static_cast<void>(hooks_->stop_recording(1'000'000U));
+      static_cast<void>(hooks_->stop_recording());
       result_ = writer_->finish_after_worker_exit();
       writer_.reset();
       output_->flush();
@@ -496,7 +500,7 @@ void send_status(noleax::ipc::windows::PipeChannel& channel, noleax::ipc::Messag
 
 [[nodiscard]] bool unload_proofs_hold() noexcept {
   return noleax::agent::agent_module_reference_count() == 0U &&
-         noleax::agent::ReplacementQuiescenceGate::wait_for_drain(250U);
+         noleax::agent::ReplacementQuiescenceGate::wait_for_drain(std::chrono::steady_clock::now());
 }
 
 DWORD WINAPI agent_unload_watchdog(void* /*parameter*/) noexcept {

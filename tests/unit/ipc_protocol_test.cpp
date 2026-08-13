@@ -96,9 +96,30 @@ TEST_CASE("IPC payload codecs preserve capture contracts", "[ipc][protocol]") {
   start.unload_on_stop = true;
   CHECK(noleax::ipc::decode_start_capture(noleax::ipc::encode_start_capture(start)) == start);
 
-  const noleax::ipc::CaptureStatus status{
-      noleax::ipc::AgentState::kCapturing, 10U, 9U, 1U, 0U, 4096U, 3U, 1024U, 7U, 6U, 123'456'789U};
+  const noleax::ipc::CaptureStatus status{noleax::ipc::AgentState::kCapturing,
+                                          10U,
+                                          9U,
+                                          1U,
+                                          0U,
+                                          4096U,
+                                          3U,
+                                          1024U,
+                                          7U,
+                                          6U,
+                                          123'456'789U,
+                                          noleax::ipc::kCaptureStatusFlagDrainIncomplete};
   CHECK(noleax::ipc::decode_capture_status(noleax::ipc::encode_capture_status(status)) == status);
+
+  // The new lifecycle states (ABI 5 in-place extension) round-trip and validate.
+  for (const noleax::ipc::AgentState state :
+       {noleax::ipc::AgentState::kDraining, noleax::ipc::AgentState::kDormant,
+        noleax::ipc::AgentState::kUnpatching}) {
+    noleax::ipc::CaptureStatus lifecycle_status;
+    lifecycle_status.state = state;
+    lifecycle_status.flags = noleax::ipc::kCaptureStatusFlagUnpatchIncomplete;
+    CHECK(noleax::ipc::decode_capture_status(
+              noleax::ipc::encode_capture_status(lifecycle_status)) == lifecycle_status);
+  }
 
   const noleax::ipc::ErrorResponse error{7U, 5U, "access denied"};
   CHECK(noleax::ipc::decode_error_response(noleax::ipc::encode_error_response(error)) == error);

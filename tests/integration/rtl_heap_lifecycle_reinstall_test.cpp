@@ -2,6 +2,7 @@
 #define NOMINMAX
 #include <windows.h>
 
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 
@@ -29,11 +30,11 @@ struct HeapApis {
 };
 
 [[nodiscard]] bool uninstall_fully(noleax::agent::windows::RtlHeapHooks& hooks) noexcept {
-  if (hooks.uninstall(0U)) {
+  if (hooks.uninstall(std::chrono::steady_clock::now())) {
     return true;
   }
   for (std::uint32_t retry = 0U; retry < kFlushRetries; ++retry) {
-    if (hooks.flush(100'000U)) {
+    if (hooks.flush()) {
       return true;
     }
   }

@@ -86,10 +86,9 @@ class LinuxCustomSymbolHooks final {
   // the other points. Returns false only when an install pass already ran.
   bool install();
   [[nodiscard]] bool stop_recording(
-      std::uint32_t max_yields = HookBackend::kDefaultFlushAttempts) noexcept;
-  [[nodiscard]] bool uninstall(
-      std::uint32_t max_yields = HookBackend::kDefaultFlushAttempts) noexcept;
-  [[nodiscard]] bool flush(std::uint32_t max_yields = HookBackend::kDefaultFlushAttempts) noexcept;
+      QuiescenceDeadline deadline = quiescence_deadline_after()) noexcept;
+  [[nodiscard]] bool uninstall(QuiescenceDeadline deadline = quiescence_deadline_after()) noexcept;
+  [[nodiscard]] bool flush(QuiescenceDeadline deadline = quiescence_deadline_after()) noexcept;
 
   // Per-point best effort makes installation partial by design: is_installed() reports
   // whether at least one point currently has live hooks.

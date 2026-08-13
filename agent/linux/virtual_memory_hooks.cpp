@@ -16,6 +16,7 @@
 
 #include <atomic>
 #include <cerrno>
+#include <chrono>
 #include <cstdarg>
 #include <cstddef>
 #include <cstdint>
@@ -568,7 +569,7 @@ bool VirtualMemoryHooks::install() {
   return true;
 }
 
-bool VirtualMemoryHooks::stop_recording(std::uint32_t max_yields) noexcept {
+bool VirtualMemoryHooks::stop_recording(QuiescenceDeadline deadline) noexcept {
   if (state_ != State::kInstalled) {
     return state_ == State::kInactive || state_ == State::kRetired;
   }
@@ -576,20 +577,20 @@ bool VirtualMemoryHooks::stop_recording(std::uint32_t max_yields) noexcept {
     channel_lifecycles[index].stop_recording();
   }
   for (std::size_t index = 0U; index < kChannelCount; ++index) {
-    if (!channel_lifecycles[index].wait_for_recording_quiescence(max_yields)) {
+    if (!channel_lifecycles[index].wait_for_recording_quiescence(deadline)) {
       return false;
     }
   }
   return true;
 }
 
-bool VirtualMemoryHooks::uninstall(std::uint32_t max_yields) noexcept {
+bool VirtualMemoryHooks::uninstall(QuiescenceDeadline deadline) noexcept {
   const InternalThreadScope internal_thread;
   if (state_ == State::kInactive || state_ == State::kRetired) {
     return true;
   }
   if (state_ == State::kTeardownPending) {
-    return try_finish_teardown(max_yields);
+    return try_finish_teardown(deadline);
   }
 
   for (std::size_t index = 0U; index < kChannelCount; ++index) {
@@ -603,21 +604,21 @@ bool VirtualMemoryHooks::uninstall(std::uint32_t max_yields) noexcept {
   // replacement just before its revert landed.
   for (std::size_t index = 0U; index < kChannelCount; ++index) {
     if (targets_[index] != nullptr) {
-      static_cast<void>(backend_->uninstall(targets_[index], 0U));
+      static_cast<void>(backend_->uninstall(targets_[index], std::chrono::steady_clock::now()));
     }
     channel_lifecycles[index].route_to_target();
   }
-  return try_finish_teardown(max_yields);
+  return try_finish_teardown(deadline);
 }
 
-bool VirtualMemoryHooks::flush(std::uint32_t max_yields) noexcept {
+bool VirtualMemoryHooks::flush(QuiescenceDeadline deadline) noexcept {
   if (state_ == State::kInactive || state_ == State::kRetired) {
     return true;
   }
   if (state_ == State::kInstalled) {
     return false;
   }
-  return try_finish_teardown(max_yields);
+  return try_finish_teardown(deadline);
 }
 
 bool VirtualMemoryHooks::is_installed() const noexcept { return state_ == State::kInstalled; }
@@ -685,10 +686,10 @@ void* VirtualMemoryHooks::target_address(LinuxLogicalHookApi api) const noexcept
   return targets_[static_cast<std::size_t>(api) - kRegistryBase];
 }
 
-bool VirtualMemoryHooks::try_finish_teardown(std::uint32_t max_yields) noexcept {
+bool VirtualMemoryHooks::try_finish_teardown(QuiescenceDeadline deadline) noexcept {
   if (!replacements_quiescent_) {
     for (std::size_t index = 0U; index < kChannelCount; ++index) {
-      if (!channel_lifecycles[index].wait_for_quiescence(max_yields)) {
+      if (!channel_lifecycles[index].wait_for_quiescence(deadline)) {
         return false;
       }
     }
@@ -699,7 +700,7 @@ bool VirtualMemoryHooks::try_finish_teardown(std::uint32_t max_yields) noexcept 
     }
   }
   if (!backend_teardown_complete_) {
-    backend_teardown_complete_ = backend_->flush(max_yields);
+    backend_teardown_complete_ = backend_->flush(deadline);
   }
   if (!backend_teardown_complete_) {
     return false;

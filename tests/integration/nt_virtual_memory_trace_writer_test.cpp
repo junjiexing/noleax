@@ -142,7 +142,7 @@ constexpr SIZE_T kPageSize = 4096U;
   writer.begin_capture();
   const NTSTATUS unmapped = unmap_section(unmap_function, GetCurrentProcess(), view);
   Sleep(25U);
-  const bool uninstalled = hooks.uninstall(100'000U);
+  const bool uninstalled = hooks.uninstall();
   const auto writer_result = writer.finish();
   const bool shutdown = backend.shutdown();
   output.close();
@@ -336,7 +336,7 @@ int main(int argc, char** argv) {
   }
 
   Sleep(50U);
-  const bool uninstalled = hooks.uninstall(100'000U);
+  const bool uninstalled = hooks.uninstall();
   const auto writer_result = writer.finish();
   const bool shutdown = backend.shutdown();
   output.close();

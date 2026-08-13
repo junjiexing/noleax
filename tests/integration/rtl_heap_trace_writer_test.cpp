@@ -304,7 +304,7 @@ int main(int argc, char* argv[]) {
   }
   Sleep(50U);
 
-  const bool hooks_uninstalled = hooks.uninstall(100'000U);
+  const bool hooks_uninstalled = hooks.uninstall();
   const auto writer_result = writer.finish();
   const bool shutdown = backend.shutdown();
   output.close();

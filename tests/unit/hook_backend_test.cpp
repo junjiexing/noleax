@@ -11,6 +11,7 @@
 #include <array>
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -334,7 +335,7 @@ TEST_CASE("hook backend exposes deferred teardown until an explicit flush",
   transform_original = reinterpret_cast<FixtureFunction>(installed.original);
   REQUIRE(target(left, right) == (baseline ^ kTransformMask));
 
-  CHECK(backend.uninstall(function_address(target), 0U) ==
+  CHECK(backend.uninstall(function_address(target), std::chrono::steady_clock::now()) ==
         noleax::agent::HookUninstallStatus::kTeardownPending);
   CHECK(backend.has_pending_teardown());
   CHECK(backend.installed_count() == 0U);
@@ -342,7 +343,7 @@ TEST_CASE("hook backend exposes deferred teardown until an explicit flush",
   CHECK(backend.install_fast(function_address(target), function_address(transform_replacement))
             .status == noleax::agent::HookInstallStatus::kTeardownPending);
 
-  CHECK(backend.flush(1U));
+  CHECK(backend.flush());
   CHECK_FALSE(backend.has_pending_teardown());
   const auto reinstalled =
       backend.install_fast(function_address(target), function_address(transform_replacement));
@@ -371,14 +372,14 @@ TEST_CASE("hook backend lifetime lease blocks trampoline flush and deinit",
     transform_original = reinterpret_cast<FixtureFunction>(installed.original);
     REQUIRE(target(left, right) == (baseline ^ kTransformMask));
 
-    CHECK(backend.uninstall(function_address(target), 0U) ==
+    CHECK(backend.uninstall(function_address(target), std::chrono::steady_clock::now()) ==
           noleax::agent::HookUninstallStatus::kTeardownPending);
     CHECK(target(left, right) == baseline);
-    CHECK_FALSE(backend.flush(32U));
+    CHECK_FALSE(backend.flush());
 
     backend.release_trampoline_lifetime_lease();
     CHECK(backend.trampoline_lifetime_lease_count() == 0U);
-    CHECK(backend.flush(32U));
+    CHECK(backend.flush());
     CHECK_FALSE(backend.has_pending_teardown());
   }
 
@@ -391,11 +392,11 @@ TEST_CASE("hook backend lifetime lease blocks trampoline flush and deinit",
     transform_original = reinterpret_cast<FixtureFunction>(installed.original);
     REQUIRE(target(left, right) == (baseline ^ kTransformMask));
 
-    CHECK_FALSE(backend.shutdown(32U));
+    CHECK_FALSE(backend.shutdown());
     CHECK(target(left, right) == baseline);
     CHECK(backend.has_pending_teardown());
     backend.release_trampoline_lifetime_lease();
-    CHECK(backend.shutdown(32U));
+    CHECK(backend.shutdown());
     CHECK_FALSE(backend.is_active());
   }
 }

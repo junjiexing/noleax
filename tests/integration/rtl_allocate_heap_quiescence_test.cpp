@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -152,14 +153,14 @@ int main() {
 
   auto uninstall_status = noleax::agent::HookUninstallStatus::kTeardownPending;
   if (reached_pre_uninstall) {
-    uninstall_status = hook.uninstall(0U);
+    uninstall_status = hook.uninstall(std::chrono::steady_clock::now());
     if (uninstall_status != noleax::agent::HookUninstallStatus::kTeardownPending) {
       failures.fetch_add(1U, std::memory_order_relaxed);
     }
     for (std::uint32_t retry = 0U;
          retry < 16U && uninstall_status == noleax::agent::HookUninstallStatus::kTeardownPending;
          ++retry) {
-      if (hook.flush(100'000U)) {
+      if (hook.flush()) {
         uninstall_status = noleax::agent::HookUninstallStatus::kUninstalled;
       }
     }

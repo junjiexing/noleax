@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -97,8 +98,8 @@ void print_observation(const char* phase, std::size_t index,
 }
 
 [[nodiscard]] bool finish_uninstall(noleax::agent::windows::RtlFreeHeapHook& hook) noexcept {
-  auto status = hook.uninstall(0U);
-  if (status == noleax::agent::HookUninstallStatus::kTeardownPending && hook.flush(100'000U)) {
+  auto status = hook.uninstall(std::chrono::steady_clock::now());
+  if (status == noleax::agent::HookUninstallStatus::kTeardownPending && hook.flush()) {
     status = noleax::agent::HookUninstallStatus::kUninstalled;
   }
   return status == noleax::agent::HookUninstallStatus::kUninstalled;

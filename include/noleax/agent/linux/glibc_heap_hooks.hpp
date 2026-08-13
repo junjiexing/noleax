@@ -61,12 +61,15 @@ class GlibcHeapHooks final {
   // Resolves every registry symbol from libc.so.6 and patches it. On any failure the
   // already-installed channels are rolled back through the same teardown path as
   // uninstall() and false is returned.
+  //
+  // The teardown calls take an absolute quiescence deadline (H1-A): waits sleep on the
+  // quiescence epoch and report false at the deadline instead of spinning. The default
+  // covers callers that do not care; the capture drain passes kDrainQuiescenceBudget.
   [[nodiscard]] bool install();
   [[nodiscard]] bool stop_recording(
-      std::uint32_t max_yields = HookBackend::kDefaultFlushAttempts) noexcept;
-  [[nodiscard]] bool uninstall(
-      std::uint32_t max_yields = HookBackend::kDefaultFlushAttempts) noexcept;
-  [[nodiscard]] bool flush(std::uint32_t max_yields = HookBackend::kDefaultFlushAttempts) noexcept;
+      QuiescenceDeadline deadline = quiescence_deadline_after()) noexcept;
+  [[nodiscard]] bool uninstall(QuiescenceDeadline deadline = quiescence_deadline_after()) noexcept;
+  [[nodiscard]] bool flush(QuiescenceDeadline deadline = quiescence_deadline_after()) noexcept;
 
   [[nodiscard]] bool is_installed() const noexcept;
   [[nodiscard]] bool is_recording() const noexcept;
@@ -87,7 +90,7 @@ class GlibcHeapHooks final {
     kRetired,
   };
 
-  [[nodiscard]] bool try_finish_teardown(std::uint32_t max_yields) noexcept;
+  [[nodiscard]] bool try_finish_teardown(QuiescenceDeadline deadline) noexcept;
   void finish_teardown() noexcept;
   void abandon_pending_teardown() noexcept;
 

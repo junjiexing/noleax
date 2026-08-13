@@ -50,9 +50,8 @@ class WindowsMemoryHooks final {
 
   [[nodiscard]] WindowsMemoryHookInstallResult install();
   [[nodiscard]] bool stop_recording(
-      std::uint32_t max_attempts = HookBackend::kDefaultFlushAttempts) noexcept;
-  [[nodiscard]] bool uninstall(
-      std::uint32_t flush_attempts = HookBackend::kDefaultFlushAttempts) noexcept;
+      QuiescenceDeadline deadline = quiescence_deadline_after()) noexcept;
+  [[nodiscard]] bool uninstall(QuiescenceDeadline deadline = quiescence_deadline_after()) noexcept;
 
   [[nodiscard]] bool is_installed() const noexcept;
   [[nodiscard]] bool is_recording() const noexcept;

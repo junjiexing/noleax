@@ -7,6 +7,7 @@
 
 #include <array>
 #include <catch2/catch_test_macros.hpp>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
@@ -133,8 +134,8 @@ TEST_CASE("Windows profile coordinator materializes only selected hook families"
     }
     CHECK(hooks.profile() == profile);
     CHECK(hooks.minimum_capture_size() == 0U);
-    CHECK(hooks.stop_recording(0U));
-    CHECK(hooks.uninstall(0U));
+    CHECK(hooks.stop_recording(std::chrono::steady_clock::now()));
+    CHECK(hooks.uninstall(std::chrono::steady_clock::now()));
     CHECK(backend.shutdown());
   }
 }

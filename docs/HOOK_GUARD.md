@@ -86,7 +86,11 @@ CRT `_tls_index` 引用。`TlsAlloc`/`TlsFree` 只存在于 adapter 安装前和
 `HEAP_GENERATE_EXCEPTIONS` 隔离进程合同已完成。original 以 SEH 离开时，C++ `/EHsc` RAII
 不作为异步异常清理保证；replacement 因此通过显式 enter/leave pair 和 `__finally` 恢复 guard，外层
 handler 返回后 depth 必须为零。replacement in-flight/quiescence 见
-[HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)。
+[HOOK_QUIESCENCE.md](HOOK_QUIESCENCE.md)；H1-A 起全部 quiescence 等待改用
+`steady_clock` 绝对 deadline + quiescence epoch 睡眠唤醒（计数归零时 notify），不再按
+yield 计数自旋，等待方在 deadline 耗尽时走安全回退（保留 patch、上报不完整），详见
+[LINUX_HOOK_PROFILES.md](LINUX_HOOK_PROFILES.md) §4.1 与 [IPC_PROTOCOL.md](IPC_PROTOCOL.md)
+的显式状态机（kDraining/kDormant/kUnpatching）。
 
 ## 5. 验证
 

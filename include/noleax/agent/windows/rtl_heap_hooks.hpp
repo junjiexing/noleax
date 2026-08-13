@@ -48,12 +48,10 @@ class RtlHeapHooks final {
   RtlHeapHooks& operator=(RtlHeapHooks&&) = delete;
 
   [[nodiscard]] RtlHeapHookInstallResult install();
-  [[nodiscard]] bool uninstall(
-      std::uint32_t flush_attempts = HookBackend::kDefaultFlushAttempts) noexcept;
-  [[nodiscard]] bool flush(
-      std::uint32_t max_attempts = HookBackend::kDefaultFlushAttempts) noexcept;
+  [[nodiscard]] bool uninstall(QuiescenceDeadline deadline = quiescence_deadline_after()) noexcept;
+  [[nodiscard]] bool flush(QuiescenceDeadline deadline = quiescence_deadline_after()) noexcept;
   [[nodiscard]] bool stop_recording(
-      std::uint32_t max_attempts = HookBackend::kDefaultFlushAttempts) noexcept;
+      QuiescenceDeadline deadline = quiescence_deadline_after()) noexcept;
   [[nodiscard]] bool is_installed() const noexcept;
   [[nodiscard]] bool is_recording() const noexcept;
   [[nodiscard]] std::uint64_t recording_in_flight_count() const noexcept;

@@ -5,6 +5,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -188,9 +189,9 @@ int main() {
 
   bool uninstalled = false;
   if (reached_pre_uninstall) {
-    uninstalled = hooks.uninstall(0U);
+    uninstalled = hooks.uninstall(std::chrono::steady_clock::now());
     for (std::uint32_t retry = 0U; retry < 16U && !uninstalled; ++retry) {
-      uninstalled = hooks.flush(100'000U);
+      uninstalled = hooks.flush();
     }
   }
 

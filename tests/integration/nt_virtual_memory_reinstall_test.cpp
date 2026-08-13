@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <winternl.h>
 
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 
@@ -20,11 +21,11 @@ using NtFreeVirtualMemoryFunction = NTSTATUS(NTAPI*)(HANDLE process, PVOID* base
 constexpr std::uint32_t kFlushRetries = 16U;
 
 [[nodiscard]] bool uninstall_fully(noleax::agent::windows::NtMemoryHooks& hooks) noexcept {
-  if (hooks.uninstall(0U)) {
+  if (hooks.uninstall(std::chrono::steady_clock::now())) {
     return true;
   }
   for (std::uint32_t retry = 0U; retry < kFlushRetries; ++retry) {
-    if (hooks.flush(100'000U)) {
+    if (hooks.flush()) {
       return true;
     }
   }

@@ -131,7 +131,7 @@ void write_enum(PayloadWriter& writer, Enum value) {
 }
 
 [[nodiscard]] bool valid_agent_state(AgentState value) noexcept {
-  return value >= AgentState::kIdle && value <= AgentState::kFailed;
+  return value >= AgentState::kIdle && value <= AgentState::kUnpatching;
 }
 
 [[nodiscard]] bool valid_architecture(Architecture value) noexcept {
@@ -515,6 +515,7 @@ std::vector<std::byte> encode_capture_status(const CaptureStatus& status) {
   writer.integer(status.queue_high_water_events);
   writer.integer(status.consumed_events);
   writer.integer(status.last_flush_monotonic_ns);
+  writer.integer(status.flags);
   return std::move(writer).finish();
 }
 
@@ -535,6 +536,7 @@ CaptureStatus decode_capture_status(std::span<const std::byte> payload) {
   status.queue_high_water_events = reader.integer<std::uint64_t>();
   status.consumed_events = reader.integer<std::uint64_t>();
   status.last_flush_monotonic_ns = reader.integer<std::uint64_t>();
+  status.flags = reader.integer<std::uint32_t>();
   reader.finish();
   if (!valid_agent_state(status.state) || reserved8 != 0U || reserved16 != 0U || reserved32 != 0U) {
     throw ProtocolError{"capture status contains invalid fields"};

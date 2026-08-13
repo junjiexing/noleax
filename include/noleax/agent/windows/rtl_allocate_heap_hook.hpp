@@ -32,11 +32,10 @@ class RtlAllocateHeapHook {
 
   [[nodiscard]] FastHookResult install();
   [[nodiscard]] HookUninstallStatus uninstall(
-      std::uint32_t flush_attempts = HookBackend::kDefaultFlushAttempts) noexcept;
-  [[nodiscard]] bool flush(
-      std::uint32_t max_attempts = HookBackend::kDefaultFlushAttempts) noexcept;
+      QuiescenceDeadline deadline = quiescence_deadline_after()) noexcept;
+  [[nodiscard]] bool flush(QuiescenceDeadline deadline = quiescence_deadline_after()) noexcept;
   [[nodiscard]] bool stop_recording(
-      std::uint32_t max_attempts = HookBackend::kDefaultFlushAttempts) noexcept;
+      QuiescenceDeadline deadline = quiescence_deadline_after()) noexcept;
 
   [[nodiscard]] bool is_installed() const noexcept;
   [[nodiscard]] bool is_recording() const noexcept;
@@ -70,7 +69,7 @@ class RtlAllocateHeapHook {
     kRetired,
   };
 
-  [[nodiscard]] bool try_finish_teardown(std::uint32_t max_attempts) noexcept;
+  [[nodiscard]] bool try_finish_teardown(QuiescenceDeadline deadline) noexcept;
   void initialize();
   void finish_teardown() noexcept;
   void abandon_pending_teardown() noexcept;

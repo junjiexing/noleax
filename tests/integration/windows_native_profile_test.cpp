@@ -249,7 +249,7 @@ int main(int argc, char* argv[]) {
   } catch (const std::logic_error&) {
     early_finish_rejected = true;
   }
-  const bool early_uninstall_rejected = !hooks.uninstall(0U);
+  const bool early_uninstall_rejected = !hooks.uninstall(std::chrono::steady_clock::now());
 
   auto* const heap_hooks = hooks.nt_heap_hooks();
   auto* const virtual_memory_hooks = hooks.virtual_memory_hooks();
@@ -327,7 +327,7 @@ int main(int argc, char* argv[]) {
     }
   }
   Sleep(30U);
-  const bool recording_stopped = hooks.stop_recording(1'000'000U);
+  const bool recording_stopped = hooks.stop_recording();
   const auto stopped_counts = recordable_counts(hooks);
   Sleep(20U);
 
@@ -351,7 +351,7 @@ int main(int argc, char* argv[]) {
     CloseHandle(worker);
   }
   const bool workers_stopped = wait_result == WAIT_OBJECT_0;
-  const bool physically_uninstalled = hooks.uninstall(1'000'000U);
+  const bool physically_uninstalled = hooks.uninstall();
   const bool backend_stopped = backend.shutdown();
   output.close();
   const bool section_closed = CloseHandle(section) != FALSE;

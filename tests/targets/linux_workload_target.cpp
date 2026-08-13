@@ -8,6 +8,7 @@
 #include <sys/mman.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -129,6 +130,20 @@ extern "C" __attribute__((visibility("default"))) void my_free(void* pointer) {
   std::free(static_cast<std::byte*>(pointer) - 16U);
 }
 
+// A deliberately slow "allocator" pair for the drain-quiescence e2e (H1-A): the 500 ms
+// sleep happens inside the hooked function, so a capture stop that lands mid-call finds
+// the replacement in flight and must wait it out (or time out against a tiny budget).
+// noinline+noipa keep the hooked entry points canonical (see CxxAllocator below).
+extern "C" __attribute__((visibility("default"), noinline, noipa)) void* slow_alloc(
+    std::size_t size) {
+  std::this_thread::sleep_for(std::chrono::milliseconds{500});
+  return std::malloc(size);
+}
+
+extern "C" __attribute__((visibility("default"), noinline, noipa)) void slow_free(void* pointer) {
+  std::free(pointer);
+}
+
 // A C++ member allocator for the per-role custom-hook argument model: `this` occupies
 // argument 0, so Malloc's size rides in argument 1, Realloc's pointer/size in arguments
 // 1/2, and Free's pointer in argument 1. Out-of-line default-visibility definitions keep
@@ -166,7 +181,18 @@ __attribute__((noinline, noipa, visibility("hidden"))) void hidden_free(void* po
   std::free(pointer);
 }
 
-int main() {
+int main(int argc, char** argv) {
+  // --slow-custom-alloc: one slow_alloc call whose 500 ms body spans the capture stop of
+  // the drain-quiescence test. The block is retained until exit. The trailing cushion
+  // keeps the process alive while the delayed drain finishes the writer, so the exit
+  // hook never races an in-progress finalize.
+  if (argc > 1 && std::strcmp(argv[1], "--slow-custom-alloc") == 0) {
+    void* const block = escape(slow_alloc(2048U));
+    std::this_thread::sleep_for(std::chrono::milliseconds{500});
+    std::printf("slow workload done block=%p\n", block);
+    return 42;
+  }
+
   std::vector<void*> retained;
   retained.reserve(kLeakedCount);
 

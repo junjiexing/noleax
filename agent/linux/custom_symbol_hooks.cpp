@@ -837,10 +837,10 @@ class LinuxCustomSymbolHooks::Implementation final {
 
   ~Implementation() {
     if (any_point_live()) {
-      static_cast<void>(uninstall(HookBackend::kDefaultFlushAttempts));
+      static_cast<void>(uninstall(quiescence_deadline_after()));
     }
     if (has_pending_teardown()) {
-      static_cast<void>(flush(HookBackend::kDefaultFlushAttempts));
+      static_cast<void>(flush(quiescence_deadline_after()));
     }
     if (has_pending_teardown()) {
       abandon_pending_teardown();
@@ -874,7 +874,7 @@ class LinuxCustomSymbolHooks::Implementation final {
     return true;
   }
 
-  [[nodiscard]] bool stop_recording(std::uint32_t max_yields) noexcept {
+  [[nodiscard]] bool stop_recording(QuiescenceDeadline deadline) noexcept {
     bool recording = false;
     for (PointState& point : points_) {
       if (point.installed && !point.teardown_pending) {
@@ -888,14 +888,14 @@ class LinuxCustomSymbolHooks::Implementation final {
     for (PointState& point : points_) {
       if (point.installed && !point.teardown_pending &&
           !g_custom_hook_slots[point.slot_index].lifecycle.wait_for_recording_quiescence(
-              max_yields)) {
+              deadline)) {
         return false;
       }
     }
     return true;
   }
 
-  [[nodiscard]] bool uninstall(std::uint32_t max_yields) noexcept {
+  [[nodiscard]] bool uninstall(QuiescenceDeadline deadline) noexcept {
     const InternalThreadScope internal_thread;
     for (PointState& point : points_) {
       if (!point.installed || point.teardown_pending) {
@@ -908,19 +908,19 @@ class LinuxCustomSymbolHooks::Implementation final {
       // wait for replacement quiescence before releasing the trampoline lifetime leases.
       for (RoleState* role : {&point.alloc, &point.realloc, &point.free}) {
         if (role->installed) {
-          static_cast<void>(backend_->uninstall(role->target, 0U));
+          static_cast<void>(backend_->uninstall(role->target, std::chrono::steady_clock::now()));
         }
       }
       slot.lifecycle.route_to_target();
     }
-    return try_finish_teardown(max_yields);
+    return try_finish_teardown(deadline);
   }
 
-  [[nodiscard]] bool flush(std::uint32_t max_yields) noexcept {
+  [[nodiscard]] bool flush(QuiescenceDeadline deadline) noexcept {
     if (any_point_live()) {
       return false;
     }
-    return try_finish_teardown(max_yields);
+    return try_finish_teardown(deadline);
   }
 
   [[nodiscard]] bool any_point_live() const noexcept {
@@ -1099,7 +1099,7 @@ class LinuxCustomSymbolHooks::Implementation final {
     } catch (...) {
       for (RoleState* role : {&point.alloc, &point.realloc, &point.free}) {
         if (role->installed) {
-          static_cast<void>(backend_->uninstall(role->target, 0U));
+          static_cast<void>(backend_->uninstall(role->target, std::chrono::steady_clock::now()));
           role->installed = false;
         }
         if (role->lease_acquired) {
@@ -1248,14 +1248,14 @@ class LinuxCustomSymbolHooks::Implementation final {
     return CustomHookFailureReason::kOther;
   }
 
-  [[nodiscard]] bool try_finish_teardown(std::uint32_t max_yields) noexcept {
+  [[nodiscard]] bool try_finish_teardown(QuiescenceDeadline deadline) noexcept {
     bool all_retired = true;
     for (PointState& point : points_) {
       if (!point.teardown_pending || point.retired) {
         continue;
       }
       CustomHookSlot& slot = g_custom_hook_slots[point.slot_index];
-      if (!slot.lifecycle.wait_for_quiescence(max_yields)) {
+      if (!slot.lifecycle.wait_for_quiescence(deadline)) {
         all_retired = false;
         continue;
       }
@@ -1272,7 +1272,7 @@ class LinuxCustomSymbolHooks::Implementation final {
       return false;
     }
     if (!backend_flush_complete_) {
-      backend_flush_complete_ = backend_->flush(max_yields);
+      backend_flush_complete_ = backend_->flush(deadline);
     }
     if (!backend_flush_complete_) {
       return false;
@@ -1341,16 +1341,16 @@ LinuxCustomSymbolHooks::~LinuxCustomSymbolHooks() = default;
 
 bool LinuxCustomSymbolHooks::install() { return implementation_->install(); }
 
-bool LinuxCustomSymbolHooks::stop_recording(std::uint32_t max_yields) noexcept {
-  return implementation_->stop_recording(max_yields);
+bool LinuxCustomSymbolHooks::stop_recording(QuiescenceDeadline deadline) noexcept {
+  return implementation_->stop_recording(deadline);
 }
 
-bool LinuxCustomSymbolHooks::uninstall(std::uint32_t max_yields) noexcept {
-  return implementation_->uninstall(max_yields);
+bool LinuxCustomSymbolHooks::uninstall(QuiescenceDeadline deadline) noexcept {
+  return implementation_->uninstall(deadline);
 }
 
-bool LinuxCustomSymbolHooks::flush(std::uint32_t max_yields) noexcept {
-  return implementation_->flush(max_yields);
+bool LinuxCustomSymbolHooks::flush(QuiescenceDeadline deadline) noexcept {
+  return implementation_->flush(deadline);
 }
 
 bool LinuxCustomSymbolHooks::is_installed() const noexcept {
