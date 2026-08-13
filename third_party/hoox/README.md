@@ -5,9 +5,9 @@ library used by the noleax agent. These files are upstream release artifacts;
 edit only to carry reviewed local deviations until they land upstream and a new
 release is vendored. There are currently no local deviations.
 
-- Upstream version: **v0.2.2** (release asset `hoox-v0.2.2-amalgamation.zip`)
-- `hoox.c` SHA512 (pristine upstream): `71b49c86c3fc8a4b67de11676e9a4f2693dbc6c3a800853800dd9613d608e87b5df6a7be87623238b0e0f38b6bd2cc8ce7d37aa3f570c3a0015973ef8c41ea00`
-- `hoox.h` SHA512 (pristine upstream): `3a8fc440bc35e69c0e5afe8bbff872ec0385af9084ca36522824fd76f703f8039b2295fecda965ae788a541ce4ad2fa7efb14e8b5e5747879ecce12819902462`
+- Upstream version: **v0.2.3** (release asset `hoox-v0.2.3-amalgamation.zip`)
+- `hoox.c` SHA512 (pristine upstream): `b9e1438aa92abf8d3783ed1120f60981f6418b6edd640b07e71d611f95e0e06cbaacc01c6c145a975752fe7cd6f1b0e85ed36c1da4cf02feec1b933a3ad6624a`
+- `hoox.h` SHA512 (pristine upstream): `6e03a7bd350e1851a3cbfaca0e052e12179377d454e83c393241c8b749967d9c6428aa13025d4641bdf8a21561d11758a90f1832bda27824901865f9a72955d6`
 
 SHA512 values are computed over the pristine release asset as published (CRLF
 line endings); the vendored copies are checked in with LF line endings.

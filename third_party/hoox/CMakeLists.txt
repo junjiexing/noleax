@@ -17,6 +17,11 @@ if(NOT WIN32)
   # multi-byte patches on Linux get the same no-thread-in-transit guarantee
   # the Windows PC guard provides.
   target_compile_definitions(noleax-hoox PRIVATE HOOX_POSIX_PATCH_PC_GUARD)
+  # v0.2.3 added a _Thread_local flag (external thread suspension); the agent
+  # DSO must not carry dynamic-model TLS (__tls_get_addr can allocate and
+  # recurse into the hooked allocators), so build with initial-exec like the
+  # agent itself (tests/cmake/VerifyLinuxAgentTls.cmake enforces this).
+  target_compile_options(noleax-hoox PRIVATE -ftls-model=initial-exec)
 endif()
 
 set_target_properties(noleax-hoox PROPERTIES

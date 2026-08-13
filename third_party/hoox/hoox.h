@@ -445,6 +445,23 @@ HOOX_API hx_boolean hoox_peer_park_all_clear_of (HooxPeerPark * self,
 HOOX_API void hoox_peer_park_end (HooxPeerPark * self);
 
 /* ======================================================================== *
+ * External thread suspension.
+ *
+ * Tells hoox that the calling thread's patch transactions are protected by an
+ * out-of-process stop-the-world mechanism (for example a ptrace injector that
+ * keeps every target thread frozen until the call returns), so hoox must skip
+ * its own in-process stop-the-world (thread suspension / peer parking) for
+ * patches written by this thread. The flag is thread-local and defaults to
+ * disabled.
+ *
+ * WARNING: enabling this without a real external freeze lets peer threads
+ * execute the bytes being patched — only ever set it while such a freeze is
+ * provably in effect, and clear it before the freeze ends.
+ * ======================================================================== */
+
+HOOX_API void hoox_memory_set_external_thread_suspension (hx_boolean enabled);
+
+/* ======================================================================== *
  * Library lifecycle.
  * ======================================================================== */
 

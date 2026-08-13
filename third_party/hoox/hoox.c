@@ -2364,6 +2364,10 @@ HOOX_API hx_boolean hoox_peer_park_all_clear_of (HooxPeerPark * self,
                                                  hx_uint n_ranges);
 HOOX_API void hoox_peer_park_end (HooxPeerPark * self);
 
+/* Mirrored from include/hoox.h (the internal and public headers cannot be
+ * included together). */
+HOOX_API void hoox_memory_set_external_thread_suspension (hx_boolean enabled);
+
 struct _HooxRangeDetails
 {
   const HooxMemoryRange * range;
@@ -11422,6 +11426,10 @@ HOOX_API hx_boolean hoox_peer_park_all_clear_of (HooxPeerPark * self,
                                                  hx_uint n_ranges);
 HOOX_API void hoox_peer_park_end (HooxPeerPark * self);
 
+/* Mirrored from include/hoox.h (the internal and public headers cannot be
+ * included together). */
+HOOX_API void hoox_memory_set_external_thread_suspension (hx_boolean enabled);
+
 struct _HooxRangeDetails
 {
   const HooxMemoryRange * range;
@@ -19097,6 +19105,10 @@ HOOX_API hx_boolean hoox_peer_park_all_clear_of (HooxPeerPark * self,
                                                  hx_uint n_ranges);
 HOOX_API void hoox_peer_park_end (HooxPeerPark * self);
 
+/* Mirrored from include/hoox.h (the internal and public headers cannot be
+ * included together). */
+HOOX_API void hoox_memory_set_external_thread_suspension (hx_boolean enabled);
+
 struct _HooxRangeDetails
 {
   const HooxMemoryRange * range;
@@ -25268,6 +25280,10 @@ HOOX_API hx_boolean hoox_peer_park_all_clear_of (HooxPeerPark * self,
                                                  const HooxPeerParkRange * ranges,
                                                  hx_uint n_ranges);
 HOOX_API void hoox_peer_park_end (HooxPeerPark * self);
+
+/* Mirrored from include/hoox.h (the internal and public headers cannot be
+ * included together). */
+HOOX_API void hoox_memory_set_external_thread_suspension (hx_boolean enabled);
 
 struct _HooxRangeDetails
 {
@@ -32519,6 +32535,10 @@ HOOX_API hx_boolean hoox_peer_park_all_clear_of (HooxPeerPark * self,
                                                  hx_uint n_ranges);
 HOOX_API void hoox_peer_park_end (HooxPeerPark * self);
 
+/* Mirrored from include/hoox.h (the internal and public headers cannot be
+ * included together). */
+HOOX_API void hoox_memory_set_external_thread_suspension (hx_boolean enabled);
+
 struct _HooxRangeDetails
 {
   const HooxMemoryRange * range;
@@ -36145,6 +36165,18 @@ hoox_query_rwx_support (void)
  *
  * Returns: whether the modifications were successfully applied
  */
+#ifdef _MSC_VER
+static __declspec (thread) hx_boolean hoox_external_thread_suspension;
+#else
+static _Thread_local hx_boolean hoox_external_thread_suspension;
+#endif
+
+void
+hoox_memory_set_external_thread_suspension (hx_boolean enabled)
+{
+  hoox_external_thread_suspension = enabled;
+}
+
 hx_boolean
 hoox_memory_patch_code (hx_pointer address,
                        hx_size size,
@@ -36272,6 +36304,11 @@ hoox_memory_patch_code_pages_guarded (HxPtrArray * sorted_addresses,
    * peer thread in the park signal handler for the duration of the write. */
   suspend_threads = TRUE;
 #endif
+  if (hoox_external_thread_suspension)
+    /* The caller keeps every peer frozen by an out-of-process mechanism
+     * (e.g. ptrace); an in-process stop-the-world would at best be redundant
+     * and at worst deadlock against threads that cannot run signal handlers. */
+    suspend_threads = FALSE;
   page_size = hoox_query_page_size ();
 
   if (hoox_memory_can_remap_writable ())
@@ -39981,6 +40018,10 @@ HOOX_API hx_boolean hoox_peer_park_all_clear_of (HooxPeerPark * self,
                                                  hx_uint n_ranges);
 HOOX_API void hoox_peer_park_end (HooxPeerPark * self);
 
+/* Mirrored from include/hoox.h (the internal and public headers cannot be
+ * included together). */
+HOOX_API void hoox_memory_set_external_thread_suspension (hx_boolean enabled);
+
 struct _HooxRangeDetails
 {
   const HooxMemoryRange * range;
@@ -43228,6 +43269,10 @@ HOOX_API hx_boolean hoox_peer_park_all_clear_of (HooxPeerPark * self,
                                                  const HooxPeerParkRange * ranges,
                                                  hx_uint n_ranges);
 HOOX_API void hoox_peer_park_end (HooxPeerPark * self);
+
+/* Mirrored from include/hoox.h (the internal and public headers cannot be
+ * included together). */
+HOOX_API void hoox_memory_set_external_thread_suspension (hx_boolean enabled);
 
 struct _HooxRangeDetails
 {
@@ -46968,6 +47013,10 @@ HOOX_API hx_boolean hoox_peer_park_all_clear_of (HooxPeerPark * self,
                                                  const HooxPeerParkRange * ranges,
                                                  hx_uint n_ranges);
 HOOX_API void hoox_peer_park_end (HooxPeerPark * self);
+
+/* Mirrored from include/hoox.h (the internal and public headers cannot be
+ * included together). */
+HOOX_API void hoox_memory_set_external_thread_suspension (hx_boolean enabled);
 
 struct _HooxRangeDetails
 {
@@ -52992,6 +53041,10 @@ HOOX_API hx_boolean hoox_peer_park_all_clear_of (HooxPeerPark * self,
                                                  hx_uint n_ranges);
 HOOX_API void hoox_peer_park_end (HooxPeerPark * self);
 
+/* Mirrored from include/hoox.h (the internal and public headers cannot be
+ * included together). */
+HOOX_API void hoox_memory_set_external_thread_suspension (hx_boolean enabled);
+
 struct _HooxRangeDetails
 {
   const HooxMemoryRange * range;
@@ -56088,6 +56141,10 @@ HOOX_API hx_boolean hoox_peer_park_all_clear_of (HooxPeerPark * self,
                                                  const HooxPeerParkRange * ranges,
                                                  hx_uint n_ranges);
 HOOX_API void hoox_peer_park_end (HooxPeerPark * self);
+
+/* Mirrored from include/hoox.h (the internal and public headers cannot be
+ * included together). */
+HOOX_API void hoox_memory_set_external_thread_suspension (hx_boolean enabled);
 
 struct _HooxRangeDetails
 {
@@ -59831,6 +59888,10 @@ HOOX_API hx_boolean hoox_peer_park_all_clear_of (HooxPeerPark * self,
                                                  hx_uint n_ranges);
 HOOX_API void hoox_peer_park_end (HooxPeerPark * self);
 
+/* Mirrored from include/hoox.h (the internal and public headers cannot be
+ * included together). */
+HOOX_API void hoox_memory_set_external_thread_suspension (hx_boolean enabled);
+
 struct _HooxRangeDetails
 {
   const HooxMemoryRange * range;
@@ -62935,6 +62996,10 @@ HOOX_API hx_boolean hoox_peer_park_all_clear_of (HooxPeerPark * self,
                                                  const HooxPeerParkRange * ranges,
                                                  hx_uint n_ranges);
 HOOX_API void hoox_peer_park_end (HooxPeerPark * self);
+
+/* Mirrored from include/hoox.h (the internal and public headers cannot be
+ * included together). */
+HOOX_API void hoox_memory_set_external_thread_suspension (hx_boolean enabled);
 
 struct _HooxRangeDetails
 {
