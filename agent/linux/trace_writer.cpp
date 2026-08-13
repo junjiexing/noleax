@@ -35,6 +35,7 @@
 #include <vector>
 
 #include "noleax/agent/hook_guard.hpp"
+#include "noleax/agent/linux/agent_memory.hpp"
 #include "noleax/agent/linux/hook_registry.hpp"
 #include "noleax/agent/linux/memory_snapshot.hpp"
 #include "noleax/agent/linux/stack_capture.hpp"
@@ -421,6 +422,18 @@ class LinuxTraceWriter::Implementation final {
     module_payload_.reserve(options_.chunk_target_size);
     stack_payload_.reserve(options_.chunk_target_size);
     event_payload_.reserve(options_.chunk_target_size);
+    // H4 (P0-1): publish the heap-backed categories whose sizes are fixed at
+    // construction. The dictionary vectors are built at full size, so their storage is
+    // both reserved and resident; both categories stay labeled estimates (no exact flag).
+    AgentMemoryRegistry::instance().set_estimate(
+        noleax::trace::AgentMemoryCategory::kStackDictionary,
+        static_cast<std::uint64_t>(dictionary_.storage_bytes()),
+        static_cast<std::uint64_t>(dictionary_.storage_bytes()));
+    const std::uint64_t buffer_bytes =
+        static_cast<std::uint64_t>(module_payload_.capacity() + stack_payload_.capacity() +
+                                   event_payload_.capacity() + memory_payload_.capacity());
+    AgentMemoryRegistry::instance().set_estimate(noleax::trace::AgentMemoryCategory::kTraceBuffers,
+                                                 buffer_bytes, buffer_bytes);
     status_bytes_written_.store(writer_.bytes_written(), std::memory_order_relaxed);
     worker_ = std::thread{[this] { thread_main(); }};
     std::unique_lock lock{state_mutex_};
@@ -435,6 +448,12 @@ class LinuxTraceWriter::Implementation final {
     // Destruction without finish() still honors the atomic output protocol: promote a
     // cleanly finalized trace, keep a failed one as .partial.
     commit_output();
+    // The writer-owned estimate categories die with the writer; the measured regions
+    // unregister with their own owners (the queue deleter).
+    AgentMemoryRegistry& registry = AgentMemoryRegistry::instance();
+    registry.clear_estimate(noleax::trace::AgentMemoryCategory::kStackDictionary);
+    registry.clear_estimate(noleax::trace::AgentMemoryCategory::kTraceBuffers);
+    registry.clear_estimate(noleax::trace::AgentMemoryCategory::kModuleTracker);
   }
 
   void begin_capture() {
@@ -449,8 +468,51 @@ class LinuxTraceWriter::Implementation final {
     // Durability floor: header + scope must reach the disk before the capture starts, so
     // a .partial left by a kill is always a decodable trace.
     flush_stream();
+    write_memory_baselines();
     capture_begun_ = true;
     state_changed_.notify_all();
+  }
+
+  // H4 (P0-1): the two startup baselines (before/after queue+hook+writer creation) are
+  // the first kMemory records of the trace, so the startup RSS step is attributable.
+  // Baseline ticks are real sampling times taken by the runtime; they seed
+  // last_memory_ticks_ so the periodic samples that follow never go backwards.
+  void write_memory_baselines() {
+    if (!baseline_pre_init_.has_value() && !baseline_post_init_.has_value()) {
+      return;
+    }
+    memory_payload_.clear();
+    std::uint64_t records = 0U;
+    const auto append_baseline = [this, &records](const LinuxTraceWriterBaseline& baseline,
+                                                  noleax::trace::AgentMemorySampleKind kind) {
+      if (baseline.has_counters) {
+        noleax::trace::MemoryCounters counters = baseline.counters;
+        counters.monotonic_ticks = baseline.monotonic_ticks;
+        noleax::trace::append_memory_counters_record(memory_payload_, counters,
+                                                     options_.maximum_record_size);
+        checked_add(memory_counters_records_, 1U, "memory counters record count overflow");
+      }
+      noleax::trace::AgentMemory memory;
+      memory.monotonic_ticks = baseline.monotonic_ticks;
+      memory.kind = kind;
+      memory.categories = baseline.categories;
+      noleax::trace::append_agent_memory_record(memory_payload_, memory,
+                                                options_.maximum_record_size);
+      checked_add(memory_agent_records_, 1U, "agent memory record count overflow");
+      ++records;
+      last_memory_ticks_ = (std::max)(last_memory_ticks_, baseline.monotonic_ticks);
+    };
+    if (baseline_pre_init_.has_value()) {
+      append_baseline(*baseline_pre_init_, noleax::trace::AgentMemorySampleKind::kBaselinePreInit);
+    }
+    if (baseline_post_init_.has_value()) {
+      append_baseline(*baseline_post_init_,
+                      noleax::trace::AgentMemorySampleKind::kBaselinePostInit);
+    }
+    if (records != 0U && write_data_chunk(noleax::trace::ChunkType::kMemory, memory_payload_)) {
+      checked_add(memory_chunks_, 1U, "memory chunk count overflow");
+    }
+    memory_payload_.clear();
   }
 
   // Records custom hook points that failed to install. The failures land in the metadata
@@ -470,6 +532,21 @@ class LinuxTraceWriter::Implementation final {
     }
     completeness_.mark_custom_hook_install_failed();
     custom_hook_failures_ = std::move(failures);
+  }
+
+  // H4 (P0-1): the buffer conversion math and startup baselines, noted by the runtime
+  // after hook installation (the post-init baseline includes this writer's estimates).
+  void note_startup_memory(noleax::trace::BufferConfiguration configuration,
+                           LinuxTraceWriterBaseline baseline_pre_init,
+                           LinuxTraceWriterBaseline baseline_post_init) {
+    std::scoped_lock lock{state_mutex_};
+    if (capture_begun_) {
+      throw std::logic_error{"startup memory notes must be recorded before capture begins"};
+    }
+    noleax::trace::validate_buffer_configuration(configuration);
+    buffer_configuration_ = configuration;
+    baseline_pre_init_ = std::move(baseline_pre_init);
+    baseline_post_init_ = std::move(baseline_post_init);
   }
 
   void request_stop() noexcept {
@@ -520,6 +597,10 @@ class LinuxTraceWriter::Implementation final {
     LinuxTraceWriterLiveStatus status;
     status.bytes_written = status_bytes_written_.load(std::memory_order_relaxed);
     status.last_flush_monotonic_ns = last_flush_monotonic_ns_.load(std::memory_order_relaxed);
+    status.agent_reserved_bytes = status_agent_reserved_bytes_.load(std::memory_order_relaxed);
+    status.agent_resident_bytes = status_agent_resident_bytes_.load(std::memory_order_relaxed);
+    status.event_queue_resident_bytes =
+        status_event_queue_resident_bytes_.load(std::memory_order_relaxed);
     return status;
   }
 
@@ -883,6 +964,10 @@ class LinuxTraceWriter::Implementation final {
     std::vector<std::byte> payload;
     noleax::trace::append_capture_scope_record(payload, options_.capture_scope,
                                                options_.maximum_record_size);
+    if (buffer_configuration_.has_value()) {
+      noleax::trace::append_buffer_configuration_record(payload, *buffer_configuration_,
+                                                        options_.maximum_record_size);
+    }
     for (const noleax::trace::CustomHookDefinition& definition : custom_definitions_) {
       noleax::trace::append_custom_hook_definition_record(payload, definition,
                                                           options_.maximum_record_size);
@@ -1031,6 +1116,7 @@ class LinuxTraceWriter::Implementation final {
       last_memory_ticks_ = ticks;
       std::uint64_t counters_records = 0U;
       std::uint64_t map_records = 0U;
+      std::uint64_t agent_records = 0U;
       if (want_counters) {
         noleax::trace::MemoryCounters counters;
         if (capture_memory_counters(counters)) {
@@ -1039,6 +1125,19 @@ class LinuxTraceWriter::Implementation final {
                                                        options_.maximum_record_size);
           counters_records = 1U;
         }
+        // H4 (P0-1): the agent-owned breakdown rides every counters tick (it pairs with
+        // the process RSS), even if the /proc read itself failed.
+        noleax::trace::AgentMemory memory;
+        memory.monotonic_ticks = ticks;
+        memory.kind = noleax::trace::AgentMemorySampleKind::kPeriodic;
+        update_agent_memory_estimates();
+        agent_categories_scratch_.clear();
+        AgentMemoryRegistry::instance().snapshot(agent_categories_scratch_);
+        memory.categories = agent_categories_scratch_;
+        noleax::trace::append_agent_memory_record(memory_payload_, memory,
+                                                  options_.maximum_record_size);
+        agent_records = 1U;
+        publish_agent_memory_status(memory.categories);
       }
       if (want_map) {
         noleax::trace::MemoryMap map;
@@ -1055,6 +1154,7 @@ class LinuxTraceWriter::Implementation final {
           checked_add(memory_counters_records_, counters_records,
                       "memory counters record count overflow");
           checked_add(memory_map_records_, map_records, "memory map record count overflow");
+          checked_add(memory_agent_records_, agent_records, "agent memory record count overflow");
         }
         memory_payload_.clear();
       }
@@ -1064,6 +1164,35 @@ class LinuxTraceWriter::Implementation final {
     } catch (...) {
       memory_payload_.clear();
     }
+  }
+
+  // H4 (P0-1): refresh the estimate categories that move at runtime. The module tracker
+  // category bundles the tracker itself with the writer's live bookkeeping maps; node
+  // sizes are estimates (64/128 bytes per entry) because the real node overhead is
+  // allocator-dependent — the category never carries the exact flag.
+  void update_agent_memory_estimates() {
+    std::uint64_t bytes = module_tracker_.estimated_storage_bytes();
+    bytes += static_cast<std::uint64_t>(live_allocations_.size()) * 64U;
+    bytes += static_cast<std::uint64_t>(live_generations_.size()) * 64U;
+    bytes += static_cast<std::uint64_t>(live_modules_.size()) * 128U;
+    AgentMemoryRegistry::instance().set_estimate(noleax::trace::AgentMemoryCategory::kModuleTracker,
+                                                 bytes, bytes);
+  }
+
+  void publish_agent_memory_status(
+      const std::vector<noleax::trace::AgentMemoryCategorySample>& categories) noexcept {
+    std::uint64_t reserved = 0U;
+    std::uint64_t resident = 0U;
+    for (const noleax::trace::AgentMemoryCategorySample& category : categories) {
+      reserved += category.reserved_bytes;
+      resident += category.resident_bytes;
+      if (category.category == noleax::trace::AgentMemoryCategory::kEventQueue) {
+        status_event_queue_resident_bytes_.store(category.resident_bytes,
+                                                 std::memory_order_relaxed);
+      }
+    }
+    status_agent_reserved_bytes_.store(reserved, std::memory_order_relaxed);
+    status_agent_resident_bytes_.store(resident, std::memory_order_relaxed);
   }
 
   void drain_modules_through(std::uint64_t maximum_ticks) {
@@ -2391,6 +2520,7 @@ class LinuxTraceWriter::Implementation final {
     result_.memory_chunks = memory_chunks_;
     result_.memory_counters_records = memory_counters_records_;
     result_.memory_map_records = memory_map_records_;
+    result_.memory_agent_records = memory_agent_records_;
   }
 
   // Per-API counter slots: the built-in registry entries first, then one slot per declared
@@ -2436,6 +2566,9 @@ class LinuxTraceWriter::Implementation final {
   noleax::trace::CompletenessTracker completeness_;
 
   std::optional<RawModuleEvent> pending_module_event_;
+  std::optional<noleax::trace::BufferConfiguration> buffer_configuration_;
+  std::optional<LinuxTraceWriterBaseline> baseline_pre_init_;
+  std::optional<LinuxTraceWriterBaseline> baseline_post_init_;
   std::vector<std::byte> module_payload_;
   std::vector<std::byte> stack_payload_;
   std::vector<std::byte> event_payload_;
@@ -2455,6 +2588,9 @@ class LinuxTraceWriter::Implementation final {
   // Live telemetry mirrors, read by live_status() from any thread.
   std::atomic<std::uint64_t> status_bytes_written_{0U};
   std::atomic<std::uint64_t> last_flush_monotonic_ns_{0U};
+  std::atomic<std::uint64_t> status_agent_reserved_bytes_{0U};
+  std::atomic<std::uint64_t> status_agent_resident_bytes_{0U};
+  std::atomic<std::uint64_t> status_event_queue_resident_bytes_{0U};
   bool thread_ready_{false};
   bool capture_begun_{false};
   bool metadata_written_{false};
@@ -2502,6 +2638,9 @@ class LinuxTraceWriter::Implementation final {
   std::uint64_t memory_chunks_{0U};
   std::uint64_t memory_counters_records_{0U};
   std::uint64_t memory_map_records_{0U};
+  std::uint64_t memory_agent_records_{0U};
+  // Scratch reused by the per-tick agent memory snapshot (writer thread only).
+  std::vector<noleax::trace::AgentMemoryCategorySample> agent_categories_scratch_;
 };
 
 LinuxTraceWriter::LinuxTraceWriter(LinuxHeapEventQueue& event_queue,
@@ -2518,6 +2657,13 @@ void LinuxTraceWriter::begin_capture() { implementation_->begin_capture(); }
 void LinuxTraceWriter::note_custom_hook_failures(
     std::vector<noleax::trace::CustomHookFailure> failures) {
   implementation_->note_custom_hook_failures(std::move(failures));
+}
+
+void LinuxTraceWriter::note_startup_memory(noleax::trace::BufferConfiguration configuration,
+                                           LinuxTraceWriterBaseline baseline_pre_init,
+                                           LinuxTraceWriterBaseline baseline_post_init) {
+  implementation_->note_startup_memory(configuration, std::move(baseline_pre_init),
+                                       std::move(baseline_post_init));
 }
 
 LinuxTraceWriterResult LinuxTraceWriter::finish() { return implementation_->finish(); }

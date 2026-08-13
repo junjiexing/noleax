@@ -662,6 +662,7 @@ void ConsoleWriter::write_memory(const MemoryAnalysisResult& result) {
   MemoryPeak reserved_bytes;
   std::uint64_t counters_count = 0U;
   std::uint64_t map_count = 0U;
+  std::uint64_t agent_count = 0U;
   for (const MemorySnapshot& snapshot : result.snapshots) {
     output_ << "  " << relative_time(snapshot.monotonic_ticks, *header_);
     if (snapshot.counters.has_value()) {
@@ -687,6 +688,21 @@ void ConsoleWriter::write_memory(const MemoryAnalysisResult& result) {
       reserved_bytes.include(map.reserved_bytes, snapshot.monotonic_ticks);
       checked_increment(map_count, "map snapshot");
     }
+    if (snapshot.agent.has_value()) {
+      const AgentMemoryTotals totals = agent_memory_totals(*snapshot.agent);
+      output_ << " agent-resident=" << totals.resident_bytes
+              << "B agent-reserved=" << totals.reserved_bytes << "B";
+      if (snapshot.counters.has_value()) {
+        output_ << " application=" << application_memory_estimate(snapshot) << "B "
+                << (totals.exact ? "(exact)" : "(estimate)");
+      }
+      if (snapshot.agent->kind == noleax::trace::AgentMemorySampleKind::kBaselinePreInit) {
+        output_ << " baseline=pre-init";
+      } else if (snapshot.agent->kind == noleax::trace::AgentMemorySampleKind::kBaselinePostInit) {
+        output_ << " baseline=post-init";
+      }
+      checked_increment(agent_count, "agent snapshot");
+    }
     output_ << '\n';
   }
 
@@ -706,10 +722,22 @@ void ConsoleWriter::write_memory(const MemoryAnalysisResult& result) {
     output_ << "  none\n";
   }
 
-  output_ << "\nsummary:\n"
-          << "  snapshots: " << result.snapshots.size() << '\n'
+  output_ << "\nsummary:\n";
+  if (result.trace.buffer_configuration.has_value()) {
+    const auto& configuration = *result.trace.buffer_configuration;
+    const bool adjusted =
+        (configuration.flags & noleax::trace::kBufferConfigurationFlagAdjusted) != 0U;
+    output_ << "  buffer: requested=" << configuration.requested_bytes
+            << "B slots=" << configuration.effective_slots << " slot=" << configuration.slot_size
+            << "B event=" << configuration.event_size
+            << "B reserved=" << configuration.reserved_bytes
+            << "B resident-after-init=" << configuration.resident_after_init_bytes
+            << "B adjusted=" << (adjusted ? "true" : "false") << '\n';
+  }
+  output_ << "  snapshots: " << result.snapshots.size() << '\n'
           << "  counter-snapshots: " << counters_count << '\n'
-          << "  map-snapshots: " << map_count << '\n';
+          << "  map-snapshots: " << map_count << '\n'
+          << "  agent-snapshots: " << agent_count << '\n';
   write_common_summary(result.trace);
   state_ = State::kFinished;
   ensure_output();

@@ -179,6 +179,15 @@ class LinuxModuleTracker::Implementation {
 
   [[nodiscard]] std::size_t live_module_count() const noexcept { return live_.size(); }
 
+  [[nodiscard]] std::uint64_t estimated_storage_bytes() const noexcept {
+    std::uint64_t bytes = static_cast<std::uint64_t>(queue_capacity_) * sizeof(RawModuleEvent) +
+                          initial_.capacity() * sizeof(RawModuleEvent);
+    for (const ModuleIdentity& module : live_) {
+      bytes += sizeof(ModuleIdentity) + module.path.capacity();
+    }
+    return bytes;
+  }
+
  private:
   void enqueue(const RawModuleEvent& event) noexcept {
     if (pending_count_ == queue_capacity_) {
@@ -225,6 +234,10 @@ std::size_t LinuxModuleTracker::queue_capacity() const noexcept {
 
 std::size_t LinuxModuleTracker::live_module_count() const noexcept {
   return implementation_->live_module_count();
+}
+
+std::uint64_t LinuxModuleTracker::estimated_storage_bytes() const noexcept {
+  return implementation_->estimated_storage_bytes();
 }
 
 }  // namespace noleax::agent::linux

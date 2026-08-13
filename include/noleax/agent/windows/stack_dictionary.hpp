@@ -33,6 +33,9 @@ class RawStackDictionary final {
   [[nodiscard]] std::size_t size() const noexcept;
   [[nodiscard]] std::size_t capacity() const noexcept;
   [[nodiscard]] std::uint64_t segment_count() const noexcept;
+  // Backing-store footprint (entries + buckets). The vectors are constructed at full
+  // size, so these bytes are committed at construction (H4 agent-memory accounting).
+  [[nodiscard]] std::size_t storage_bytes() const noexcept;
 
  private:
   struct Entry {
@@ -75,6 +78,9 @@ class NormalizedStackDictionary final {
   [[nodiscard]] std::size_t size() const noexcept;
   [[nodiscard]] std::size_t capacity() const noexcept;
   [[nodiscard]] std::uint64_t segment_count() const noexcept;
+  // Backing-store footprint (entries + buckets). The vectors are constructed at full
+  // size, so these bytes are committed at construction (H4 agent-memory accounting).
+  [[nodiscard]] std::size_t storage_bytes() const noexcept;
 
  private:
   struct Entry {

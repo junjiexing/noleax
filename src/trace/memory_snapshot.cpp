@@ -29,4 +29,39 @@ void validate_memory_map(const MemoryMap& map) {
   }
 }
 
+void validate_agent_memory(const AgentMemory& memory) {
+  if (memory.kind != AgentMemorySampleKind::kPeriodic &&
+      memory.kind != AgentMemorySampleKind::kBaselinePreInit &&
+      memory.kind != AgentMemorySampleKind::kBaselinePostInit) {
+    throw MemorySnapshotValidationError{"agent memory sample kind is not supported"};
+  }
+  // An empty category list is meaningful: the pre-init baseline is taken before any
+  // agent component registered its memory.
+  if (memory.categories.size() > kMaximumAgentMemoryCategories) {
+    throw MemorySnapshotValidationError{"agent memory category count is out of range"};
+  }
+  for (const AgentMemoryCategorySample& category : memory.categories) {
+    if (category.resident_bytes > category.reserved_bytes) {
+      throw MemorySnapshotValidationError{
+          "agent memory category resident bytes exceed the reserved bytes"};
+    }
+  }
+}
+
+void validate_buffer_configuration(const BufferConfiguration& configuration) {
+  if (configuration.requested_bytes == 0U || configuration.effective_slots == 0U ||
+      configuration.event_size == 0U || configuration.slot_size == 0U ||
+      configuration.slot_size < configuration.event_size) {
+    throw MemorySnapshotValidationError{"buffer configuration slot math is invalid"};
+  }
+  if (configuration.effective_slots >
+      std::numeric_limits<std::uint64_t>::max() / configuration.slot_size) {
+    throw MemorySnapshotValidationError{"buffer configuration reserved bytes overflow"};
+  }
+  if (configuration.reserved_bytes != configuration.effective_slots * configuration.slot_size ||
+      configuration.resident_after_init_bytes > configuration.reserved_bytes) {
+    throw MemorySnapshotValidationError{"buffer configuration byte counts are inconsistent"};
+  }
+}
+
 }  // namespace noleax::trace

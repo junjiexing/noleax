@@ -742,6 +742,124 @@ TEST_CASE("memory record decoders reject malformed payloads", "[trace][record-co
   }
 }
 
+TEST_CASE("agent memory record has stable layout and round trips", "[trace][record-codec]") {
+  using namespace noleax::trace;
+  AgentMemory expected;
+  expected.monotonic_ticks = 0x0102030405060708ULL;
+  expected.kind = AgentMemorySampleKind::kBaselinePostInit;
+  expected.categories = {
+      AgentMemoryCategorySample{AgentMemoryCategory::kEventQueue, kAgentMemoryCategoryFlagExact,
+                                0x1000U, 0x800U},
+      // An unknown category id survives the round trip (forward compatibility).
+      AgentMemoryCategorySample{static_cast<AgentMemoryCategory>(77U), 0U, 0x4000U, 0x1000U},
+  };
+  std::vector<std::byte> encoded;
+  append_agent_memory_record(encoded, expected);
+
+  REQUIRE(encoded.size() == 8U + 16U + 2U * 24U);
+  CHECK(std::to_integer<std::uint8_t>(encoded[0]) ==
+        static_cast<std::uint8_t>(MemoryRecordType::kAgentMemory));
+  CHECK(read_u32(encoded, 4U) == 8U + 16U + 2U * 24U);
+  CHECK(read_u64(encoded, 8U) == expected.monotonic_ticks);
+  CHECK(std::to_integer<std::uint8_t>(encoded[16]) ==
+        static_cast<std::uint8_t>(AgentMemorySampleKind::kBaselinePostInit));
+  CHECK(read_u32(encoded, 20U) == 2U);
+  CHECK(read_u32(encoded, 24U) == static_cast<std::uint32_t>(AgentMemoryCategory::kEventQueue));
+  CHECK(read_u32(encoded, 28U) == kAgentMemoryCategoryFlagExact);
+  CHECK(read_u64(encoded, 32U) == 0x1000U);
+  CHECK(read_u64(encoded, 40U) == 0x800U);
+
+  RecordCursor cursor{encoded};
+  const auto decoded = decode_agent_memory_record(*cursor.next());
+  REQUIRE(decoded.has_value());
+  CHECK(*decoded == expected);
+  CHECK(cursor.done());
+}
+
+TEST_CASE("agent memory record decoders reject malformed payloads", "[trace][record-codec]") {
+  using namespace noleax::trace;
+  const RecordView wrong_version{
+      static_cast<std::uint16_t>(MemoryRecordType::kAgentMemory), 2U, {}};
+  CHECK_FALSE(decode_agent_memory_record(wrong_version).has_value());
+
+  SECTION("category count does not match the payload") {
+    AgentMemory memory;
+    memory.monotonic_ticks = 1U;
+    memory.categories = {
+        AgentMemoryCategorySample{AgentMemoryCategory::kAgentHeap, 0U, 4U, 4U},
+    };
+    std::vector<std::byte> encoded;
+    append_agent_memory_record(encoded, memory);
+    write_u32(encoded, 20U, 3U);
+    RecordCursor cursor{encoded};
+    CHECK_THROWS_AS(decode_agent_memory_record(*cursor.next()), RecordCodecError);
+  }
+
+  SECTION("sample kind is unknown") {
+    AgentMemory memory;
+    memory.monotonic_ticks = 1U;
+    memory.categories = {
+        AgentMemoryCategorySample{AgentMemoryCategory::kAgentHeap, 0U, 4U, 4U},
+    };
+    std::vector<std::byte> encoded;
+    append_agent_memory_record(encoded, memory);
+    encoded[16] = std::byte{0xFF};
+    RecordCursor cursor{encoded};
+    CHECK_THROWS_AS(decode_agent_memory_record(*cursor.next()), RecordCodecError);
+  }
+
+  SECTION("resident exceeds reserved") {
+    AgentMemory memory;
+    memory.monotonic_ticks = 1U;
+    memory.categories = {
+        AgentMemoryCategorySample{AgentMemoryCategory::kAgentHeap, 0U, 4U, 8U},
+    };
+    std::vector<std::byte> encoded;
+    CHECK_THROWS_AS(append_agent_memory_record(encoded, memory), MemorySnapshotValidationError);
+    CHECK(encoded.empty());
+  }
+}
+
+TEST_CASE("buffer configuration record has stable layout and round trips",
+          "[trace][record-codec]") {
+  using namespace noleax::trace;
+  const BufferConfiguration expected{
+      8ULL * 1024U * 1024U * 1024U,    8'388'608U, 648U, 656U, 8'388'608ULL * 656U, 0U,
+      kBufferConfigurationFlagAdjusted};
+  std::vector<std::byte> encoded;
+  append_buffer_configuration_record(encoded, expected);
+
+  REQUIRE(encoded.size() == 8U + 56U);
+  CHECK(std::to_integer<std::uint8_t>(encoded[0]) ==
+        static_cast<std::uint8_t>(MetadataRecordType::kBufferConfiguration));
+  CHECK(read_u32(encoded, 4U) == 64U);
+  CHECK(read_u64(encoded, 8U) == expected.requested_bytes);
+  CHECK(read_u64(encoded, 16U) == expected.effective_slots);
+  CHECK(read_u64(encoded, 24U) == expected.event_size);
+  CHECK(read_u64(encoded, 32U) == expected.slot_size);
+  CHECK(read_u64(encoded, 40U) == expected.reserved_bytes);
+  CHECK(read_u64(encoded, 48U) == expected.resident_after_init_bytes);
+  CHECK(read_u32(encoded, 56U) == expected.flags);
+  CHECK(read_u32(encoded, 60U) == 0U);
+
+  RecordCursor cursor{encoded};
+  const auto decoded = decode_buffer_configuration_record(*cursor.next());
+  REQUIRE(decoded.has_value());
+  CHECK(*decoded == expected);
+  CHECK(cursor.done());
+
+  const RecordView wrong_version{
+      static_cast<std::uint16_t>(MetadataRecordType::kBufferConfiguration), 2U, {}};
+  CHECK_FALSE(decode_buffer_configuration_record(wrong_version).has_value());
+
+  BufferConfiguration invalid = expected;
+  invalid.resident_after_init_bytes = expected.reserved_bytes + 1U;
+  std::vector<std::byte> rejected;
+  CHECK_THROWS_AS(append_buffer_configuration_record(rejected, invalid),
+                  MemorySnapshotValidationError);
+  CHECK(rejected.empty());
+}
+
 TEST_CASE("custom hook failure record has stable layout and round trips", "[trace][record-codec]") {
   using namespace noleax::trace;
   const CustomHookFailure expected{"noleax-missing.dll", CustomHookFailureRole::kFree,

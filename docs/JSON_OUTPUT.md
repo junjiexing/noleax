@@ -1,6 +1,6 @@
 # Noleax JSON 输出
 
-> schema：`docs/schema/noleax-analysis-v5.schema.json`
+> schema：`docs/schema/noleax-analysis-v6.schema.json`
 > 日期：2026-08-13
 
 ## 1. 目标与边界
@@ -18,26 +18,29 @@ events 输出可能包含已完成校验的前序记录，但不会包含闭合�
 
 每个文档固定包含：
 
-| 字段 | V5 含义 |
+| 字段 | V6 含义 |
 |---|---|
 | `schema` | 固定为 `noleax.analysis` |
-| `schema_version` | 固定为整数 `5` |
+| `schema_version` | 固定为整数 `6` |
 | `mode` | `events`、`leaks`、`stacks` 或 `memory` |
 | `metadata` | trace header 和 capture scope |
 | `filters` | 本次实际使用的全部过滤条件；未设置的范围为 `null`，空枚举为 `[]`（memory 模式恒为空） |
 | `summary` | trace、完整性、统计、custom hook 失败明细和对应 mode 的计数 |
 
 events 文档另有 `events` 数组；leaks 文档另有 `window` 和 `allocations`；stacks 文档另有
-`dataset`、`window` 和 `groups`；memory 文档另有 `window` 和 `snapshots`。V5 schema 对根对象、
-所有已定义对象及九类 payload 禁止未知字段。V5 相对 V4：leaks 的 `allocations` 项新增
-`size_semantics`（`virtual` 表示 mapping generation 的 size 是剩余虚拟地址空间字节，
+`dataset`、`window` 和 `groups`；memory 文档另有 `window`、`snapshots` 和可选的
+`buffer_configuration`。V6 schema 对根对象、所有已定义对象及九类 payload 禁止未知字段。
+V6 相对 V5：memory 模式的快照新增 agent 自有内存拆分（`agent` 对象与派生的
+`application_estimate_bytes`/`application_estimate_exact`），根对象新增可选的
+`buffer_configuration`（trace.buffer_size 到事件槽位的换算明细），memory summary 新增
+`agent_snapshots`；这是结构变化，因此提升 schema version。V5 相对 V4：leaks 的 `allocations`
+项新增 `size_semantics`（`virtual` 表示 mapping generation 的 size 是剩余虚拟地址空间字节，
 `requested` 表示 heap allocation 的请求大小），leaks summary 新增 `outstanding_virtual_bytes`
-（mapping 类 generation 的剩余虚拟字节合计）；这是结构变化，因此提升 schema version。
-V4 相对 V3 增加 `summary.custom_hook_failures` 数组（元素为 `module`、`role`、`reason`、
-`detail` 四字段的对象，无失败时为空数组）并在
+（mapping 类 generation 的剩余虚拟字节合计）；V4 相对 V3 增加 `summary.custom_hook_failures`
+数组（元素为 `module`、`role`、`reason`、`detail` 四字段的对象，无失败时为空数组）并在
 completeness issue 命名中新增 `custom_hook_install_failed`；V3 相对 V2 增加 `memory` mode（含
 `memory_window`/`memory_snapshot` 结构与对应 summary 计数字段）。仓库保留只接受旧结构的
-V1/V2/V3/V4 schema。后续新增字段、改变字段类型或新增枚举值也必须按消费者无法静默误解的兼容
+V1/V2/V3/V4/V5 schema。后续新增字段、改变字段类型或新增枚举值也必须按消费者无法静默误解的兼容
 策略处理。
 
 ## 3. 基础编码规则
@@ -105,8 +108,8 @@ summary 含 `groups`、`calls` 和 `bytes`。
 
 `--mode memory` 的输出 `mode` 为 `memory`。`window` 为 `{from_ns, to_ns|null}`（快照没有事件
 sequence，不接受 `#sequence` 窗口界）。`snapshots` 按采样 tick 升序，每项包含
-`monotonic_ticks`、`relative_time_ns`，以及按该 tick 到期情况出现的 `counters` 和/或 `map`
-（键缺省表示该 tick 无此采样）：
+`monotonic_ticks`、`relative_time_ns`，以及按该 tick 到期情况出现的 `counters`、`map` 和/或
+`agent`（键缺省表示该 tick 无此采样）：
 
 - `counters`：`working_set_bytes`、`peak_working_set_bytes`、`private_bytes`、`commit_bytes`。
 - `map`：全量 walk 的聚合 `committed_bytes`、`reserved_bytes`、`free_bytes`、
@@ -117,9 +120,26 @@ sequence，不接受 `#sequence` 窗口界）。`snapshots` 按采样 tick 升�
   `0x0000'7fff'ffff'ffff`，la57 系统探测后扩展）；`[vsyscall]` 等内核特殊映射仍列入
   `regions` 但不进聚合，因此 `free_bytes`/`largest_free_bytes` 不会回绕到近 `UINT64_MAX`。
   `committed`/`reserved` 由 maps 权限推断，不等于 Windows 的 commit charge。
+- `agent`（H4；旧格式或非 Linux trace 不含此键）：agent 自有内存拆分。`sample_kind` 为
+  `periodic`、`baseline_pre_init` 或 `baseline_post_init`（两个基线样本夹住队列/hook/writer
+  的创建，用于归因启动 RSS 跳变）；`reserved_bytes`、`resident_bytes` 为全部分类合计；
+  `exact` 只在每个分类的驻留字节都精确测量（专用映射加页级驻留检查）时为 true。
+  `categories` 逐项给出 `category`（稳定 snake_case 名：`event_queue`、`stack_dictionary`、
+  `trace_buffers`、`module_tracker`、`hook_backend`、`agent_heap`，未知分类为
+  `unknown-<id>`）、`reserved_bytes`、`resident_bytes` 和该项的 `exact`。
 
-summary 的 mode 专属字段为 `snapshots`、`counter_snapshots` 和 `map_snapshots`（均为窗口过滤
-后的计数），公共字段与其他 mode 一致。
+同一快照同时带 `counters` 和 `agent` 时另输出 `application_estimate_bytes`（working set 减去
+agent 驻留合计，饱和到 0）与 `application_estimate_exact`（等于该快照 `agent.exact`）；任一
+agent 分类是估算时，application 数字就只是估算而非精确拆分。
+
+trace 携带 BufferConfiguration 元数据记录时，根对象另有 `buffer_configuration`（与
+`snapshots` 同级）：`requested_bytes`（请求的 trace.buffer_size）、`effective_slots`（容量
+上限和 2 的幂向下取整后的有效槽位数）、`event_size`、`slot_size`、`reserved_bytes`
+（= effective_slots × slot_size 的映射保留字节）、`resident_after_init_bytes`（槽位环初始化
+后实测的驻留字节）和 `adjusted`（请求字节数被换算移动时为 true）。
+
+summary 的 mode 专属字段为 `snapshots`、`counter_snapshots`、`map_snapshots` 和
+`agent_snapshots`（均为窗口过滤后的计数），公共字段与其他 mode 一致。
 
 ## 6. API、调用栈和符号
 

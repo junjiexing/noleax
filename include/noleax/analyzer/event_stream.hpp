@@ -34,6 +34,7 @@ struct EventStreamCallbacks {
   std::function<void(const noleax::trace::LossRecord&)> on_loss;
   std::function<void(const noleax::trace::MemoryCounters&)> on_memory_counters;
   std::function<void(const noleax::trace::MemoryMap&)> on_memory_map;
+  std::function<void(const noleax::trace::AgentMemory&)> on_agent_memory;
   std::function<void(const noleax::trace::CaptureStatistics&)> on_statistics;
   std::function<void(const noleax::trace::EndOfTrace&)> on_end_of_trace;
 };
@@ -55,6 +56,10 @@ struct EventStreamResult {
   std::uint64_t loss_record_count{0};
   std::uint64_t memory_counters_count{0};
   std::uint64_t memory_map_count{0};
+  // H4 (P0-1): AgentMemory records seen; the buffer conversion math when the trace
+  // carries a BufferConfiguration metadata record (format minor 4).
+  std::uint64_t memory_agent_count{0};
+  std::optional<noleax::trace::BufferConfiguration> buffer_configuration;
   std::uint64_t bytes_read{0};
   bool truncated{false};
   bool partially_understood{false};

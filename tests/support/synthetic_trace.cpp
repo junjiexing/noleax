@@ -208,6 +208,29 @@ SyntheticTraceBuilder& SyntheticTraceBuilder::add_memory_map(const noleax::trace
   return *this;
 }
 
+SyntheticTraceBuilder& SyntheticTraceBuilder::add_agent_memory(
+    const noleax::trace::AgentMemory& memory) {
+  if (end_.has_value()) {
+    throw SyntheticTraceError{"cannot add agent memory after EndOfTrace"};
+  }
+  noleax::trace::validate_agent_memory(memory);
+  if (memory.monotonic_ticks < file_header_.monotonic_origin) {
+    throw SyntheticTraceError{"synthetic agent memory ticks precede the trace origin"};
+  }
+  memory_records_.emplace_back(memory);
+  return *this;
+}
+
+SyntheticTraceBuilder& SyntheticTraceBuilder::set_buffer_configuration(
+    const noleax::trace::BufferConfiguration& configuration) {
+  if (buffer_configuration_.has_value()) {
+    throw SyntheticTraceError{"synthetic trace already has a BufferConfiguration"};
+  }
+  noleax::trace::validate_buffer_configuration(configuration);
+  buffer_configuration_ = configuration;
+  return *this;
+}
+
 SyntheticTraceBuilder& SyntheticTraceBuilder::set_statistics(
     const noleax::trace::CaptureStatistics& statistics) {
   if (statistics_.has_value()) {
@@ -285,6 +308,10 @@ std::string SyntheticTraceBuilder::build() const {
     noleax::trace::append_custom_hook_failure_record(metadata_payload, failure,
                                                      options_.maximum_record_size);
   }
+  if (buffer_configuration_.has_value()) {
+    noleax::trace::append_buffer_configuration_record(metadata_payload, *buffer_configuration_,
+                                                      options_.maximum_record_size);
+  }
   noleax::trace::ChunkDescriptor metadata_descriptor;
   metadata_descriptor.type = noleax::trace::ChunkType::kMetadata;
   metadata_descriptor.codec = options_.codec;
@@ -354,10 +381,12 @@ std::string SyntheticTraceBuilder::build() const {
       if (const auto* counters = std::get_if<noleax::trace::MemoryCounters>(&record)) {
         noleax::trace::append_memory_counters_record(memory_payload, *counters,
                                                      options_.maximum_record_size);
+      } else if (const auto* map = std::get_if<noleax::trace::MemoryMap>(&record)) {
+        noleax::trace::append_memory_map_record(memory_payload, *map, options_.maximum_record_size);
       } else {
-        noleax::trace::append_memory_map_record(memory_payload,
-                                                std::get<noleax::trace::MemoryMap>(record),
-                                                options_.maximum_record_size);
+        noleax::trace::append_agent_memory_record(memory_payload,
+                                                  std::get<noleax::trace::AgentMemory>(record),
+                                                  options_.maximum_record_size);
       }
     }
     noleax::trace::ChunkDescriptor memory_descriptor;

@@ -178,6 +178,10 @@ struct StartCaptureRequest {
   // Windows only; the Linux agent rejects the request — no safe out-of-process unpatch).
   bool unload_on_stop{false};
   std::vector<CustomHookSpec> custom_hooks;
+  // H4 (P0-1): reject the capture when the buffer_size → slot conversion adjusted the
+  // request (capacity cap or power-of-two floor) instead of just warning about it.
+  // In-place ABI 5 extension, appended after custom_hooks.
+  bool strict_buffer{false};
 
   bool operator==(const StartCaptureRequest&) const = default;
 };
@@ -188,8 +192,11 @@ struct StartCaptureRequest {
 // events those calls record afterwards never reach the trace. kUnpatchIncomplete: the
 // physical teardown could not prove completion within its budget; the patches stay
 // installed (dormant) and the agent reports kDormant instead of kFinalized.
+// kBufferAdjusted (H4): the requested buffer_size did not survive the slot conversion
+// unchanged; the buffer_* fields carry the exact math.
 inline constexpr std::uint32_t kCaptureStatusFlagDrainIncomplete = 1U << 0U;
 inline constexpr std::uint32_t kCaptureStatusFlagUnpatchIncomplete = 1U << 1U;
+inline constexpr std::uint32_t kCaptureStatusFlagBufferAdjusted = 1U << 2U;
 
 struct CaptureStatus {
   AgentState state{AgentState::kIdle};
@@ -210,6 +217,20 @@ struct CaptureStatus {
   std::uint64_t last_flush_monotonic_ns{0U};
   // kCaptureStatusFlag* mask; 0 when the stop/finalize completed cleanly.
   std::uint32_t flags{0U};
+  // H4 (P0-1) buffer conversion transparency + agent-owned memory (in-place ABI 5
+  // extension, appended after flags; zeros when the agent predates H4 or has not sampled
+  // yet). buffer_slot_bytes is the ring slot footprint (sequence + event);
+  // buffer_reserved_bytes = buffer_effective_slots * buffer_slot_bytes;
+  // buffer_resident_bytes is the slot ring's resident bytes at the last memory snapshot.
+  // agent_reserved/agent_resident_bytes total every agent-owned category at the last
+  // snapshot (0 before the first one).
+  std::uint64_t buffer_requested_bytes{0U};
+  std::uint64_t buffer_effective_slots{0U};
+  std::uint64_t buffer_slot_bytes{0U};
+  std::uint64_t buffer_reserved_bytes{0U};
+  std::uint64_t buffer_resident_bytes{0U};
+  std::uint64_t agent_reserved_bytes{0U};
+  std::uint64_t agent_resident_bytes{0U};
 
   bool operator==(const CaptureStatus&) const = default;
 };
@@ -229,6 +250,11 @@ inline constexpr std::uint32_t kAgentStartErrorHookInstall = 3U;
 inline constexpr std::uint32_t kAgentStartErrorUnsupportedProfile = 5U;
 inline constexpr std::uint32_t kAgentStartErrorTraceWriter = 6U;
 inline constexpr std::uint32_t kAgentStartErrorUnsupportedOption = 7U;
+// H4 (P0-1): the slot conversion adjusted the requested buffer_size and the request
+// opted into strict_buffer, so the capture was refused instead of started degraded.
+inline constexpr std::uint32_t kAgentStartErrorBufferAdjusted = 8U;
+// H4 (P0-1): a dedicated agent allocation (the event queue mapping) failed.
+inline constexpr std::uint32_t kAgentStartErrorAgentMemory = 9U;
 
 class ProtocolError final : public std::runtime_error {
  public:

@@ -21,6 +21,16 @@ consumer 腾出空间。
 - 仅由 consumer 修改的 dequeue cursor；
 - 原子 dropped counter。
 
+H4 起 slot 存储的是"逻辑 sequence − slot 下标"：全零的 slot 数组天然就是"所有 slot 在第 0 圈
+空闲"的初始状态，因此构造和 `reset_quiescent` 都不再触碰整个槽位数组。Linux 上槽位环位于
+专属匿名 mmap（`make_linux_heap_event_queue`），页只在 producer 首次发布写入时才提交——读取
+未触碰 slot 的 sequence 只会命中共享零页，不占内存。并发论证：producer 按 reservation CAS 的
+严格顺序声明位置，slot 在每一圈的首写者必定是该位置的声明者；consumer 只在 acquire-load 看到
+已发布 sequence 后才读 event。quiescent reset 通过 lap-0 声明维护的 touched watermark 精确重零
+`[0, watermark)` 区间（每个 lap-0 声明在返回前 max-update watermark，经外部同步先于 reset 的
+读取），未触碰区间保持构造时的零页。距离判读不变：distance = stored − (position − index) 与
+原编码的 stored' − position 逐位等价，包括检测整圈占满的回绕比较。
+
 生产者流程：
 
 1. 根据 cursor 和 mask 定位 slot；
@@ -79,9 +89,11 @@ replacement 在 original 返回后立即保存 `LastError`，完成计时、捕�
 Windows API 与队列操作不会改变目标可观察到的错误状态。栈状态和失败合同见
 [STACK_CAPTURE.md](STACK_CAPTURE.md)。
 
-默认 adapter 容量为 16,384 个 event。包含 per-slot sequence 后预分配约 10.1 MiB；测试
+默认 adapter 容量为 16,384 个 event。包含 per-slot sequence 后槽位为 656 B，保留约 10.5 MiB；
+Linux 专属映射下这些页按需提交（空捕获近似为零驻留）。测试
 harness 显式使用 256 个 slot 以稳定制造 overflow。writer 只消费该固定队列，不在 hook 热路径
-扩容；未来产品配置仍需由 agent 根据 byte budget 推导容量。
+扩容；容量由 agent 按 `trace.buffer_size` 经 `plan_event_queue` 推导，换算结果全量上报
+（H4：启动日志、CaptureStatus、trace 的 BufferConfiguration 记录）。
 
 ## 4.1 Linux 原始事件与 VM 完成序号
 

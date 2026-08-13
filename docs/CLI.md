@@ -142,6 +142,7 @@ trace 完整性驱动（preexisting 盲点使结果为 2）。`--live` 恢复管
 | --memory-counters-interval DURATION | capture.memory_counters_interval | 1s（0s 关闭） |
 | --memory-map-interval DURATION | capture.memory_map_interval | 1s（0s 关闭） |
 | --live / --no-live | capture.live | false（agent 直写） |
+| --strict-buffer / --no-strict-buffer | capture.strict_buffer | false（调整即拒绝启动，仅 Linux agent 执行） |
 | --buffer-size SIZE | trace.buffer_size | 16MiB |
 | --max-trace-size SIZE | trace.max_file_size | 256MiB |
 | --max-trace-files N | trace.max_files | 1 |
@@ -477,6 +478,10 @@ writer 失败的细节在目标进程的 stderr 上（`noleax-agent: trace write
 errno=... offset=... chunk=...)`），trace 尾部的 Loss/Statistics/EndOfTrace 记录失败点之前
 的完整账目；会话期目标退出与 agent 崩溃靠目标存活性区分（socket 断开 + 目标已退出 = 目标
 退出，否则 = agent 崩溃）。
+
+H4 新增两个稳定的 StartCapture agent 错误码（都经 `agent failed to start the capture:` 前缀
+到达用户，退出码 3）：8 = buffer 换算调整了请求值且 `capture.strict_buffer` 打开；
+9 = agent 专属内存分配失败（事件队列 mmap 等，system_error 字段带 errno）。
 
 ## 13. 示例
 

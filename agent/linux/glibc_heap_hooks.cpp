@@ -16,6 +16,7 @@
 
 #include "noleax/agent/hook_guard.hpp"
 #include "noleax/agent/hook_section.hpp"
+#include "noleax/agent/linux/agent_memory.hpp"
 #include "noleax/agent/patch_rendezvous.hpp"
 #include "noleax/agent/replacement_lifecycle.hpp"
 
@@ -545,7 +546,7 @@ const std::array<void*, kChannelCount> kReplacementAddresses{
 GlibcHeapHooks::GlibcHeapHooks(HookBackend& backend, std::size_t event_queue_capacity,
                                std::uint16_t maximum_stack_depth,
                                std::uint64_t minimum_capture_size)
-    : owned_event_queue_{std::make_unique<LinuxHeapEventQueue>(event_queue_capacity)},
+    : owned_event_queue_{make_linux_heap_event_queue(event_queue_capacity)},
       channel_set_{std::make_unique<GlibcHeapHookChannelSet>(*owned_event_queue_)},
       backend_{&backend},
       maximum_stack_depth_{maximum_stack_depth},

@@ -461,6 +461,7 @@ std::vector<std::byte> encode_start_capture(const StartCaptureRequest& request) 
   writer.string(request.trace_path_utf8);
   writer.integer(static_cast<std::uint8_t>(request.unload_on_stop ? 1U : 0U));
   write_custom_hooks(writer, request.custom_hooks);
+  writer.integer(static_cast<std::uint8_t>(request.strict_buffer ? 1U : 0U));
   return std::move(writer).finish();
 }
 
@@ -484,6 +485,7 @@ StartCaptureRequest decode_start_capture(std::span<const std::byte> payload) {
   request.trace_path_utf8 = reader.string();
   request.unload_on_stop = reader.integer<std::uint8_t>() != 0U;
   read_custom_hooks(reader, request);
+  request.strict_buffer = reader.integer<std::uint8_t>() != 0U;
   reader.finish();
   if (reserved8 != 0U || reserved16 != 0U || reserved32 != 0U ||
       !valid_capture_kind(request.capture_kind) || !valid_hook_profile(request.hook_profile) ||
@@ -516,6 +518,13 @@ std::vector<std::byte> encode_capture_status(const CaptureStatus& status) {
   writer.integer(status.consumed_events);
   writer.integer(status.last_flush_monotonic_ns);
   writer.integer(status.flags);
+  writer.integer(status.buffer_requested_bytes);
+  writer.integer(status.buffer_effective_slots);
+  writer.integer(status.buffer_slot_bytes);
+  writer.integer(status.buffer_reserved_bytes);
+  writer.integer(status.buffer_resident_bytes);
+  writer.integer(status.agent_reserved_bytes);
+  writer.integer(status.agent_resident_bytes);
   return std::move(writer).finish();
 }
 
@@ -537,6 +546,13 @@ CaptureStatus decode_capture_status(std::span<const std::byte> payload) {
   status.consumed_events = reader.integer<std::uint64_t>();
   status.last_flush_monotonic_ns = reader.integer<std::uint64_t>();
   status.flags = reader.integer<std::uint32_t>();
+  status.buffer_requested_bytes = reader.integer<std::uint64_t>();
+  status.buffer_effective_slots = reader.integer<std::uint64_t>();
+  status.buffer_slot_bytes = reader.integer<std::uint64_t>();
+  status.buffer_reserved_bytes = reader.integer<std::uint64_t>();
+  status.buffer_resident_bytes = reader.integer<std::uint64_t>();
+  status.agent_reserved_bytes = reader.integer<std::uint64_t>();
+  status.agent_resident_bytes = reader.integer<std::uint64_t>();
   reader.finish();
   if (!valid_agent_state(status.state) || reserved8 != 0U || reserved16 != 0U || reserved32 != 0U) {
     throw ProtocolError{"capture status contains invalid fields"};

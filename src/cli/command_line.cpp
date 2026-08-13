@@ -59,6 +59,7 @@ struct CaptureBindings {
   TextOption memory_counters_interval;
   TextOption memory_map_interval;
   BooleanOption live;
+  BooleanOption strict_buffer;
   ListOption custom_hooks;
 };
 
@@ -184,6 +185,9 @@ void add_capture_options(CLI::App& app, CaptureBindings& bindings) {
                   "Minimum allocation size to capture");
   add_boolean_option(app, bindings.live, "--live", "--no-live",
                      "Keep the controller attached with a live pipe session");
+  add_boolean_option(app, bindings.strict_buffer, "--strict-buffer", "--no-strict-buffer",
+                     "Refuse the capture when the buffer size is adjusted to fit the event "
+                     "slot ring (Linux)");
   add_text_option(app, bindings.buffer_size, "--buffer-size", "In-process trace buffer size");
   add_text_option(app, bindings.max_trace_size, "--max-trace-size", "Maximum trace file size");
   add_text_option(app, bindings.max_trace_files, "--max-trace-files",
@@ -477,6 +481,9 @@ void apply_capture_bindings(const CaptureBindings& bindings, config::CaptureOver
                             const std::filesystem::path& current_directory) {
   if (const auto value = boolean_value(bindings.live)) {
     capture.live.set(*value);
+  }
+  if (const auto value = boolean_value(bindings.strict_buffer)) {
+    capture.strict_buffer.set(*value);
   }
   if (was_set(bindings.custom_hooks)) {
     std::vector<config::CustomHook> hooks;

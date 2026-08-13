@@ -621,6 +621,9 @@ enum class MemoryColumn : std::uint8_t {
   kLargestFreeBytes,
   kRegionCount,
   kTruncated,
+  kAgentReservedBytes,
+  kAgentResidentBytes,
+  kApplicationEstimateBytes,
   kCount,
 };
 
@@ -628,10 +631,20 @@ constexpr std::size_t kMemoryColumnCount = static_cast<std::size_t>(MemoryColumn
 using MemoryRow = std::array<std::string, kMemoryColumnCount>;
 
 constexpr std::array<std::string_view, kMemoryColumnCount> kMemoryHeader{
-    "time_ns",        "working_set_bytes", "peak_working_set_bytes",
-    "private_bytes",  "commit_bytes",      "committed_bytes",
-    "reserved_bytes", "free_bytes",        "largest_free_bytes",
-    "region_count",   "truncated",
+    "time_ns",
+    "working_set_bytes",
+    "peak_working_set_bytes",
+    "private_bytes",
+    "commit_bytes",
+    "committed_bytes",
+    "reserved_bytes",
+    "free_bytes",
+    "largest_free_bytes",
+    "region_count",
+    "truncated",
+    "agent_reserved_bytes",
+    "agent_resident_bytes",
+    "application_estimate_bytes",
 };
 
 void set(EventRow& row, EventColumn column, std::string value) {
@@ -1540,6 +1553,15 @@ void CsvWriter::write_memory(const MemoryAnalysisResult& result) {
       row[column_index(MemoryColumn::kRegionCount)] =
           decimal(static_cast<std::uint64_t>(map.regions.size()));
       row[column_index(MemoryColumn::kTruncated)] = map.truncated ? "true" : "false";
+    }
+    if (snapshot.agent.has_value()) {
+      const AgentMemoryTotals totals = agent_memory_totals(*snapshot.agent);
+      row[column_index(MemoryColumn::kAgentReservedBytes)] = decimal(totals.reserved_bytes);
+      row[column_index(MemoryColumn::kAgentResidentBytes)] = decimal(totals.resident_bytes);
+      if (snapshot.counters.has_value()) {
+        row[column_index(MemoryColumn::kApplicationEstimateBytes)] =
+            decimal(application_memory_estimate(snapshot));
+      }
     }
     csv.row(row);
   }

@@ -231,7 +231,9 @@ TEST_CASE("linux agent reports the explicit capture state machine over IPC",
   // Launch captures go through the physical unpatch: kDrained -> kUnpatching -> kFinalized
   // (the transient kUnpatching is never observable over the sequential session channel).
   CHECK(states.finalized.state == noleax::ipc::AgentState::kFinalized);
-  CHECK(states.finalized.flags == 0U);
+  // H4: the default 16 MiB buffer is floor-adjusted to 16384 slots, so the informational
+  // buffer-adjusted flag is set; no degradation flag (drain/unpatch) may be.
+  CHECK(states.finalized.flags == noleax::ipc::kCaptureStatusFlagBufferAdjusted);
 
   std::error_code error;
   std::filesystem::remove(trace, error);
@@ -251,7 +253,9 @@ TEST_CASE("linux attach-kind capture finalizes dormant and keeps its patches",
   CHECK(states.ready.state == noleax::ipc::AgentState::kCapturing);
   CHECK(states.drained.state == noleax::ipc::AgentState::kDrained);
   CHECK(states.finalized.state == noleax::ipc::AgentState::kDormant);
-  CHECK(states.finalized.flags == 0U);
+  // H4: only the informational buffer-adjusted flag (default buffer floors to 16384
+  // slots); no degradation flag.
+  CHECK(states.finalized.flags == noleax::ipc::kCaptureStatusFlagBufferAdjusted);
 
   std::error_code error;
   std::filesystem::remove(trace, error);

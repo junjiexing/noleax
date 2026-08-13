@@ -94,20 +94,32 @@ TEST_CASE("IPC payload codecs preserve capture contracts", "[ipc][protocol]") {
   start.compression_level = 1;
   start.trace_path_utf8 = "C:/traces/app.nlx";
   start.unload_on_stop = true;
+  start.strict_buffer = true;
   CHECK(noleax::ipc::decode_start_capture(noleax::ipc::encode_start_capture(start)) == start);
 
-  const noleax::ipc::CaptureStatus status{noleax::ipc::AgentState::kCapturing,
-                                          10U,
-                                          9U,
-                                          1U,
-                                          0U,
-                                          4096U,
-                                          3U,
-                                          1024U,
-                                          7U,
-                                          6U,
-                                          123'456'789U,
-                                          noleax::ipc::kCaptureStatusFlagDrainIncomplete};
+  noleax::ipc::CaptureStatus status{noleax::ipc::AgentState::kCapturing,
+                                    10U,
+                                    9U,
+                                    1U,
+                                    0U,
+                                    4096U,
+                                    3U,
+                                    1024U,
+                                    7U,
+                                    6U,
+                                    123'456'789U,
+                                    noleax::ipc::kCaptureStatusFlagDrainIncomplete};
+  CHECK(noleax::ipc::decode_capture_status(noleax::ipc::encode_capture_status(status)) == status);
+
+  // The H4 buffer/agent accounting fields (in-place ABI 5 extension) round-trip.
+  status.flags |= noleax::ipc::kCaptureStatusFlagBufferAdjusted;
+  status.buffer_requested_bytes = 8ULL * 1024U * 1024U * 1024U;
+  status.buffer_effective_slots = 8'388'608U;
+  status.buffer_slot_bytes = 656U;
+  status.buffer_reserved_bytes = 8'388'608ULL * 656U;
+  status.buffer_resident_bytes = 4'096U;
+  status.agent_reserved_bytes = 6ULL * 1024U * 1024U;
+  status.agent_resident_bytes = 5ULL * 1024U * 1024U;
   CHECK(noleax::ipc::decode_capture_status(noleax::ipc::encode_capture_status(status)) == status);
 
   // The new lifecycle states (ABI 5 in-place extension) round-trip and validate.

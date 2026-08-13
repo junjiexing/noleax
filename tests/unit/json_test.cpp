@@ -150,7 +150,7 @@ namespace {
 
 [[nodiscard]] const noleax::testing::JsonValue& analysis_schema() {
   static const noleax::testing::JsonValue schema =
-      load_analysis_schema("noleax-analysis-v5.schema.json");
+      load_analysis_schema("noleax-analysis-v6.schema.json");
   return schema;
 }
 
@@ -188,8 +188,8 @@ namespace {
 }  // namespace
 
 TEST_CASE("analysis JSON schema version is stable", "[analyzer][json]") {
-  CHECK(noleax::analyzer::kAnalysisJsonSchemaVersion == 5U);
-  CHECK(analysis_schema().at("properties").at("schema_version").at("const").unsigned_value() == 5U);
+  CHECK(noleax::analyzer::kAnalysisJsonSchemaVersion == 6U);
+  CHECK(analysis_schema().at("properties").at("schema_version").at("const").unsigned_value() == 6U);
 
   const auto& v2 = analysis_v2_schema();
   CHECK(v2.at("properties").at("schema_version").at("const").unsigned_value() == 2U);

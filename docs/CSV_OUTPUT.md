@@ -130,10 +130,16 @@ absolute_address|module|module_offset|symbol|symbol_offset
 JSON）。每个采样 tick 一行，列为：
 
 `time_ns, working_set_bytes, peak_working_set_bytes, private_bytes, commit_bytes, committed_bytes,
-reserved_bytes, free_bytes, largest_free_bytes, region_count, truncated`
+reserved_bytes, free_bytes, largest_free_bytes, region_count, truncated, agent_reserved_bytes,
+agent_resident_bytes, application_estimate_bytes`
 
-`time_ns` 为相对 trace 起点的纳秒数；前四列来自计数器采样，后六列来自 map 采样。该 tick 未到期的
-采样器对应列留空；`truncated` 只在有 map 采样时填写 `true`/`false`。该表不写 summary 行。
+`time_ns` 为相对 trace 起点的纳秒数；`working_set_bytes` 到 `commit_bytes` 四列来自计数器采样，
+`committed_bytes` 到 `truncated` 六列来自 map 采样，`agent_reserved_bytes` 和
+`agent_resident_bytes` 来自 agent 采样（H4）的分类合计。该 tick 未到期的采样器对应列留空；
+`truncated` 只在有 map 采样时填写 `true`/`false`。`application_estimate_bytes` 只在该 tick
+同时有计数器和 agent 采样时填写，为 working set 减去 agent 驻留合计的应用自有部分（任一 agent
+分类是估算时该值同样只是估算，精确性见 JSON 的 `application_estimate_exact`）。该表不写
+summary 行。
 
 ## 6. 测试验证
 

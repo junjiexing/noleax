@@ -32,10 +32,13 @@
 //      munmap ending three generations;
 //  12. mremap matrix: in-place grow/shrink, a move pair, a MREMAP_FIXED eviction move, a
 //      shrink that releases a neighbour in the generation's hole, and a file-backed view's
-//      partial free (VmFree pieces) plus final whole-view Unmap.
+//      partial free (VmFree pieces) plus final whole-view Unmap;
+//  13. agent memory attribution (H4): dedicated-queue baselines, BufferConfiguration
+//      metadata, the agent/application split under a unique-stack storm, and the startup
+//      RSS step attribution.
 //
-// With an argument, phases 5 and 6 also copy their traces into that directory (for manual
-// CLI cross-checks).
+// With an argument, phases 5, 6, and 13 also copy their traces into that directory (for
+// manual CLI cross-checks).
 
 #include <sys/syscall.h>
 #include <sys/wait.h>
@@ -50,6 +53,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -60,6 +64,7 @@
 #include <vector>
 
 #include "noleax/agent/hook_guard.hpp"
+#include "noleax/agent/linux/agent_memory.hpp"
 #include "noleax/agent/linux/heap_event.hpp"
 #include "noleax/agent/linux/hook_registry.hpp"
 #include "noleax/agent/linux/memory_snapshot.hpp"
@@ -204,6 +209,7 @@ struct Readback {
   std::vector<noleax::trace::StackDefinition> stacks;
   std::vector<noleax::trace::MemoryCounters> memory_counters;
   std::vector<noleax::trace::MemoryMap> memory_maps;
+  std::vector<noleax::trace::AgentMemory> memory_agents;
   std::vector<GenerationNote> generations_created_log;
   std::vector<EndedGenerationNote> generations_ended_log;
   std::uint64_t generations_created{0U};
@@ -251,6 +257,9 @@ struct Readback {
   };
   callbacks.on_memory_map = [&readback](const noleax::trace::MemoryMap& map) {
     readback.memory_maps.push_back(map);
+  };
+  callbacks.on_agent_memory = [&readback](const noleax::trace::AgentMemory& agent) {
+    readback.memory_agents.push_back(agent);
   };
   readback.stream = noleax::analyzer::analyze_event_stream(input, callbacks);
   readback.generations_created = generations.created_count();
@@ -2460,6 +2469,197 @@ bool phase12() {
   return true;
 }
 
+// Phase 13 (H4, P0-1): agent-owned memory attribution. The queue lives in its dedicated
+// mapping (production path), the two startup baselines bracket its creation, and a storm
+// of unique-stack live allocations grows the agent bookkeeping while the application
+// does nothing — the decoded agent/application split must show exactly that.
+bool phase13(const std::filesystem::path& keep_dir) {
+  std::printf("phase 13: agent memory attribution (H4)\n");
+  const std::filesystem::path path = probe_path("p13");
+  const std::uint64_t origin = monotonic_now_ns();
+  const std::uint64_t thread_id = this_thread_id();
+  constexpr std::uint64_t kAllocBase = 0x6000'0000'0000ULL;
+  constexpr std::uint64_t kEventCount = 8'192U;
+
+  LinuxTraceWriterResult result;
+  noleax::trace::BufferConfiguration buffer_configuration;
+  std::uint64_t rss_pre = 0U;
+  std::uint64_t rss_post = 0U;
+  {
+    noleax::agent::linux::AgentMemoryRegistry& registry =
+        noleax::agent::linux::AgentMemoryRegistry::instance();
+    // Baseline 1/2 in production order (agent_runtime start): before any capture
+    // component exists.
+    noleax::agent::linux::LinuxTraceWriterBaseline baseline_pre;
+    baseline_pre.monotonic_ticks = monotonic_now_ns();
+    baseline_pre.has_counters =
+        noleax::agent::linux::capture_memory_counters(baseline_pre.counters);
+    registry.snapshot(baseline_pre.categories);
+    rss_pre = baseline_pre.counters.working_set_bytes;
+
+    auto queue = noleax::agent::linux::make_linux_heap_event_queue(16'384U);
+    LinuxModuleTracker tracker{origin};
+    LinuxTraceWriterOptions options = launch_options(origin);
+    options.memory_counters_interval = std::chrono::milliseconds{1};
+    options.memory_map_interval = std::chrono::milliseconds{0};
+    LinuxTraceWriter writer{*queue, tracker, path, options};
+
+    buffer_configuration =
+        noleax::agent::linux::plan_event_queue(16U * 1024U * 1024U).configuration;
+    // The runtime-side estimate categories, mimicking agent_runtime start().
+    registry.set_estimate(noleax::trace::AgentMemoryCategory::kHookBackend,
+                          noleax::agent::linux::kHookBackendBaseEstimateBytes,
+                          noleax::agent::linux::kHookBackendBaseEstimateBytes);
+    registry.set_estimate(noleax::trace::AgentMemoryCategory::kAgentHeap,
+                          noleax::agent::linux::kAgentHeapReservedEstimateBytes,
+                          noleax::agent::linux::kAgentHeapResidentEstimateBytes);
+    noleax::agent::linux::LinuxTraceWriterBaseline baseline_post;
+    baseline_post.monotonic_ticks = monotonic_now_ns();
+    baseline_post.has_counters =
+        noleax::agent::linux::capture_memory_counters(baseline_post.counters);
+    registry.snapshot(baseline_post.categories);
+    rss_post = baseline_post.counters.working_set_bytes;
+    for (const noleax::trace::AgentMemoryCategorySample& category : baseline_post.categories) {
+      if (category.category == noleax::trace::AgentMemoryCategory::kEventQueue) {
+        buffer_configuration.resident_after_init_bytes = category.resident_bytes;
+      }
+    }
+    writer.note_startup_memory(buffer_configuration, baseline_pre, baseline_post);
+    writer.begin_capture();
+
+    // Unique stacks (innermost frame nudged per event) plus never-freed allocations:
+    // every event grows the writer's live bookkeeping and half of the queue ring.
+    const std::uint64_t base = monotonic_now_ns();
+    for (std::uint64_t index = 0U; index < kEventCount; ++index) {
+      EventSpec spec{noleax::agent::linux::kMallocApiId,
+                     LinuxHeapEventOperation::kAllocate,
+                     LinuxHeapEventStatus::kSuccess,
+                     0x40U,
+                     0U,
+                     0U,
+                     0U,
+                     kAllocBase + index * 0x40U,
+                     0U};
+      LinuxHeapEvent event = make_event(spec, base + 1'000U + index, thread_id);
+      if (event.stack.frame_count != 0U) {
+        event.stack.frames[0] += index * 16U;
+      }
+      if (!push_event(*queue, event)) {
+        std::printf("FAIL: phase 13 push %llu\n", static_cast<unsigned long long>(index));
+        return false;
+      }
+      if (index % 2'048U == 0U) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{4});
+      }
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds{25});
+    result = writer.finish();
+  }
+
+  check(result.status == LinuxTraceWriterStatus::kComplete, "phase 13 status is complete");
+  check_common_result(result, path);
+  check(result.completeness_mask == 0U, "phase 13 completeness mask is zero");
+  check(result.memory_agent_records >= 4U,
+        "phase 13 wrote the two baselines plus periodic agent records");
+
+  const Readback readback = read_trace(path);
+  check_common_readback(readback, origin);
+  check(readback.stream.buffer_configuration.has_value(),
+        "phase 13 trace carries the buffer configuration");
+  if (readback.stream.buffer_configuration.has_value()) {
+    const noleax::trace::BufferConfiguration& decoded = *readback.stream.buffer_configuration;
+    check(decoded == buffer_configuration,
+          "phase 13 buffer configuration record round-trips exactly");
+    check((decoded.flags & noleax::trace::kBufferConfigurationFlagAdjusted) != 0U &&
+              decoded.requested_bytes == 16U * 1024U * 1024U &&
+              decoded.effective_slots == 16'384U && decoded.event_size == 648U &&
+              decoded.slot_size == 656U && decoded.reserved_bytes == 16'384ULL * 656U &&
+              decoded.resident_after_init_bytes == 0U,
+          "phase 13 buffer configuration carries the exact slot math");
+  }
+  check(readback.stream.memory_agent_count == result.memory_agent_records,
+        "phase 13 agent records round-trip");
+  check(readback.memory_agents.size() >= 4U, "phase 13 decoded the agent records");
+  if (readback.memory_agents.size() >= 2U) {
+    const noleax::trace::AgentMemory& pre = readback.memory_agents[0];
+    const noleax::trace::AgentMemory& post = readback.memory_agents[1];
+    check(pre.kind == noleax::trace::AgentMemorySampleKind::kBaselinePreInit &&
+              post.kind == noleax::trace::AgentMemorySampleKind::kBaselinePostInit,
+          "phase 13 the first two agent records are the startup baselines");
+    check(pre.categories.empty(), "phase 13 the pre-init baseline has no agent memory yet");
+    bool saw_exact_queue = false;
+    for (const noleax::trace::AgentMemoryCategorySample& category : post.categories) {
+      if (category.category == noleax::trace::AgentMemoryCategory::kEventQueue) {
+        saw_exact_queue = true;
+        check(category.reserved_bytes == 16'384ULL * 656U && category.resident_bytes == 0U &&
+                  (category.flags & noleax::trace::kAgentMemoryCategoryFlagExact) != 0U,
+              "phase 13 the post-init queue is reserved but not resident");
+      }
+      if (category.category == noleax::trace::AgentMemoryCategory::kStackDictionary) {
+        check(category.reserved_bytes >= 8U * 1024U * 1024U &&
+                  (category.flags & noleax::trace::kAgentMemoryCategoryFlagExact) == 0U,
+              "phase 13 the stack dictionary is a labeled estimate");
+      }
+    }
+    check(saw_exact_queue, "phase 13 the post-init baseline lists the event queue");
+    check(pre.monotonic_ticks <= post.monotonic_ticks, "phase 13 baseline ticks are ordered");
+  }
+
+  // Every periodic agent record pairs with a counters record at the same tick.
+  std::map<std::uint64_t, std::uint64_t> working_set_at;
+  for (const noleax::trace::MemoryCounters& counters : readback.memory_counters) {
+    working_set_at[counters.monotonic_ticks] = counters.working_set_bytes;
+  }
+  std::uint64_t agent_min = std::numeric_limits<std::uint64_t>::max();
+  std::uint64_t agent_max = 0U;
+  std::uint64_t application_min = std::numeric_limits<std::uint64_t>::max();
+  std::uint64_t application_max = 0U;
+  bool all_paired = true;
+  for (const noleax::trace::AgentMemory& agent : readback.memory_agents) {
+    if (agent.kind != noleax::trace::AgentMemorySampleKind::kPeriodic) {
+      continue;
+    }
+    const auto working_set = working_set_at.find(agent.monotonic_ticks);
+    all_paired = all_paired && working_set != working_set_at.end();
+    std::uint64_t resident = 0U;
+    for (const noleax::trace::AgentMemoryCategorySample& category : agent.categories) {
+      resident += category.resident_bytes;
+    }
+    agent_min = (std::min)(agent_min, resident);
+    agent_max = (std::max)(agent_max, resident);
+    if (working_set != working_set_at.end()) {
+      const std::uint64_t application =
+          resident >= working_set->second ? 0U : working_set->second - resident;
+      application_min = (std::min)(application_min, application);
+      application_max = (std::max)(application_max, application);
+    }
+  }
+  check(all_paired, "phase 13 every periodic agent record pairs with process counters");
+  // Acceptance 3: the agent bookkeeping grew (live allocation map + touched queue
+  // pages) while the application estimate stayed flat.
+  check(agent_max >= agent_min + 256U * 1024U, "phase 13 agent-owned memory grows measurably");
+  check(application_max <= application_min + 1536U * 1024U,
+        "phase 13 the application estimate stays flat (no fake growth)");
+
+  // Acceptance 2: the startup RSS step is explained by the post-init agent-owned total.
+  std::uint64_t agent_post_resident = 0U;
+  if (readback.memory_agents.size() >= 2U) {
+    for (const noleax::trace::AgentMemoryCategorySample& category :
+         readback.memory_agents[1].categories) {
+      agent_post_resident += category.resident_bytes;
+    }
+  }
+  const std::uint64_t rss_step = rss_post - rss_pre;
+  const std::uint64_t tolerance = 2U * 1024U * 1024U + rss_step / 20U;
+  check(agent_post_resident + tolerance >= rss_step && rss_post >= rss_pre,
+        "phase 13 the startup RSS step is agent-owned (within 5% + 2 MiB)");
+
+  keep_trace(path, keep_dir, "phase13-agent-memory.nlx");
+  std::error_code error;
+  std::filesystem::remove(path, error);
+  return true;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -2483,6 +2683,7 @@ int main(int argc, char** argv) {
     ok = phase10() && ok;
     ok = phase11() && ok;
     ok = phase12() && ok;
+    ok = phase13(keep_dir) && ok;
   } catch (const std::exception& error) {
     std::printf("FAIL: unexpected exception: %s\n", error.what());
     ok = false;
