@@ -26,6 +26,7 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
@@ -45,6 +46,7 @@
 #include "noleax/agent/hook_guard.hpp"
 #include "noleax/agent/linux/heap_event.hpp"
 #include "noleax/agent/linux/hook_registry.hpp"
+#include "noleax/agent/linux/memory_snapshot.hpp"
 #include "noleax/agent/linux/module_tracker.hpp"
 #include "noleax/agent/linux/stack_capture.hpp"
 #include "noleax/agent/linux/trace_writer.hpp"
@@ -1131,11 +1133,16 @@ bool phase6(const std::filesystem::path& keep_dir) {
 
   bool maps_plausible = !readback.memory_maps.empty();
   previous_ticks = 0U;
+  const std::uint64_t canonical_end = noleax::agent::linux::detail::canonical_user_end();
   for (const noleax::trace::MemoryMap& map : readback.memory_maps) {
     std::uint64_t listed_committed = 0U;
     for (const noleax::trace::MemoryMapRegion& region : map.regions) {
-      if (region.state == noleax::trace::MemoryRegionState::kCommit) {
-        listed_committed += region.size;
+      // Aggregates only cover the user canonical range; special kernel mappings above it
+      // (e.g. [vsyscall]) are listed but never counted.
+      if (region.state == noleax::trace::MemoryRegionState::kCommit &&
+          region.base < canonical_end) {
+        const std::uint64_t clamped_end = (std::min)(region.base + region.size, canonical_end + 1U);
+        listed_committed += clamped_end - region.base;
       }
     }
     maps_plausible = maps_plausible && map.monotonic_ticks >= origin &&

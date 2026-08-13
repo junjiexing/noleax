@@ -106,7 +106,10 @@ sequence，不接受 `#sequence` 窗口界）。`snapshots` 按采样 tick 升�
   `largest_free_bytes`，外加 `region_count`、`truncated` 和完整 `regions` 数组（`base` 为按
   pointer width 补零的十六进制字符串，`size` 为十进制整数，`state` 为 `commit`/`reserve`、
   `type` 为 `image`/`mapped`/`private`、`protect` 为十六进制字符串）。区域明细只进 JSON；
-  console/CSV 只给聚合。
+  console/CSV 只给聚合。Linux 上聚合只统计用户 canonical 地址域（四级页表到
+  `0x0000'7fff'ffff'ffff`，la57 系统探测后扩展）；`[vsyscall]` 等内核特殊映射仍列入
+  `regions` 但不进聚合，因此 `free_bytes`/`largest_free_bytes` 不会回绕到近 `UINT64_MAX`。
+  `committed`/`reserved` 由 maps 权限推断，不等于 Windows 的 commit charge。
 
 summary 的 mode 专属字段为 `snapshots`、`counter_snapshots` 和 `map_snapshots`（均为窗口过滤
 后的计数），公共字段与其他 mode 一致。
