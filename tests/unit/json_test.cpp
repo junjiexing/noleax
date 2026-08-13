@@ -150,7 +150,7 @@ namespace {
 
 [[nodiscard]] const noleax::testing::JsonValue& analysis_schema() {
   static const noleax::testing::JsonValue schema =
-      load_analysis_schema("noleax-analysis-v4.schema.json");
+      load_analysis_schema("noleax-analysis-v5.schema.json");
   return schema;
 }
 
@@ -188,8 +188,8 @@ namespace {
 }  // namespace
 
 TEST_CASE("analysis JSON schema version is stable", "[analyzer][json]") {
-  CHECK(noleax::analyzer::kAnalysisJsonSchemaVersion == 4U);
-  CHECK(analysis_schema().at("properties").at("schema_version").at("const").unsigned_value() == 4U);
+  CHECK(noleax::analyzer::kAnalysisJsonSchemaVersion == 5U);
+  CHECK(analysis_schema().at("properties").at("schema_version").at("const").unsigned_value() == 5U);
 
   const auto& v2 = analysis_v2_schema();
   CHECK(v2.at("properties").at("schema_version").at("const").unsigned_value() == 2U);
@@ -647,4 +647,68 @@ TEST_CASE("events JSON reports custom hook install failures", "[analyzer][json]"
   CHECK(failures.front().at("reason").scalar() == "module_not_loaded");
   CHECK(failures.front().at("detail").scalar() ==
         "custom hook module 'noleax-missing.dll' is not loaded");
+}
+
+TEST_CASE("outstanding JSON labels virtual bytes separately from requested sizes",
+          "[analyzer][json][outstanding][vm]") {
+  using namespace std::chrono_literals;
+  noleax::trace::ProcessTarget target;
+  target.scope = noleax::trace::ProcessMemoryScope::kCurrentProcess;
+  target.process_id = 42U;
+
+  noleax::testing::SyntheticTraceBuilder builder{file_header(), capture_scope()};
+  {
+    noleax::trace::VmAllocateEvent allocation;
+    allocation.target = target;
+    allocation.result_base = 0x4000U;
+    allocation.requested_size = 0x8000U;
+    allocation.result_size = 0x8000U;
+    allocation.mapping_base = 0x4000U;
+    allocation.mapping_size = 0x8000U;
+    allocation.mapping_id = noleax::trace::MappingId{20U};
+    noleax::trace::EventHeader header;
+    header.sequence = noleax::trace::Sequence{1U};
+    header.monotonic_ticks = 110U;
+    header.thread_id = 7U;
+    header.api_id = 1U;
+    header.status = noleax::trace::EventStatus::kSuccess;
+    header.stack_id = noleax::trace::StackId{11U};
+    builder.add_event(noleax::trace::Event{header, allocation});
+  }
+  {
+    // Partial free: the remaining 0x6000 virtual bytes stay outstanding.
+    noleax::trace::VmFreeEvent free;
+    free.target = target;
+    free.base = 0x4000U;
+    free.region_size = 0x2000U;
+    free.free_type = 0x8000U;
+    free.mapping_id = noleax::trace::MappingId{20U};
+    noleax::trace::EventHeader header;
+    header.sequence = noleax::trace::Sequence{2U};
+    header.monotonic_ticks = 115U;
+    header.thread_id = 7U;
+    header.api_id = 1U;
+    header.status = noleax::trace::EventStatus::kSuccess;
+    header.stack_id = noleax::trace::StackId{11U};
+    builder.add_event(noleax::trace::Event{header, free});
+  }
+  builder.add_event(allocation_event(3U, 118U, 10U));
+  const auto encoded = builder.finish_normally().build();
+
+  std::istringstream input{encoded, std::ios::binary};
+  std::ostringstream output;
+  const auto result = noleax::analyzer::analyze_outstanding_to_json(
+      input, output, {at(0ns), at(30ns), std::nullopt}, noleax::analyzer::AnalysisFilter{}, {},
+      [](const noleax::trace::Event&) { return allocation_presentation(); });
+
+  REQUIRE(result.outstanding.size() == 2U);
+  const auto document = parse_and_validate(output.str());
+  const auto& allocations = document.at("allocations").array_items();
+  REQUIRE(allocations.size() == 2U);
+  CHECK(allocations[0].at("generation_kind").scalar() == "virtual_allocation");
+  CHECK(allocations[0].at("size").unsigned_value() == 0x6000U);
+  CHECK(allocations[0].at("size_semantics").scalar() == "virtual");
+  CHECK(allocations[1].at("generation_kind").scalar() == "heap_allocation");
+  CHECK(allocations[1].at("size_semantics").scalar() == "requested");
+  CHECK(document.at("summary").at("outstanding_virtual_bytes").unsigned_value() == 0x6000U);
 }

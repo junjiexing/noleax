@@ -497,13 +497,22 @@ void ConsoleWriter::write_outstanding(const OutstandingResult& result,
   if (result.outstanding.empty()) {
     output_ << "  none\n";
   }
+  std::uint64_t outstanding_virtual_bytes = 0U;
   for (const auto& generation : result.outstanding) {
     const auto metadata = resolver ? resolver(generation.created_by) : ConsoleEventMetadata{};
+    const bool virtual_bytes = generation.kind != GenerationKind::kHeapAllocation;
+    if (virtual_bytes) {
+      outstanding_virtual_bytes += generation.size;
+    }
     output_ << "generation: kind=" << generation_kind_name(generation.kind)
             << " allocation-id=" << identifier_text(generation.allocation_id)
             << " mapping-id=" << identifier_text(generation.mapping_id)
             << " size=" << generation.size
-            << "B address=" << address_text(generation.address, *header_) << '\n';
+            << 'B'
+            // Mapping generations report remaining VIRTUAL address-space bytes, which say
+            // nothing about resident memory.
+            << (virtual_bytes ? " (virtual)" : "")
+            << " address=" << address_text(generation.address, *header_) << '\n';
     if (generation.kind == GenerationKind::kHeapAllocation) {
       output_ << "  heap=" << address_text(generation.heap_handle, *header_)
               << " heap-id=" << identifier_text(generation.heap_id) << '\n';
@@ -517,7 +526,8 @@ void ConsoleWriter::write_outstanding(const OutstandingResult& result,
           << "  candidates: " << result.candidate_count << '\n'
           << "  ended-by-c: " << result.ended_by_c_count << '\n'
           << "  filtered-out: " << result.filtered_out_count << '\n'
-          << "  outstanding: " << result.outstanding.size() << '\n';
+          << "  outstanding: " << result.outstanding.size() << '\n'
+          << "  outstanding-virtual-bytes: " << outstanding_virtual_bytes << '\n';
   write_common_summary(result.trace);
   state_ = State::kFinished;
   ensure_output();

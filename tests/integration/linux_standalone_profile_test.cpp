@@ -18,6 +18,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <optional>
 #include <set>
 #include <string>
@@ -29,6 +30,7 @@
 
 #include "noleax/agent/linux/hook_registry.hpp"
 #include "noleax/analyzer/event_stream.hpp"
+#include "noleax/analyzer/outstanding.hpp"
 #include "noleax/trace/custom_hook.hpp"
 #include "noleax/trace/event.hpp"
 
@@ -299,6 +301,132 @@ TEST_CASE("standalone duration finalizes while the target keeps running", "[linu
   std::filesystem::remove(config, error);
   std::filesystem::remove(trace, error);
   std::filesystem::remove(stderr_capture, error);
+}
+
+TEST_CASE("standalone virtual-memory capture tolerates concurrent address reuse",
+          "[linux][standalone][stress]") {
+  const auto config = unique_path("config.toml");
+  const auto trace = unique_path("trace.nlx");
+  const auto stderr_capture = unique_path("stderr.txt");
+  // The 64-thread stress produces ~64k events in bursts; the debug build drains them
+  // slower than they arrive, so the queue needs real headroom to keep dropped_events at
+  // zero (the field-trace calibration bug this fixes sized the buffer at the default).
+  write_config(config, "linux-virtual-memory", trace,
+               "duration = \"2s\"\nmin_size = \"64KiB\"\n"
+               "memory_counters_interval = \"200ms\"\n",
+               "buffer_size = \"256MiB\"\n");
+
+  StandaloneRun run = run_standalone(config, stderr_capture, NOLEAX_WORKLOAD_PATH, "--vm-stress",
+                                     /*wait=*/false);
+  std::optional<noleax::analyzer::EventStreamResult> finalized;
+  for (int attempt = 0; attempt != 300 && !finalized.has_value(); ++attempt) {
+    std::this_thread::sleep_for(100ms);
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(trace, error)) {
+      continue;
+    }
+    try {
+      std::ifstream input{trace, std::ios::binary};
+      auto result = noleax::analyzer::analyze_event_stream(input);
+      if (result.end_of_trace.has_value()) {
+        finalized = std::move(result);
+      }
+    } catch (const std::exception&) {
+      // The file is visible while the writer is still appending chunks.
+    }
+  }
+
+  REQUIRE(finalized.has_value());
+  check_clean_finalize(*finalized);
+  CHECK(finalized->end_of_trace->normal_stop);
+  CHECK(finalized->completeness.recommended_exit_code() == 0);
+  CHECK(run.pid > 0);
+  CHECK(::kill(run.pid, 0) == 0);
+
+  ::kill(run.pid, SIGTERM);
+  int status = 0;
+  static_cast<void>(::waitpid(run.pid, &status, 0));
+  std::ifstream stderr_stream{stderr_capture};
+  const std::string agent_stderr{std::istreambuf_iterator<char>{stderr_stream},
+                                 std::istreambuf_iterator<char>{}};
+  INFO(agent_stderr);
+  CHECK(agent_stderr.empty());
+
+  std::error_code error;
+  std::filesystem::remove(config, error);
+  std::filesystem::remove(trace, error);
+  std::filesystem::remove(stderr_capture, error);
+}
+
+TEST_CASE("standalone VM outstanding equals the partial-unmap ground truth",
+          "[linux][standalone][vm]") {
+  const auto config = unique_path("config.toml");
+  const auto trace = unique_path("trace.nlx");
+  const auto stderr_capture = unique_path("stderr.txt");
+  const auto report = unique_path("report.txt");
+  write_config(config, "linux-virtual-memory", trace, "", "buffer_size = \"64MiB\"\n");
+
+  const std::pair<std::string, std::string> report_env{"NOLEAX_PARTIALS_REPORT", report.string()};
+  const StandaloneRun run = run_standalone(config, stderr_capture, NOLEAX_WORKLOAD_PATH,
+                                           "--vm-partials", /*wait=*/true, &report_env);
+  INFO(run.agent_stderr);
+  REQUIRE(run.exit_code == 42);
+
+  // The fixture's own ground truth: which generations (by base) must be outstanding with
+  // how many remaining bytes, and every mapping base it ever touched.
+  std::map<std::uint64_t, std::uint64_t> expected;
+  std::set<std::uint64_t> touched;
+  bool report_done = false;
+  {
+    std::ifstream report_stream{report};
+    REQUIRE(report_stream);
+    std::string tag;
+    while (report_stream >> tag) {
+      if (tag == "done") {
+        report_done = true;
+        break;
+      }
+      std::string base_text;
+      report_stream >> base_text;
+      const std::uint64_t base = std::stoull(base_text, nullptr, 16);
+      if (tag == "expect") {
+        std::uint64_t bytes = 0U;
+        report_stream >> bytes;
+        expected.emplace(base, bytes);
+      } else {
+        REQUIRE(tag == "touched");
+        touched.insert(base);
+      }
+    }
+  }
+  REQUIRE(report_done);
+  REQUIRE(expected.size() == 5U);  // R, B, the MAP_FIXED mapping, the fixed-move result, the view
+
+  std::ifstream input{trace, std::ios::binary};
+  REQUIRE(input);
+  const auto result = noleax::analyzer::analyze_outstanding(input, {});
+  check_clean_finalize(result.trace);
+
+  std::map<std::uint64_t, std::uint64_t> actual;
+  for (const auto& generation : result.outstanding) {
+    if (generation.kind == noleax::analyzer::GenerationKind::kHeapAllocation) {
+      continue;
+    }
+    // Anything the fixture touched must be accounted for exactly; runtime mappings the
+    // fixture never touched (loader views, agent-adjacent reservations) are not its
+    // business and are ignored.
+    if (!touched.contains(generation.address)) {
+      continue;
+    }
+    actual.emplace(generation.address, generation.size);
+  }
+  CHECK(actual == expected);
+
+  std::error_code error;
+  std::filesystem::remove(config, error);
+  std::filesystem::remove(trace, error);
+  std::filesystem::remove(stderr_capture, error);
+  std::filesystem::remove(report, error);
 }
 
 TEST_CASE("standalone rejects unsupported non-default fields", "[linux][standalone]") {

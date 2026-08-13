@@ -31,7 +31,9 @@ struct VirtualMemoryHookApiCounters {
   std::uint64_t dropped_events{0U};
   // Calls that emit a wire record PAIR (an mremap that moves): the writer emits two
   // records for one such call, so wire-space statistics count recordable/successful
-  // plus this many on the mremap channel.
+  // plus this many on the mremap channel. Interval-model records beyond the pair
+  // (evictions/trims) are writer-side accounting; a move whose event never queued is
+  // not counted here (a dropped call emits no records).
   std::uint64_t paired_records{0U};
 
   bool operator==(const VirtualMemoryHookApiCounters&) const = default;

@@ -383,3 +383,107 @@ TEST_CASE("Loss and orphan ends keep outstanding results explicitly incomplete",
     CHECK(result.trace.completeness.recommended_exit_code() == 2);
   }
 }
+
+namespace {
+
+[[nodiscard]] noleax::trace::Event vm_allocate_event(std::uint64_t sequence, std::uint64_t ticks,
+                                                     std::uint64_t id, noleax::trace::Address base,
+                                                     std::uint64_t size) {
+  noleax::trace::ProcessTarget target;
+  target.scope = noleax::trace::ProcessMemoryScope::kCurrentProcess;
+  target.process_id = 42U;
+  noleax::trace::VmAllocateEvent allocation;
+  allocation.target = target;
+  allocation.result_base = base;
+  allocation.requested_size = size;
+  allocation.result_size = size;
+  allocation.mapping_base = base;
+  allocation.mapping_size = size;
+  allocation.mapping_id = noleax::trace::MappingId{id};
+  return noleax::trace::Event{event_header(sequence, ticks), allocation};
+}
+
+[[nodiscard]] noleax::trace::Event vm_free_range_event(std::uint64_t sequence, std::uint64_t ticks,
+                                                       std::uint64_t id,
+                                                       noleax::trace::Address base,
+                                                       std::uint64_t size) {
+  noleax::trace::ProcessTarget target;
+  target.scope = noleax::trace::ProcessMemoryScope::kCurrentProcess;
+  target.process_id = 42U;
+  noleax::trace::VmFreeEvent free;
+  free.target = target;
+  free.base = base;
+  free.region_size = size;
+  free.free_type = 0x8000U;
+  free.mapping_id = noleax::trace::MappingId{id};
+  return noleax::trace::Event{event_header(sequence, ticks), free};
+}
+
+}  // namespace
+
+TEST_CASE("partial virtual frees report the remaining virtual bytes at c",
+          "[analyzer][outstanding][vm]") {
+  using namespace std::chrono_literals;
+  const std::vector events{
+      vm_allocate_event(1U, 110U, 20U, 0x4000U, 0x8000U),    // 10ns: [0x4000, 0xC000)
+      vm_free_range_event(2U, 113U, 20U, 0x4000U, 0x2000U),  // 13ns: prefix
+      vm_free_range_event(3U, 116U, 20U, 0x8000U, 0x4000U),  // 16ns: suffix half
+  };
+
+  SECTION("observation between the frees keeps the later bytes") {
+    const auto result = analyze(make_trace(events), {at(0ns), at(12ns), at(14ns)});
+    REQUIRE(result.outstanding.size() == 1U);
+    CHECK(result.outstanding.front().size == 0x6000U);
+    CHECK(result.outstanding.front().kind == noleax::analyzer::GenerationKind::kVirtualAllocation);
+  }
+
+  SECTION("observation after both frees reports the remaining sum") {
+    const auto result = analyze(make_trace(events), {at(0ns), at(12ns), at(30ns)});
+    REQUIRE(result.outstanding.size() == 1U);
+    CHECK(result.outstanding.front().size == 0x2000U);
+    CHECK(result.candidate_count == 1U);
+    CHECK(result.ended_by_c_count == 0U);
+  }
+}
+
+TEST_CASE("a virtual generation ended by several partial frees evicts the candidate once",
+          "[analyzer][outstanding][vm]") {
+  using namespace std::chrono_literals;
+  // Two ranged frees within the window jointly end the generation: the old "ended more
+  // than once" hard error must not fire, and the candidate leaves the outstanding set.
+  const std::vector events{
+      vm_allocate_event(1U, 110U, 20U, 0x4000U, 0x8000U),    // 10ns
+      vm_free_range_event(2U, 115U, 20U, 0x4000U, 0x4000U),  // 15ns: lower half
+      vm_free_range_event(3U, 116U, 20U, 0x8000U, 0x4000U),  // 16ns: upper half
+  };
+
+  const auto result = analyze(make_trace(events), {at(0ns), at(12ns), at(30ns)});
+  CHECK(result.candidate_count == 1U);
+  CHECK(result.ended_by_c_count == 1U);
+  CHECK(result.outstanding.empty());
+  CHECK(result.orphaned_mapping_end_count == 0U);
+
+  // An observation point between the two frees still shows the surviving half.
+  const auto midway = analyze(make_trace(events), {at(0ns), at(12ns), at(15ns)});
+  REQUIRE(midway.outstanding.size() == 1U);
+  CHECK(midway.outstanding.front().size == 0x4000U);
+  CHECK(midway.ended_by_c_count == 0U);
+}
+
+TEST_CASE("a virtual free beyond the observation point leaves the candidate untouched",
+          "[analyzer][outstanding][vm]") {
+  using namespace std::chrono_literals;
+  const std::vector events{
+      vm_allocate_event(1U, 110U, 20U, 0x4000U, 0x8000U),    // 10ns
+      vm_free_range_event(2U, 140U, 20U, 0x4000U, 0x8000U),  // 40ns: ends after c
+  };
+
+  const auto result = analyze(make_trace(events), {at(0ns), at(12ns), at(30ns)});
+  REQUIRE(result.outstanding.size() == 1U);
+  CHECK(result.outstanding.front().size == 0x8000U);
+  CHECK(result.ended_by_c_count == 0U);
+
+  const auto at_end = analyze(make_trace(events), {at(0ns), at(12ns), std::nullopt});
+  CHECK(at_end.outstanding.empty());
+  CHECK(at_end.ended_by_c_count == 1U);
+}

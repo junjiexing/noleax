@@ -5,7 +5,9 @@
 #include <compare>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <limits>
+#include <list>
 #include <optional>
 #include <unordered_map>
 #include <utility>
@@ -21,11 +23,6 @@
 
 namespace noleax::analyzer {
 namespace {
-
-struct CandidateState {
-  MemoryGeneration generation;
-  std::optional<noleax::trace::Event> ended_by;
-};
 
 void validate_window(const OutstandingWindow& window) {
   const auto negative_time = [](const std::optional<WindowBound>& bound) {
@@ -145,6 +142,10 @@ class OutstandingCollector {
                                            const noleax::trace::Event& event) {
       observe_ended(generation, event);
     };
+    generation_callbacks.on_changed = [this](const MemoryGeneration& generation,
+                                             const noleax::trace::Event& event) {
+      observe_changed(generation, event);
+    };
     tracker_ = GenerationTracker{std::move(generation_callbacks)};
   }
 
@@ -185,21 +186,17 @@ class OutstandingCollector {
     result.observation_uses_trace_end = omitted_c || c_exceeds_trace;
     result.effective_c =
         effective_upper_bound(window_.c, trace_end_bound, header, trace_end, trace_end_sequence);
-    result.candidate_count = static_cast<std::uint64_t>(candidates_.size());
+    result.candidate_count = candidate_count_;
+    result.ended_by_c_count = ended_by_c_count_;
 
+    // Candidates that provably ended at or before C were evicted when their end arrived, so
+    // every survivor is outstanding at C; its size is the remaining (virtual) bytes at C.
     for (const auto& candidate : candidates_) {
-      const bool ended_by_c = candidate.ended_by.has_value() &&
-                              window_at_or_before(result.effective_c, header, *candidate.ended_by);
-      if (ended_by_c) {
-        checked_increment(result.ended_by_c_count, "ended candidate count overflow");
-        continue;
-      }
-
-      if (!filter_.matches_generation(candidate.generation, resolver_)) {
+      if (!filter_.matches_generation(candidate, resolver_)) {
         checked_increment(result.filtered_out_count, "filtered candidate count overflow");
         continue;
       }
-      result.outstanding.push_back(candidate.generation);
+      result.outstanding.push_back(candidate);
     }
 
     result.orphaned_allocation_end_count = tracker_.orphaned_allocation_end_count();
@@ -221,19 +218,30 @@ class OutstandingCollector {
       return;
     }
 
-    const std::size_t index = candidates_.size();
-    candidates_.push_back(CandidateState{generation, std::nullopt});
+    checked_increment(candidate_count_, "candidate count overflow");
+    candidates_.push_back(generation);
+    const CandidateIterator candidate = std::prev(candidates_.end());
     if (generation.kind == GenerationKind::kHeapAllocation) {
-      allocation_candidates_.emplace(generation.allocation_id.value(), index);
+      const bool inserted =
+          allocation_candidates_.emplace(generation.allocation_id.value(), candidate).second;
+      if (!inserted) {
+        throw OutstandingAnalysisError{"allocation candidate ID is already present"};
+      }
     } else {
-      mapping_candidates_.emplace(generation.mapping_id.value(), index);
+      const bool inserted =
+          mapping_candidates_.emplace(generation.mapping_id.value(), candidate).second;
+      if (!inserted) {
+        throw OutstandingAnalysisError{"mapping candidate ID is already present"};
+      }
     }
   }
 
   void observe_ended(const MemoryGeneration& generation, const noleax::trace::Event& event) {
-    const auto& candidates = generation.kind == GenerationKind::kHeapAllocation
-                                 ? allocation_candidates_
-                                 : mapping_candidates_;
+    if (!file_header_.has_value()) {
+      throw OutstandingAnalysisError{"generation ended before FileHeader"};
+    }
+    auto& candidates = generation.kind == GenerationKind::kHeapAllocation ? allocation_candidates_
+                                                                          : mapping_candidates_;
     const std::uint64_t id = generation.kind == GenerationKind::kHeapAllocation
                                  ? generation.allocation_id.value()
                                  : generation.mapping_id.value();
@@ -241,21 +249,48 @@ class OutstandingCollector {
     if (candidate == candidates.end()) {
       return;
     }
-    auto& state = candidates_.at(candidate->second);
-    if (state.ended_by.has_value()) {
-      throw OutstandingAnalysisError{"candidate generation ended more than once"};
+
+    // Early eviction: a generation that provably ends at or before C leaves the candidate
+    // set when its end arrives; one that ends later (or never) stays outstanding at C.
+    const bool observes_trace_end = !window_.c.has_value() || window_bound_empty(*window_.c);
+    const bool ended_by_c =
+        observes_trace_end || window_at_or_before(*window_.c, *file_header_, event);
+    if (!ended_by_c) {
+      return;
     }
-    state.ended_by = event;
+    candidates_.erase(candidate->second);
+    candidates.erase(candidate);
+    checked_increment(ended_by_c_count_, "ended candidate count overflow");
   }
+
+  void observe_changed(const MemoryGeneration& generation, const noleax::trace::Event& event) {
+    if (!file_header_.has_value()) {
+      throw OutstandingAnalysisError{"generation changed before FileHeader"};
+    }
+    // Only mapping generations change size; the reported size is the remaining virtual
+    // bytes at C, so a change arriving after C does not apply.
+    const auto candidate = mapping_candidates_.find(generation.mapping_id.value());
+    if (candidate == mapping_candidates_.end()) {
+      return;
+    }
+    const bool observes_trace_end = !window_.c.has_value() || window_bound_empty(*window_.c);
+    if (observes_trace_end || window_at_or_before(*window_.c, *file_header_, event)) {
+      candidate->second->size = generation.size;
+    }
+  }
+
+  using CandidateIterator = std::list<MemoryGeneration>::iterator;
 
   OutstandingWindow window_;
   const AnalysisFilter& filter_;
   const EventMetadataResolver& resolver_;
   std::optional<noleax::trace::FileHeader> file_header_;
   GenerationTracker tracker_;
-  std::vector<CandidateState> candidates_;
-  std::unordered_map<std::uint64_t, std::size_t> allocation_candidates_;
-  std::unordered_map<std::uint64_t, std::size_t> mapping_candidates_;
+  std::list<MemoryGeneration> candidates_;
+  std::unordered_map<std::uint64_t, CandidateIterator> allocation_candidates_;
+  std::unordered_map<std::uint64_t, CandidateIterator> mapping_candidates_;
+  std::uint64_t candidate_count_{0U};
+  std::uint64_t ended_by_c_count_{0U};
 };
 
 }  // namespace

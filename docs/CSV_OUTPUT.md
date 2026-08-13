@@ -73,7 +73,8 @@ events 文件的 `record_type` 为：
 leaks（原 outstanding）文件的 `record_type` 为 `allocation` 或固定末行 `summary`。固定列顺序分组如下：
 
 1. generation：`csv_schema_version, record_type, generation_kind, allocation_id, mapping_id, heap_id,
-   heap_handle, address, size`
+   heap_handle, address, size`（mapping 类 generation 的 `size` 是观察点 c 处的剩余**虚拟**
+   地址空间字节，不是驻留内存；heap allocation 是请求大小）
 2. summary 窗口：`window_a_ns, window_b_ns, requested_c_ns, effective_c_ns,
    window_a_sequence, window_b_sequence, requested_c_sequence, effective_c_sequence,
    observation_uses_trace_end, trace_end_monotonic_ticks`。`window_b_ns` 填写请求的 `--to`，缺省时

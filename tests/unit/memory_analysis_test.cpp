@@ -153,7 +153,7 @@ TEST_CASE("memory JSON output follows the v4 schema", "[analyzer][memory][json]"
   static_cast<void>(noleax::analyzer::analyze_memory_to_json(input, output, full_window()));
 
   const auto schema_path = std::filesystem::path{NOLEAX_TEST_SOURCE_DIR} / "docs" / "schema" /
-                           "noleax-analysis-v4.schema.json";
+                           "noleax-analysis-v5.schema.json";
   std::ifstream schema_input{schema_path, std::ios::binary};
   REQUIRE(schema_input);
   std::ostringstream schema_text;
@@ -163,7 +163,7 @@ TEST_CASE("memory JSON output follows the v4 schema", "[analyzer][memory][json]"
   noleax::testing::validate_json_schema(document, schema);
 
   CHECK(document.at("mode").scalar() == "memory");
-  CHECK(document.at("schema_version").unsigned_value() == 4U);
+  CHECK(document.at("schema_version").unsigned_value() == 5U);
   const auto& snapshots = document.at("snapshots").array_items();
   REQUIRE(snapshots.size() == 3U);
   CHECK(snapshots[0].at("monotonic_ticks").unsigned_value() == 100U);

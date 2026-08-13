@@ -24,6 +24,15 @@
 //      EndOfTrace), and the dual-error result when the tail itself fails;
 //   9. statistics conservation property: randomized per-API producer counters (including
 //      zero-activity APIs and custom points) must reconcile per API and in aggregate.
+//  10. VM interval model (H3): prefix/suffix/middle partial unmaps, a munmap spanning a
+//      hole into a second mapping, double unmap and hole unmap (unmatched), with the
+//      analyzer's outstanding view equal to the scripted ground truth;
+//  11. overlap eviction and completion-sequence ordering: MAP_FIXED-style eviction, a stale
+//      create trimmed to zero, a stale munmap skipping the newer generation, one spanning
+//      munmap ending three generations;
+//  12. mremap matrix: in-place grow/shrink, a move pair, a MREMAP_FIXED eviction move, a
+//      shrink that releases a neighbour in the generation's hole, and a file-backed view's
+//      partial free (VmFree pieces) plus final whole-view Unmap.
 //
 // With an argument, phases 5 and 6 also copy their traces into that directory (for manual
 // CLI cross-checks).
@@ -60,6 +69,7 @@
 #include "noleax/agent/windows/stack_dictionary.hpp"
 #include "noleax/analyzer/event_stream.hpp"
 #include "noleax/analyzer/generation_tracker.hpp"
+#include "noleax/analyzer/outstanding.hpp"
 #include "noleax/ipc/protocol.hpp"
 #include "noleax/trace/completeness.hpp"
 #include "noleax/trace/custom_hook.hpp"
@@ -135,7 +145,13 @@ struct EventSpec {
   std::uint64_t map_flags{0U};
   std::uint64_t section_handle{0U};
   std::uint64_t section_offset{0U};
+  // Completion ordering token for VM events; zero auto-assigns the next value (fine for
+  // in-order scripts). Interval-model phases set it explicitly to reorder completion
+  // against queue arrival.
+  std::uint64_t completion_sequence{0U};
 };
+
+std::uint64_t g_next_completion_sequence = 1U;
 
 [[nodiscard]] LinuxHeapEvent make_event(const EventSpec& spec, std::uint64_t ticks,
                                         std::uint64_t thread_id) {
@@ -156,6 +172,13 @@ struct EventSpec {
   event.map_flags = spec.map_flags;
   event.section_handle = spec.section_handle;
   event.section_offset = spec.section_offset;
+  if (spec.completion_sequence != 0U) {
+    event.completion_sequence = spec.completion_sequence;
+  } else if (spec.operation == LinuxHeapEventOperation::kVmAllocate ||
+             spec.operation == LinuxHeapEventOperation::kVmUnmap ||
+             spec.operation == LinuxHeapEventOperation::kVmRemap) {
+    event.completion_sequence = g_next_completion_sequence++;
+  }
   event.stack = capture_probe_stack();
   return event;
 }
@@ -1906,15 +1929,18 @@ bool phase9_property_run(std::uint64_t seed) {
     for (const PropertyApiPlan& plan : plans) {
       // The producer never queues filtered calls: consumed = successful - filtered +
       // failed events.
+      // The 0x4000 stride keeps the synthesized ranges disjoint (VM specs span up to
+      // 0x2000): the interval model turns an overlap into eviction records, which would
+      // break this phase's one-record-per-call premise.
       for (std::uint64_t index = 0U; index < plan.successful - plan.filtered; ++index) {
-        const EventSpec spec = property_event_spec(plan.api_id, false, next_address += 0x1000ULL);
+        const EventSpec spec = property_event_spec(plan.api_id, false, next_address += 0x4000ULL);
         if (!push_event(queue, make_event(spec, base + ++produced * 100U, thread_id))) {
           std::printf("FAIL: phase 9 push\n");
           return false;
         }
       }
       for (std::uint64_t index = 0U; index < plan.failed; ++index) {
-        const EventSpec spec = property_event_spec(plan.api_id, true, next_address += 0x1000ULL);
+        const EventSpec spec = property_event_spec(plan.api_id, true, next_address += 0x4000ULL);
         if (!push_event(queue, make_event(spec, base + ++produced * 100U, thread_id))) {
           std::printf("FAIL: phase 9 push\n");
           return false;
@@ -1984,6 +2010,456 @@ bool phase9() {
   return ok;
 }
 
+struct VmScriptResult {
+  LinuxTraceWriterResult result;
+  Readback readback;
+  std::filesystem::path path;
+};
+
+// Drives a scripted VM event set through the writer and reads the trace back; every spec
+// carries an explicit completion sequence so completion order can differ from queue order.
+// The trace file stays on disk (out.path) for further analyzer passes; the caller removes it.
+[[nodiscard]] bool run_vm_script(const char* phase_name, const EventSpec* script, std::size_t count,
+                                 VmScriptResult& out, bool with_counter_source = false) {
+  const std::filesystem::path path = probe_path(phase_name);
+  const std::uint64_t origin = monotonic_now_ns();
+  const std::uint64_t thread_id = this_thread_id();
+
+  LinuxTraceWriterResult result;
+  {
+    LinuxHeapEventQueue queue{1024U};
+    LinuxModuleTracker tracker{origin};
+    LinuxTraceWriterOptions options = launch_options(origin);
+    if (with_counter_source) {
+      // Call-space producer snapshots for the three VM channels, with the mremap move pairs
+      // folded in exactly like the runtime folds paired_records: the finalize reconciliation
+      // must add the writer-side extra records on top of these.
+      std::uint64_t mmap_calls = 0U;
+      std::uint64_t munmap_calls = 0U;
+      std::uint64_t mremap_calls = 0U;
+      std::uint64_t mremap_pairs = 0U;
+      for (std::size_t index = 0U; index < count; ++index) {
+        if (script[index].api_id == noleax::agent::linux::kMmapApiId) {
+          ++mmap_calls;
+        } else if (script[index].api_id == noleax::agent::linux::kMunmapApiId) {
+          ++munmap_calls;
+        } else if (script[index].api_id == noleax::agent::linux::kMremapApiId) {
+          ++mremap_calls;
+          if (script[index].status == LinuxHeapEventStatus::kSuccess &&
+              script[index].result_address != script[index].address) {
+            ++mremap_pairs;
+          }
+        }
+      }
+      options.counter_source = [mmap_calls, munmap_calls, mremap_calls, mremap_pairs] {
+        return std::vector<noleax::agent::linux::LinuxTraceWriterApiCounterSnapshot>{
+            {noleax::agent::linux::kMmapApiId, mmap_calls, mmap_calls, 0U, 0U, 0U},
+            {noleax::agent::linux::kMunmapApiId, munmap_calls, munmap_calls, 0U, 0U, 0U},
+            {noleax::agent::linux::kMremapApiId, mremap_calls + mremap_pairs,
+             mremap_calls + mremap_pairs, 0U, 0U, 0U}};
+      };
+    }
+    LinuxTraceWriter writer{queue, tracker, path, options};
+    writer.begin_capture();
+    const std::uint64_t base = monotonic_now_ns();
+    for (std::size_t index = 0U; index < count; ++index) {
+      if (!push_event(queue, make_event(script[index], base + (index + 1U) * 1'000U, thread_id))) {
+        std::printf("FAIL: %s event queue push %zu\n", phase_name, index);
+        return false;
+      }
+    }
+    result = writer.finish();
+  }
+  out.result = result;
+  out.readback = read_trace(path);
+  out.path = path;
+  return true;
+}
+
+void remove_vm_script_trace(VmScriptResult& result) {
+  std::error_code error;
+  std::filesystem::remove(result.path, error);
+}
+
+[[nodiscard]] EventSpec vm_mmap(std::uint64_t base, std::uint64_t size,
+                                std::uint64_t completion_sequence) {
+  EventSpec spec{noleax::agent::linux::kMmapApiId, LinuxHeapEventOperation::kVmAllocate,
+                 LinuxHeapEventStatus::kSuccess};
+  spec.requested_size = size;
+  spec.protection = 0x3U;  // PROT_READ | PROT_WRITE
+  spec.map_flags = 0x22U;  // MAP_PRIVATE | MAP_ANONYMOUS
+  spec.section_handle = std::numeric_limits<std::uint64_t>::max();
+  spec.result_address = base;
+  spec.completion_sequence = completion_sequence;
+  return spec;
+}
+
+[[nodiscard]] EventSpec vm_mmap_file(std::uint64_t base, std::uint64_t size,
+                                     std::uint64_t completion_sequence) {
+  EventSpec spec = vm_mmap(base, size, completion_sequence);
+  spec.protection = 0x1U;  // PROT_READ
+  spec.map_flags = 0x2U;   // MAP_PRIVATE
+  spec.section_handle = 9U;
+  return spec;
+}
+
+[[nodiscard]] EventSpec vm_munmap(std::uint64_t base, std::uint64_t size,
+                                  std::uint64_t completion_sequence) {
+  EventSpec spec{noleax::agent::linux::kMunmapApiId, LinuxHeapEventOperation::kVmUnmap,
+                 LinuxHeapEventStatus::kSuccess};
+  spec.address = base;
+  spec.requested_size = size;
+  spec.completion_sequence = completion_sequence;
+  return spec;
+}
+
+[[nodiscard]] EventSpec vm_mremap(std::uint64_t old_base, std::uint64_t old_size,
+                                  std::uint64_t new_size, std::uint64_t new_base,
+                                  std::uint64_t completion_sequence,
+                                  std::uint64_t fixed_new_address = 0U) {
+  EventSpec spec{noleax::agent::linux::kMremapApiId, LinuxHeapEventOperation::kVmRemap,
+                 LinuxHeapEventStatus::kSuccess};
+  spec.address = old_base;
+  spec.requested_size = old_size;
+  spec.count = new_size;
+  spec.result_address = new_base;
+  spec.completion_sequence = completion_sequence;
+  if (fixed_new_address != 0U) {
+    spec.map_flags = 0x3U;  // MREMAP_MAYMOVE | MREMAP_FIXED (0x1 | 0x2)
+    spec.alignment = fixed_new_address;
+  } else {
+    spec.map_flags = 0x1U;  // MREMAP_MAYMOVE
+  }
+  return spec;
+}
+
+[[nodiscard]] const noleax::trace::VmFreeEvent* vm_free_at(const Readback& readback,
+                                                           std::size_t index) {
+  if (index >= readback.events.size()) {
+    return nullptr;
+  }
+  return std::get_if<noleax::trace::VmFreeEvent>(&readback.events[index].payload);
+}
+
+// Phase 10: deterministic partial-unmap fixture (single-threaded ground truth): a 1 MiB
+// mapping loses its prefix, suffix, and middle in turn, a munmap spans a hole into a second
+// mapping, a double unmap and an unmap of a hole keep the unmatched shape, and the final
+// outstanding state must equal the ground truth the script computes — through the analyzer's
+// generation tracker AND the outstanding analysis over the written trace.
+bool phase10() {
+  std::printf("phase 10: partial unmap interval fixture\n");
+  constexpr std::uint64_t kA = 0x7000'1000'0000ULL;
+  constexpr std::uint64_t kB = 0x7000'2000'0000ULL;
+  constexpr std::uint64_t kMiB = 1ULL << 20U;
+  constexpr std::uint64_t kKiB = 1ULL << 10U;
+
+  const EventSpec script[] = {
+      vm_mmap(kA, kMiB, 1U),                                                     // create A
+      vm_munmap(kA, 64U * kKiB, 2U),                                             // prefix
+      vm_munmap(kA + 768U * kKiB, 256U * kKiB, 3U),                              // suffix
+      vm_munmap(kA + 256U * kKiB, 128U * kKiB, 4U),                              // middle split
+      vm_mmap(kB, 512U * kKiB, 5U),                                              // create B
+      vm_munmap(kA + 896U * kKiB, (kB + 128U * kKiB) - (kA + 896U * kKiB), 6U),  // spans B
+      vm_munmap(kB, 128U * kKiB, 7U),               // double unmap of B's freed head
+      vm_munmap(kA + 896U * kKiB, 64U * kKiB, 8U),  // unmap of a hole
+  };
+  constexpr std::size_t kRawCount = sizeof(script) / sizeof(script[0]);
+
+  VmScriptResult run;
+  if (!run_vm_script("p10", script, kRawCount, run)) {
+    return false;
+  }
+  check(run.result.status == LinuxTraceWriterStatus::kComplete, "phase 10 status is complete");
+  check(run.result.error_message.empty(),
+        "phase 10 writer error is empty (got: " + run.result.error_message + ")");
+  check(run.result.trace_dropped_events == 0U, "phase 10 has no trace drops");
+
+  const Readback& readback = run.readback;
+  check(readback.stream.event_count == kRawCount, "phase 10 one wire record per syscall here");
+  check(readback.stream.completeness.mask() == 0U, "phase 10 decoded completeness is complete");
+
+  // Ground truth: A keeps [A+64K, A+256K) and [A+384K, A+768K) = 576 KiB; B keeps
+  // [B+128K, B+512K) = 384 KiB.
+  constexpr std::uint64_t kARemaining = 192U * kKiB + 384U * kKiB;
+  constexpr std::uint64_t kBRemaining = 384U * kKiB;
+  check(readback.generations_created == 2U && readback.generations_ended == 0U &&
+            readback.generations_live == 2U,
+        "phase 10 both generations survive partially");
+  check(readback.orphaned_ends == 0U && readback.orphaned_mapping_ends == 0U,
+        "phase 10 has no orphaned ends");
+
+  const auto& events = readback.events;
+  if (events.size() == kRawCount) {
+    const auto* create_a = std::get_if<noleax::trace::VmAllocateEvent>(&events[0].payload);
+    const auto* create_b = std::get_if<noleax::trace::VmAllocateEvent>(&events[4].payload);
+    check(
+        create_a != nullptr && create_b != nullptr && create_a->mapping_id != create_b->mapping_id,
+        "phase 10 the two creates carry distinct mapping ids");
+    if (create_a != nullptr && create_b != nullptr) {
+      const auto check_free = [&](std::size_t index, noleax::trace::MappingId id,
+                                  std::uint64_t base, std::uint64_t size, const char* what) {
+        const auto* free_event = vm_free_at(readback, index);
+        check(free_event != nullptr && free_event->mapping_id == id && free_event->base == base &&
+                  free_event->region_size == size && free_event->free_type == 0x8000U &&
+                  events[index].header.status == noleax::trace::EventStatus::kSuccess,
+              what);
+      };
+      check_free(1U, create_a->mapping_id, kA, 64U * kKiB, "phase 10 prefix free is interior");
+      check_free(2U, create_a->mapping_id, kA + 768U * kKiB, 256U * kKiB,
+                 "phase 10 suffix free is interior");
+      check_free(3U, create_a->mapping_id, kA + 256U * kKiB, 128U * kKiB,
+                 "phase 10 middle free is interior");
+      check_free(5U, create_b->mapping_id, kB, 128U * kKiB,
+                 "phase 10 the spanning unmap releases only B's covered head");
+      const auto* double_unmap = vm_free_at(readback, 6U);
+      check(double_unmap != nullptr && !double_unmap->mapping_id.is_valid() &&
+                events[6].header.status == noleax::trace::EventStatus::kUnmatched,
+            "phase 10 double unmap is unmatched");
+      const auto* hole_unmap = vm_free_at(readback, 7U);
+      check(hole_unmap != nullptr && !hole_unmap->mapping_id.is_valid() &&
+                events[7].header.status == noleax::trace::EventStatus::kUnmatched,
+            "phase 10 hole unmap is unmatched");
+    }
+  }
+
+  // The analyzer's outstanding view over the finished trace must equal the ground truth:
+  // two generations with exactly the remaining virtual bytes.
+  {
+    std::ifstream input{run.path, std::ios::binary};
+    if (!input) {
+      std::printf("FAIL: phase 10 cannot reopen the trace\n");
+      return false;
+    }
+    const auto outstanding = noleax::analyzer::analyze_outstanding(input, {});
+    check(outstanding.outstanding.size() == 2U,
+          "phase 10 outstanding holds both partial generations");
+    std::uint64_t virtual_bytes = 0U;
+    bool saw_a = false;
+    bool saw_b = false;
+    for (const auto& generation : outstanding.outstanding) {
+      if (generation.kind != noleax::analyzer::GenerationKind::kVirtualAllocation) {
+        continue;
+      }
+      virtual_bytes += generation.size;
+      saw_a = saw_a || (generation.address == kA && generation.size == kARemaining);
+      saw_b = saw_b || (generation.address == kB && generation.size == kBRemaining);
+    }
+    check(saw_a && saw_b, "phase 10 outstanding sizes match the scripted ground truth");
+    check(virtual_bytes == kARemaining + kBRemaining,
+          "phase 10 outstanding virtual bytes equal the remaining sum");
+    check(outstanding.ended_by_c_count == 0U, "phase 10 nothing ended before trace end");
+  }
+  remove_vm_script_trace(run);
+  return true;
+}
+
+// Phase 11: overlap eviction and completion-sequence ordering. Three mmaps increasingly
+// overlap the same range (the later ones evict the earlier tails, MAP_FIXED-style); a stale
+// mmap whose completion predates the incumbents records its create but owns nothing (trim
+// records zero it out); a stale munmap skips the newer generation and reports unmatched; a
+// final spanning munmap ends every generation with one record per fragment.
+bool phase11() {
+  std::printf("phase 11: overlap eviction and completion ordering\n");
+  constexpr std::uint64_t kY = 0x7000'3000'0000ULL;
+  constexpr std::uint64_t kKiB = 1ULL << 10U;
+
+  const EventSpec script[] = {
+      vm_mmap(kY, 64U * kKiB, 10U),                // D owns [0, 64K)
+      vm_mmap(kY + 16U * kKiB, 64U * kKiB, 15U),   // F evicts D's [16K, 64K), owns [16K, 80K)
+      vm_mmap(kY + 32U * kKiB, 64U * kKiB, 20U),   // E evicts F's [32K, 80K), owns [32K, 96K)
+      vm_mmap(kY + 40U * kKiB, 16U * kKiB, 12U),   // G is stale (12 < 15 < 20): owns nothing
+      vm_munmap(kY + 88U * kKiB, 8U * kKiB, 18U),  // stale vs E (20): unmatched
+      vm_munmap(kY, 96U * kKiB, 30U),              // ends D, F, E with one record each
+  };
+  constexpr std::size_t kRawCount = sizeof(script) / sizeof(script[0]);
+  constexpr std::size_t kRecordCount = 11U;  // 1 + 2 + 2 + 2 + 1 + 3
+
+  VmScriptResult run;
+  if (!run_vm_script("p11", script, kRawCount, run, /*with_counter_source=*/true)) {
+    return false;
+  }
+  check(run.result.status == LinuxTraceWriterStatus::kComplete, "phase 11 status is complete");
+  check(run.result.error_message.empty(),
+        "phase 11 writer error is empty (got: " + run.result.error_message + ")");
+
+  const Readback& readback = run.readback;
+  check(readback.stream.event_count == kRecordCount, "phase 11 wire record count");
+  check(readback.stream.completeness.mask() == 0U, "phase 11 decoded completeness is complete");
+  check(readback.generations_created == 4U && readback.generations_ended == 4U &&
+            readback.generations_live == 0U,
+        "phase 11 every generation pairs off (the stale one ends on its trim)");
+  check(readback.orphaned_mapping_ends == 0U, "phase 11 has no orphaned mapping ends");
+
+  if (run.result.statistics.per_api.size() >= 3U) {
+    for (const noleax::trace::ApiStatistics& api : run.result.statistics.per_api) {
+      if (api.api_id == noleax::agent::linux::kMmapApiId) {
+        check(api.observed_calls == 7U && api.successful_operations == 7U,
+              "phase 11 mmap observed counts the eviction and trim records");
+      }
+      if (api.api_id == noleax::agent::linux::kMunmapApiId) {
+        check(api.observed_calls == 4U && api.successful_operations == 4U,
+              "phase 11 munmap observed counts the spanning fragment records");
+      }
+    }
+    check(run.result.statistics.observed_calls == kRecordCount,
+          "phase 11 aggregate observed covers every wire record");
+  }
+
+  const auto& events = readback.events;
+  if (events.size() == kRecordCount) {
+    const auto* create_d = std::get_if<noleax::trace::VmAllocateEvent>(&events[0].payload);
+    const auto* create_f = std::get_if<noleax::trace::VmAllocateEvent>(&events[2].payload);
+    const auto* create_e = std::get_if<noleax::trace::VmAllocateEvent>(&events[4].payload);
+    const auto* create_g = std::get_if<noleax::trace::VmAllocateEvent>(&events[5].payload);
+    check(create_d != nullptr && create_f != nullptr && create_e != nullptr && create_g != nullptr,
+          "phase 11 four creates in wire order");
+    if (create_d != nullptr && create_f != nullptr && create_e != nullptr && create_g != nullptr) {
+      const auto eviction_f = vm_free_at(readback, 1U);
+      check(eviction_f != nullptr && eviction_f->mapping_id == create_d->mapping_id &&
+                eviction_f->base == kY + 16U * kKiB && eviction_f->region_size == 48U * kKiB,
+            "phase 11 F's placement evicts D's tail");
+      const auto eviction_e = vm_free_at(readback, 3U);
+      check(eviction_e != nullptr && eviction_e->mapping_id == create_f->mapping_id &&
+                eviction_e->base == kY + 32U * kKiB && eviction_e->region_size == 48U * kKiB,
+            "phase 11 E's placement evicts F's tail");
+      const auto trim_g = vm_free_at(readback, 6U);
+      check(trim_g != nullptr && trim_g->mapping_id == create_g->mapping_id &&
+                trim_g->base == kY + 40U * kKiB && trim_g->region_size == 16U * kKiB &&
+                events[6].header.status == noleax::trace::EventStatus::kSuccess,
+            "phase 11 the stale create is trimmed back to zero");
+      const auto stale_unmap = vm_free_at(readback, 7U);
+      check(stale_unmap != nullptr && !stale_unmap->mapping_id.is_valid() &&
+                events[7].header.status == noleax::trace::EventStatus::kUnmatched,
+            "phase 11 the stale munmap skips the newer generation and is unmatched");
+      const auto end_d = vm_free_at(readback, 8U);
+      const auto end_f = vm_free_at(readback, 9U);
+      const auto end_e = vm_free_at(readback, 10U);
+      check(end_d != nullptr && end_f != nullptr && end_e != nullptr &&
+                end_d->mapping_id == create_d->mapping_id && end_d->base == kY &&
+                end_d->region_size == 16U * kKiB && end_f->mapping_id == create_f->mapping_id &&
+                end_f->base == kY + 16U * kKiB && end_f->region_size == 16U * kKiB &&
+                end_e->mapping_id == create_e->mapping_id && end_e->base == kY + 32U * kKiB &&
+                end_e->region_size == 64U * kKiB,
+            "phase 11 the spanning munmap ends every generation with one record each");
+    }
+  }
+  remove_vm_script_trace(run);
+  return true;
+}
+
+// Phase 12: the mremap matrix through the interval model — in-place grow, in-place shrink,
+// a move, a MREMAP_FIXED move onto an occupied mapping, a shrink that evicts a neighbour
+// living in the generation's hole — plus a partial unmap of a file-backed view (VmFree
+// pieces, not Unmap) and its final whole-view Unmap.
+bool phase12() {
+  std::printf("phase 12: mremap matrix and section partial unmap\n");
+  constexpr std::uint64_t kM = 0x7000'4000'0000ULL;
+  constexpr std::uint64_t kN = 0x7000'5000'0000ULL;
+  constexpr std::uint64_t kP = 0x7000'6000'0000ULL;
+  constexpr std::uint64_t kQ = 0x7000'7000'0000ULL;
+  constexpr std::uint64_t kS = 0x7000'8000'0000ULL;
+  constexpr std::uint64_t kKiB = 1ULL << 10U;
+
+  const EventSpec script[] = {
+      vm_mmap(kM, 64U * kKiB, 1U),
+      vm_mremap(kM, 64U * kKiB, 128U * kKiB, kM, 2U),  // grow in place
+      vm_mremap(kM, 128U * kKiB, 32U * kKiB, kM, 3U),  // shrink in place
+      vm_mremap(kM, 32U * kKiB, 64U * kKiB, kN, 4U),   // move M -> N
+      vm_mmap(kP, 64U * kKiB, 5U),
+      vm_mremap(kN, 64U * kKiB, 64U * kKiB, kP, 6U, kP),  // FIXED move onto P
+      vm_mmap(kQ, 128U * kKiB, 7U),
+      vm_munmap(kQ + 64U * kKiB, 32U * kKiB, 8U),       // hole in Q
+      vm_mmap(kQ + 64U * kKiB, 32U * kKiB, 9U),         // neighbour fills the hole
+      vm_mremap(kQ, 128U * kKiB, 32U * kKiB, kQ, 10U),  // shrink evicts the neighbour
+      vm_mmap_file(kS, 128U * kKiB, 11U),
+      vm_munmap(kS, 64U * kKiB, 12U),               // partial view free (VmFree)
+      vm_munmap(kS + 64U * kKiB, 64U * kKiB, 13U),  // remainder: whole-view Unmap
+  };
+  constexpr std::size_t kRawCount = sizeof(script) / sizeof(script[0]);
+  // Records: 1,1,1,2,1,3,1,1,1,3,1,1,1 = 18 from 13 raw events. A shrink whose event old
+  // size spans past the resized VMA run releases the outer pieces with explicit frees (the
+  // resize record itself covers only the run's own tail).
+  constexpr std::size_t kRecordCount = 18U;
+
+  VmScriptResult run;
+  if (!run_vm_script("p12", script, kRawCount, run, /*with_counter_source=*/true)) {
+    return false;
+  }
+  check(run.result.status == LinuxTraceWriterStatus::kComplete, "phase 12 status is complete");
+  check(run.result.error_message.empty(),
+        "phase 12 writer error is empty (got: " + run.result.error_message + ")");
+
+  const Readback& readback = run.readback;
+  check(readback.stream.event_count == kRecordCount, "phase 12 wire record count");
+  check(readback.stream.completeness.mask() == 0U, "phase 12 decoded completeness is complete");
+  check(readback.generations_created == 7U, "phase 12 seven generations were created");
+  check(readback.generations_ended == 5U && readback.generations_live == 2U,
+        "phase 12 five generations ended, the FIXED-move result and the shrunk Q survive");
+  check(readback.orphaned_mapping_ends == 0U, "phase 12 has no orphaned mapping ends");
+
+  for (const noleax::trace::ApiStatistics& api : run.result.statistics.per_api) {
+    if (api.api_id == noleax::agent::linux::kMremapApiId) {
+      check(api.observed_calls == 10U && api.successful_operations == 10U,
+            "phase 12 mremap observed counts pairs and eviction extras");
+    }
+  }
+
+  const auto& events = readback.events;
+  if (events.size() == kRecordCount) {
+    const auto* create_m = std::get_if<noleax::trace::VmAllocateEvent>(&events[0].payload);
+    const auto* grow = std::get_if<noleax::trace::VmAllocateEvent>(&events[1].payload);
+    const auto* shrink = std::get_if<noleax::trace::VmAllocateEvent>(&events[2].payload);
+    check(create_m != nullptr && grow != nullptr && shrink != nullptr &&
+              grow->mapping_id == create_m->mapping_id &&
+              shrink->mapping_id == create_m->mapping_id && grow->mapping_size == 128U * kKiB &&
+              shrink->mapping_size == 32U * kKiB,
+          "phase 12 in-place grow and shrink keep the mapping id and adjust the size");
+    const auto* move_free = vm_free_at(readback, 3U);
+    const auto* move_create = std::get_if<noleax::trace::VmAllocateEvent>(&events[4].payload);
+    check(move_free != nullptr && move_create != nullptr &&
+              move_free->mapping_id == create_m->mapping_id &&
+              move_free->region_size == 32U * kKiB && move_create->result_base == kN &&
+              move_create->mapping_size == 64U * kKiB,
+          "phase 12 the move is a release-free plus create pair");
+    // The FIXED move: free half for the N generation, eviction for the P generation, then
+    // the create at P.
+    const auto* fixed_free = vm_free_at(readback, 6U);
+    const auto* fixed_evict = vm_free_at(readback, 7U);
+    const auto* fixed_create = std::get_if<noleax::trace::VmAllocateEvent>(&events[8].payload);
+    check(fixed_free != nullptr && fixed_evict != nullptr && fixed_create != nullptr &&
+              move_create != nullptr && fixed_free->mapping_id == move_create->mapping_id &&
+              fixed_free->base == kN && fixed_evict->base == kP &&
+              fixed_evict->region_size == 64U * kKiB && fixed_create->result_base == kP &&
+              fixed_evict->mapping_id != fixed_create->mapping_id,
+          "phase 12 the FIXED move evicts the destination generation first");
+    // The shrink of Q evicts the neighbour in Q's hole and releases Q's own far fragment,
+    // then the resize record adjusts the size.
+    const auto* neighbour_evict = vm_free_at(readback, 12U);
+    const auto* own_far_piece = vm_free_at(readback, 13U);
+    const auto* q_resize = std::get_if<noleax::trace::VmAllocateEvent>(&events[14].payload);
+    const auto* create_q = std::get_if<noleax::trace::VmAllocateEvent>(&events[9].payload);
+    check(neighbour_evict != nullptr && own_far_piece != nullptr && q_resize != nullptr &&
+              create_q != nullptr && neighbour_evict->base == kQ + 64U * kKiB &&
+              neighbour_evict->region_size == 32U * kKiB &&
+              neighbour_evict->mapping_id != create_q->mapping_id &&
+              own_far_piece->mapping_id == create_q->mapping_id &&
+              own_far_piece->base == kQ + 96U * kKiB && own_far_piece->region_size == 32U * kKiB &&
+              q_resize->mapping_id == create_q->mapping_id && q_resize->mapping_size == 32U * kKiB,
+          "phase 12 the shrink evicts the neighbour and keeps the mapping id");
+    // Section partial free: a VmFree piece (not an Unmap), then the remainder's Unmap.
+    const auto* view_partial = vm_free_at(readback, 16U);
+    const auto* view_end = std::get_if<noleax::trace::UnmapEvent>(&events[17].payload);
+    const auto* view_create = std::get_if<noleax::trace::MapEvent>(&events[15].payload);
+    check(view_partial != nullptr && view_end != nullptr && view_create != nullptr &&
+              view_partial->mapping_id == view_create->mapping_id && view_partial->base == kS &&
+              view_partial->region_size == 64U * kKiB &&
+              view_end->mapping_id == view_create->mapping_id && view_end->base == kS,
+          "phase 12 the view partial free is a VmFree piece and the remainder an Unmap");
+  }
+  remove_vm_script_trace(run);
+  return true;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -2004,6 +2480,9 @@ int main(int argc, char** argv) {
     ok = phase7() && ok;
     ok = phase8() && ok;
     ok = phase9() && ok;
+    ok = phase10() && ok;
+    ok = phase11() && ok;
+    ok = phase12() && ok;
   } catch (const std::exception& error) {
     std::printf("FAIL: unexpected exception: %s\n", error.what());
     ok = false;

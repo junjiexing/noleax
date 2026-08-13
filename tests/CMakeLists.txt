@@ -15,6 +15,7 @@ add_executable(noleax-unit-tests
   unit/custom_hook_test.cpp
   unit/filter_test.cpp
   unit/generation_tracker_test.cpp
+  unit/interval_set_test.cpp
   unit/json_test.cpp
   unit/hook_backend_test.cpp
   unit/hook_guard_test.cpp

@@ -41,6 +41,12 @@ enum class LinuxHeapEventStatus : std::uint8_t {
 //               variadic fifth argument is semantically defined), 0 otherwise
 // operation_result carries errno on failure (and the posix_memalign return code, which
 // does not set errno); it is zero on success.
+//
+// completion_sequence is the VM completion ordering token (docs/TRACE_WRITER.md §VM interval
+// model): the mmap/munmap/mremap replacements stamp it from a process-global atomic
+// immediately after the libc call returns, before any queueing, so same-address generation
+// matching follows syscall completion order rather than queue order. It is 0 for the heap
+// family, which needs no cross-API ordering.
 struct LinuxHeapEvent {
   std::uint64_t queue_sequence{0U};
   std::uint64_t monotonic_ticks{0U};
@@ -55,6 +61,7 @@ struct LinuxHeapEvent {
   std::uint64_t map_flags{0U};
   std::uint64_t section_handle{0U};
   std::uint64_t section_offset{0U};
+  std::uint64_t completion_sequence{0U};
   std::uint32_t operation_result{0U};
   std::uint32_t api_id{0U};
   LinuxHeapEventOperation operation{LinuxHeapEventOperation::kAllocate};
@@ -69,6 +76,10 @@ using LinuxHeapEventQueue = BoundedMpscQueue<LinuxHeapEvent>;
 
 static_assert(std::is_trivially_copyable_v<LinuxHeapEvent>);
 static_assert(std::is_trivially_destructible_v<LinuxHeapEvent>);
-static_assert(sizeof(LinuxHeapEvent) == 640U);
+// 648 = 128-byte field header + the 520-byte CapturedStack. The header grew by 8 bytes for
+// completion_sequence (the pre-H3 reserved tail was 6+2 non-contiguous bytes, not a usable
+// 8-byte word); the queue capacity math (bit_floor of buffer_size / sizeof(event)) absorbs
+// the growth, so the default 16 MiB buffer still floors to 16384 slots.
+static_assert(sizeof(LinuxHeapEvent) == 648U);
 
 }  // namespace noleax::agent::linux

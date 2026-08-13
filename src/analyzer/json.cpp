@@ -770,11 +770,18 @@ void JsonWriter::write_outstanding(const OutstandingResult& result, const Analys
   json.raw("},\"allocations\":[");
 
   bool first = true;
+  std::uint64_t outstanding_virtual_bytes = 0U;
   for (const auto& generation : result.outstanding) {
     if (!first) {
       json.raw(",");
     }
     first = false;
+    // Mapping generations report remaining VIRTUAL address-space bytes (not resident
+    // memory); heap allocations report the requested size.
+    const bool virtual_bytes = generation.kind != GenerationKind::kHeapAllocation;
+    if (virtual_bytes) {
+      outstanding_virtual_bytes += generation.size;
+    }
     const EventPresentation presentation =
         resolver ? resolver(generation.created_by) : EventPresentation{};
     json.raw("{\"generation_kind\":");
@@ -795,6 +802,8 @@ void JsonWriter::write_outstanding(const OutstandingResult& result, const Analys
     write_address(json, generation.address, header_);
     json.raw(",\"size\":");
     json.unsigned_number(generation.size);
+    json.raw(",\"size_semantics\":");
+    json.string(virtual_bytes ? "virtual" : "requested");
     json.raw(",\"created_by\":");
     write_event_object(generation.created_by, presentation);
     json.raw("}");
@@ -808,6 +817,8 @@ void JsonWriter::write_outstanding(const OutstandingResult& result, const Analys
   json.unsigned_number(result.filtered_out_count);
   json.raw(",\"outstanding\":");
   json.unsigned_number(static_cast<std::uint64_t>(result.outstanding.size()));
+  json.raw(",\"outstanding_virtual_bytes\":");
+  json.unsigned_number(outstanding_virtual_bytes);
   json.raw(",\"orphaned_allocation_ends\":");
   json.unsigned_number(result.orphaned_allocation_end_count);
   json.raw(",\"orphaned_mapping_ends\":");

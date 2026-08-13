@@ -43,6 +43,7 @@
 #include "noleax/trace/completeness.hpp"
 #include "noleax/trace/custom_hook.hpp"
 #include "noleax/trace/event.hpp"
+#include "noleax/trace/interval_set.hpp"
 #include "noleax/trace/module.hpp"
 #include "noleax/trace/record_codec.hpp"
 #include "noleax/trace/stack.hpp"
@@ -349,13 +350,39 @@ struct LiveModule {
   std::uint64_t size{0U};
 };
 
-// A live mapping generation: anonymous mappings live in live_vm_mappings_ (wire
-// VmAllocate/VmFree), file-backed ones in live_section_mappings_ (wire Map/Unmap), keyed
-// by base address exactly like the Windows writer's two maps.
-struct LiveMapping {
+// A live mapping generation tracked by the writer: its creation identity plus the number of
+// bytes currently attributed to it. The fragments themselves live in live_mapping_space_: ONE
+// interval set covering anonymous (wire VmAllocate/VmFree) and file-backed (Map/Unmap)
+// generations alike, because a MAP_FIXED placement or a munmap span evicts whatever kind of
+// mapping it overlaps (docs/TRACE_WRITER.md §VM interval model, hardening H3).
+struct LiveMappingGeneration {
   noleax::trace::MappingId mapping_id;
-  std::uint64_t base{0U};
-  std::uint64_t size{0U};
+  std::uint64_t base{0U};        // creation base; whole-generation Unmap records name it
+  std::uint64_t live_bytes{0U};  // sum of this generation's fragments in live_mapping_space_
+  // Completion sequence of the create/extend that last touched this generation; an in-place
+  // resize arriving with an older sequence is stale and must not move the model.
+  std::uint64_t last_sequence{0U};
+  bool section{false};  // file-backed (Map/Unmap) vs anonymous (VmAllocate/VmFree)
+};
+
+// A live address-space fragment owner: the generation plus the completion sequence of the
+// create/extend that produced the fragment. The sequence is per fragment (not per
+// generation) because an in-place mremap growth adds younger fragments to an older
+// generation, and a racing munmap must skip exactly the younger pieces.
+struct LiveFragmentOwner {
+  std::uint64_t mapping_id{0U};
+  std::uint64_t sequence{0U};
+
+  bool operator==(const LiveFragmentOwner&) const = default;
+};
+
+using LiveMappingSpace = noleax::trace::IntervalSet<LiveFragmentOwner>;
+
+// One wire record planned for a VM syscall: the payload plus its status override. The header
+// (sequence, stack, thread, API) is stamped from the raw event's base event at emission.
+struct VmPlanRecord {
+  noleax::trace::EventPayload payload;
+  noleax::trace::EventStatus status{noleax::trace::EventStatus::kSuccess};
 };
 
 // munmap always releases its range, so the wire VmFreeEvent carries the same release bit
@@ -742,8 +769,15 @@ class LinuxTraceWriter::Implementation final {
               "glibc heap hook counters do not reconcile (recordable "
               "!= successful + failed)"};
         }
+        // Wire space: the producer counts calls (plus the mremap move pair); the writer's
+        // extra_records cover the records only it can see (fragment frees, evictions,
+        // trims), so observed/successful count records exactly.
         api.observed_calls = snapshot->recordable_calls;
+        checked_add(api.observed_calls, counters.extra_records,
+                    "error-tail observed record count overflow");
         api.successful_operations = snapshot->successful_calls;
+        checked_add(api.successful_operations, counters.extra_records,
+                    "error-tail successful record count overflow");
         api.failed_operations = snapshot->failed_calls;
         api.filtered_before_queue = snapshot->filtered_calls;
         if (counters.written > api.observed_calls ||
@@ -1205,7 +1239,9 @@ class LinuxTraceWriter::Implementation final {
         // free-form arguments; only the size and the result carry invariants.
         if (raw_event.address != 0U || raw_event.count != 0U || raw_event.alignment != 0U ||
             (succeeded && raw_event.requested_size == 0U) ||
-            succeeded != (raw_event.result_address != 0U)) {
+            succeeded != (raw_event.result_address != 0U) ||
+            (succeeded && raw_event.requested_size > std::numeric_limits<std::uint64_t>::max() -
+                                                         raw_event.result_address)) {
           throw std::invalid_argument{"raw mmap event result is inconsistent"};
         }
         break;
@@ -1214,22 +1250,36 @@ class LinuxTraceWriter::Implementation final {
             raw_event.alignment != 0U || raw_event.result_address != 0U ||
             raw_event.protection != 0U || raw_event.map_flags != 0U ||
             raw_event.section_handle != 0U || raw_event.section_offset != 0U ||
-            (succeeded && (raw_event.address == 0U || raw_event.requested_size == 0U))) {
+            (succeeded && (raw_event.address == 0U || raw_event.requested_size == 0U ||
+                           raw_event.requested_size >
+                               std::numeric_limits<std::uint64_t>::max() - raw_event.address))) {
           throw std::invalid_argument{"raw munmap event result is inconsistent"};
         }
         break;
       case LinuxHeapEventOperation::kVmRemap:
         // mremap: requested_size is the old size, count the new size; the result base is
         // nonzero exactly on success. alignment carries the requested new address, which
-        // is defined only when MREMAP_FIXED (0x10) is present in map_flags.
+        // is defined only when MREMAP_FIXED (0x2) is present in map_flags.
         if (raw_event.requested_address != 0U || raw_event.protection != 0U ||
             raw_event.section_handle != 0U || raw_event.section_offset != 0U ||
-            (raw_event.alignment != 0U && (raw_event.map_flags & 0x10U) == 0U) ||
-            (succeeded && (raw_event.address == 0U || raw_event.count == 0U)) ||
+            (raw_event.alignment != 0U && (raw_event.map_flags & 0x2U) == 0U) ||
+            (succeeded && (raw_event.address == 0U || raw_event.count == 0U ||
+                           raw_event.requested_size >
+                               std::numeric_limits<std::uint64_t>::max() - raw_event.address ||
+                           raw_event.count > std::numeric_limits<std::uint64_t>::max() -
+                                                 raw_event.result_address)) ||
             succeeded != (raw_event.result_address != 0U)) {
           throw std::invalid_argument{"raw mremap event result is inconsistent"};
         }
         break;
+    }
+    // The VM replacements stamp every VM event with the completion sequence they took right
+    // after the libc call returned; the interval model needs it for same-address matching.
+    const bool vm_event = raw_event.operation == LinuxHeapEventOperation::kVmAllocate ||
+                          raw_event.operation == LinuxHeapEventOperation::kVmUnmap ||
+                          raw_event.operation == LinuxHeapEventOperation::kVmRemap;
+    if (vm_event && raw_event.completion_sequence == 0U) {
+      throw std::invalid_argument{"raw Linux VM event carries no completion sequence"};
     }
     if (last_sequence_ == std::numeric_limits<std::uint64_t>::max() ||
         raw_event.queue_sequence != last_sequence_ + 1U) {
@@ -1286,54 +1336,468 @@ class LinuxTraceWriter::Implementation final {
     return noleax::trace::AllocationId{(static_cast<std::uint64_t>(api_id) << 40U) | counter};
   }
 
-  [[nodiscard]] noleax::trace::MappingId create_virtual_mapping(std::uint64_t base,
-                                                                std::uint64_t size) {
+  [[nodiscard]] noleax::trace::MappingId next_mapping_id() {
     if (next_mapping_id_ == std::numeric_limits<std::uint64_t>::max()) {
       throw std::overflow_error{"mapping ID space is exhausted"};
     }
-    if (base == 0U || size == 0U || live_vm_mappings_.contains(base)) {
-      throw std::runtime_error{"virtual mapping creation is inconsistent"};
-    }
-    const noleax::trace::MappingId id{next_mapping_id_++};
-    live_vm_mappings_.emplace(base, LiveMapping{id, base, size});
-    return id;
+    return noleax::trace::MappingId{next_mapping_id_++};
   }
 
-  [[nodiscard]] noleax::trace::MappingId create_section_mapping(std::uint64_t base,
-                                                                std::uint64_t size) {
-    if (next_mapping_id_ == std::numeric_limits<std::uint64_t>::max()) {
-      throw std::overflow_error{"mapping ID space is exhausted"};
+  [[nodiscard]] LiveMappingGeneration& generation_for(std::uint64_t mapping_id) {
+    const auto generation = live_generations_.find(mapping_id);
+    if (generation == live_generations_.end()) {
+      throw std::runtime_error{"live mapping fragment has no generation"};
     }
-    if (base == 0U || size == 0U || live_section_mappings_.contains(base)) {
-      throw std::runtime_error{"section mapping creation is inconsistent"};
-    }
-    const noleax::trace::MappingId id{next_mapping_id_++};
-    live_section_mappings_.emplace(base, LiveMapping{id, base, size});
-    return id;
+    return generation->second;
   }
 
-  // Contains-lookup over the file-backed views (munmap may name any address inside the
-  // view), mirroring the Windows writer's find_section_mapping.
-  [[nodiscard]] auto find_section_mapping(std::uint64_t address) {
-    if (address == 0U) {
-      return live_section_mappings_.end();
+  [[nodiscard]] VmPlanRecord make_vm_free_record(noleax::trace::MappingId mapping_id,
+                                                 std::uint64_t base, std::uint64_t size) const {
+    noleax::trace::VmFreeEvent free_event;
+    free_event.target = current_process_target();
+    free_event.base = base;
+    free_event.region_size = size;
+    free_event.free_type = kVmFreeTypeRelease;
+    free_event.mapping_id = mapping_id;
+    return VmPlanRecord{free_event, noleax::trace::EventStatus::kSuccess};
+  }
+
+  // Plans the release of every live fragment intersecting [begin, end) that was produced by
+  // a create/extend completing BEFORE completion_seq: anonymous generations emit one VmFree
+  // per affected piece; a file-backed generation emits a single Unmap when the range removes
+  // all its remaining bytes, else one VmFree per piece. Fragments produced by LATER syscalls
+  // are newer — they are skipped, because their space was only recycled after this syscall
+  // ran. Applies every removal to the live model and appends the records in address order.
+  void plan_subtract(std::uint64_t begin, std::uint64_t end, std::uint64_t completion_seq,
+                     std::vector<VmPlanRecord>& plan) {
+    const auto pieces = live_mapping_space_.intersections(begin, end);
+    std::size_t index = 0U;
+    while (index < pieces.size()) {
+      const std::uint64_t id = pieces[index].value.mapping_id;
+      LiveMappingGeneration& state = generation_for(id);
+      // One generation's pieces are consecutive because intersections arrive in address
+      // order. Only the pieces older than this syscall are matched.
+      std::size_t count = 0U;
+      std::uint64_t matched_bytes = 0U;
+      while (index + count < pieces.size() && pieces[index + count].value.mapping_id == id) {
+        if (pieces[index + count].value.sequence < completion_seq) {
+          matched_bytes += pieces[index + count].end - pieces[index + count].begin;
+        }
+        ++count;
+      }
+      if (matched_bytes != 0U) {
+        // A file-backed generation the range removes in full keeps the legacy whole-view
+        // Unmap shape; a partial removal is one VmFree per piece (interior frees included).
+        const bool whole = state.section && matched_bytes == state.live_bytes;
+        if (whole) {
+          noleax::trace::UnmapEvent unmap_event;
+          unmap_event.target = current_process_target();
+          unmap_event.base = state.base;
+          unmap_event.mapping_id = state.mapping_id;
+          plan.push_back(VmPlanRecord{unmap_event, noleax::trace::EventStatus::kSuccess});
+        }
+        // Adjacent matched pieces merge into one record: identical byte effect on the
+        // analyzer, and a whole-range free of a fragmented generation keeps the legacy
+        // single-record shape. A skipped (newer) piece breaks the run.
+        std::uint64_t run_begin = 0U;
+        std::uint64_t run_end = 0U;
+        const auto flush_run = [&]() {
+          if (!whole && run_begin != run_end) {
+            plan.push_back(make_vm_free_record(state.mapping_id, run_begin, run_end - run_begin));
+          }
+          run_begin = run_end = 0U;
+        };
+        for (std::size_t piece_index = 0U; piece_index < count; ++piece_index) {
+          const auto& piece = pieces[index + piece_index];
+          if (piece.value.sequence >= completion_seq) {
+            flush_run();
+            continue;  // newer fragment: skipped, stays live
+          }
+          static_cast<void>(live_mapping_space_.subtract(piece.begin, piece.end));
+          state.live_bytes -= piece.end - piece.begin;
+          if (piece.begin == run_end) {
+            run_end = piece.end;
+          } else {
+            flush_run();
+            run_begin = piece.begin;
+            run_end = piece.end;
+          }
+        }
+        flush_run();
+        if (state.live_bytes == 0U) {
+          live_generations_.erase(id);
+        }
+      }
+      index += count;
     }
-    auto candidate = live_section_mappings_.upper_bound(address);
-    if (candidate == live_section_mappings_.begin()) {
-      return live_section_mappings_.end();
+  }
+
+  // The stale pieces of a create/extend: intersections held by fragments produced AFTER the
+  // creating syscall completed. The create record claims the full range, so these pieces are
+  // released again right after it, attributed to the new generation (trim records).
+  struct CreateSpace {
+    std::uint64_t owned_bytes{0U};
+    std::vector<LiveMappingSpace::Fragment> stale;
+  };
+
+  // Prepares a create/extend of [begin, end) completing at completion_seq: fragments created
+  // before it are evicted with free records (kernel-implicit releases, e.g. MAP_FIXED);
+  // fragments created after it mark the stale portions this create must not own. Inserts the
+  // owned sub-ranges into the live model for new_mapping_id and reports the stale pieces.
+  [[nodiscard]] CreateSpace plan_create_space(std::uint64_t begin, std::uint64_t end,
+                                              std::uint64_t completion_seq,
+                                              std::uint64_t new_mapping_id,
+                                              std::vector<VmPlanRecord>& plan) {
+    const auto pieces = live_mapping_space_.intersections(begin, end);
+    plan_subtract(begin, end, completion_seq, plan);
+    CreateSpace result;
+    for (const auto& piece : pieces) {
+      if (piece.value.sequence >= completion_seq) {
+        result.stale.push_back(piece);
+      }
     }
-    --candidate;
-    const LiveMapping& mapping = candidate->second;
-    if (address < mapping.base || address - mapping.base >= mapping.size) {
-      return live_section_mappings_.end();
+    const LiveFragmentOwner owner{new_mapping_id, completion_seq};
+    std::uint64_t cursor = begin;
+    for (const auto& piece : result.stale) {
+      if (cursor < piece.begin) {
+        static_cast<void>(live_mapping_space_.insert(cursor, piece.begin, owner));
+        result.owned_bytes += piece.begin - cursor;
+      }
+      cursor = piece.end;
     }
-    return candidate;
+    if (cursor < end) {
+      static_cast<void>(live_mapping_space_.insert(cursor, end, owner));
+      result.owned_bytes += end - cursor;
+    }
+    return result;
+  }
+
+  // One trim record per stale piece, attributed to the just-created generation: the create
+  // record claimed the full range, so the analyzer subtracts these pieces right after it and
+  // its per-generation live bytes converge to the writer's.
+  void append_trim_records(noleax::trace::MappingId mapping_id,
+                           const std::vector<LiveMappingSpace::Fragment>& stale,
+                           std::vector<VmPlanRecord>& plan) const {
+    for (const auto& piece : stale) {
+      plan.push_back(make_vm_free_record(mapping_id, piece.begin, piece.end - piece.begin));
+    }
+  }
+
+  // Registers a generation unless it was stillborn (every byte stale-skipped); the trim
+  // records end it on the analyzer side either way.
+  void track_generation(noleax::trace::MappingId mapping_id, std::uint64_t base,
+                        std::uint64_t owned_bytes, std::uint64_t completion_seq, bool section) {
+    if (owned_bytes == 0U) {
+      return;
+    }
+    live_generations_.emplace(
+        mapping_id.value(),
+        LiveMappingGeneration{mapping_id, base, owned_bytes, completion_seq, section});
+  }
+
+  // The unmatched-record shape for a successful syscall whose range matches no live fragment
+  // (or only newer ones): one record for the whole requested range, no mapping id.
+  [[nodiscard]] VmPlanRecord make_unmatched_free_record(std::uint64_t base,
+                                                        std::uint64_t size) const {
+    VmPlanRecord record = make_vm_free_record(noleax::trace::MappingId{}, base, size);
+    record.status = unmatched_status(base);
+    return record;
   }
 
   [[nodiscard]] noleax::trace::EventStatus unmatched_status(std::uint64_t address) const noexcept {
     return address != 0U && options_.capture_scope.preexisting_allocations_unknown
                ? noleax::trace::EventStatus::kPreexisting
                : noleax::trace::EventStatus::kUnmatched;
+  }
+
+  // Successful anonymous mmap: evict whatever the placement overlaps, then one VmAllocate
+  // create record, then the trim records for the stale portions.
+  void plan_mmap_anonymous(const LinuxHeapEvent& raw_event, std::vector<VmPlanRecord>& plan) {
+    const std::uint64_t base = raw_event.result_address;
+    const std::uint64_t size = raw_event.requested_size;
+    const noleax::trace::MappingId id = next_mapping_id();
+    const CreateSpace space =
+        plan_create_space(base, base + size, raw_event.completion_sequence, id.value(), plan);
+    noleax::trace::VmAllocateEvent allocation;
+    allocation.target = current_process_target();
+    allocation.requested_base = raw_event.requested_address;
+    allocation.result_base = base;
+    allocation.requested_size = size;
+    allocation.result_size = size;
+    allocation.allocation_type = static_cast<std::uint32_t>(raw_event.map_flags);
+    allocation.protection = static_cast<std::uint32_t>(raw_event.protection);
+    allocation.mapping_id = id;
+    allocation.mapping_base = base;
+    allocation.mapping_size = size;
+    plan.push_back(VmPlanRecord{allocation, noleax::trace::EventStatus::kSuccess});
+    track_generation(id, base, space.owned_bytes, raw_event.completion_sequence, false);
+    append_trim_records(id, space.stale, plan);
+  }
+
+  // Successful file-backed mmap: same interval treatment, with a Map create record.
+  void plan_mmap_section(const LinuxHeapEvent& raw_event, std::vector<VmPlanRecord>& plan) {
+    const std::uint64_t base = raw_event.result_address;
+    const std::uint64_t size = raw_event.requested_size;
+    const noleax::trace::MappingId id = next_mapping_id();
+    const CreateSpace space =
+        plan_create_space(base, base + size, raw_event.completion_sequence, id.value(), plan);
+    noleax::trace::MapEvent mapping_event;
+    mapping_event.section_handle = raw_event.section_handle;
+    mapping_event.target = current_process_target();
+    mapping_event.result_base = base;
+    mapping_event.section_offset = raw_event.section_offset;
+    mapping_event.protection = static_cast<std::uint32_t>(raw_event.protection);
+    mapping_event.view_size = size;
+    mapping_event.mapping_id = id;
+    plan.push_back(VmPlanRecord{mapping_event, noleax::trace::EventStatus::kSuccess});
+    track_generation(id, base, space.owned_bytes, raw_event.completion_sequence, true);
+    append_trim_records(id, space.stale, plan);
+  }
+
+  // Successful munmap: one free record per affected fragment (a munmap may release a prefix,
+  // suffix, or middle of a mapping and may span several mappings); a fully removed
+  // file-backed generation keeps the whole-view Unmap shape. No matched fragment at all
+  // keeps the legacy single unmatched record.
+  void plan_munmap(const LinuxHeapEvent& raw_event, std::vector<VmPlanRecord>& plan) {
+    const std::uint64_t begin = raw_event.address;
+    plan_subtract(begin, begin + raw_event.requested_size, raw_event.completion_sequence, plan);
+    if (plan.empty()) {
+      plan.push_back(make_unmatched_free_record(begin, raw_event.requested_size));
+    }
+  }
+
+  // Successful in-place mremap of a tracked anonymous generation whose fragment starts at
+  // the old base: a single adjusted VmAllocate record keeps the mapping id; the interval
+  // model applies the size change (grow = extend with eviction, shrink = silent tail
+  // subtract, stale = no-op).
+  void plan_mremap_resize(const LinuxHeapEvent& raw_event, LiveMappingGeneration& source,
+                          std::uint64_t fragment_end, std::vector<VmPlanRecord>& plan) {
+    const std::uint64_t base = raw_event.address;
+    const std::uint64_t new_size = raw_event.count;
+    const std::uint64_t seq = raw_event.completion_sequence;
+    // The resized VMA is the contiguous run of this generation's fragments from the base:
+    // an in-place grow merges the extension into one VMA in the kernel, so the tracked
+    // extent must span the fragments the same way.
+    std::uint64_t run_end = fragment_end;
+    for (;;) {
+      const auto next = live_mapping_space_.find(run_end);
+      if (!next.has_value() || next->begin != run_end ||
+          next->value.mapping_id != source.mapping_id.value()) {
+        break;
+      }
+      run_end = next->end;
+    }
+    const std::uint64_t extent = run_end - base;
+
+    const auto push_resize_record = [&](std::uint64_t mapping_size) {
+      noleax::trace::VmAllocateEvent allocation;
+      allocation.target = current_process_target();
+      allocation.requested_base = base;
+      allocation.result_base = raw_event.result_address;
+      allocation.requested_size = new_size;
+      allocation.result_size = new_size;
+      allocation.allocation_type = static_cast<std::uint32_t>(raw_event.map_flags);
+      allocation.mapping_id = source.mapping_id;
+      allocation.mapping_base = base;
+      allocation.mapping_size = mapping_size;
+      plan.push_back(VmPlanRecord{allocation, noleax::trace::EventStatus::kSuccess});
+    };
+
+    if (seq <= source.last_sequence) {
+      // Stale resize: a newer create/extend of this generation already ran, so this record
+      // must not move the model — report the current extent, which is a no-op update.
+      push_resize_record(extent);
+      return;
+    }
+    source.last_sequence = seq;
+    if (new_size > extent) {
+      const CreateSpace space =
+          plan_create_space(run_end, base + new_size, seq, source.mapping_id.value(), plan);
+      source.live_bytes += space.owned_bytes;
+      push_resize_record(new_size);
+      append_trim_records(source.mapping_id, space.stale, plan);
+      return;
+    }
+    if (new_size < extent) {
+      // The kernel releases [base+new_size, base+old_size). Everything inside the run is
+      // the source's own and is covered by the resize record itself (silent, and the
+      // analyzer subtracts exactly that tail); anything the event's old size covers beyond
+      // the run — neighbours that landed in a hole, the source's other fragments —
+      // releases with explicit records.
+      const auto removed = live_mapping_space_.subtract(base + new_size, run_end);
+      for (const auto& piece : removed) {
+        if (piece.value.mapping_id != source.mapping_id.value()) {
+          throw std::runtime_error{"mremap shrink tail overlaps a foreign fragment"};
+        }
+        source.live_bytes -= piece.end - piece.begin;
+      }
+      const std::uint64_t event_tail_end = base + raw_event.requested_size;
+      if (event_tail_end > run_end) {
+        plan_subtract(run_end, event_tail_end, seq, plan);
+      }
+    }
+    push_resize_record(new_size);
+  }
+
+  // Successful mremap that moves (or remaps a file-backed view, which the analyzer cannot
+  // resize in place): the free half releases the old range per fragment, the create half
+  // builds a fresh generation at the new base with full eviction/trim treatment.
+  void plan_mremap_pair(const LinuxHeapEvent& raw_event, bool section_source,
+                        std::vector<VmPlanRecord>& plan) {
+    const std::uint64_t old_base = raw_event.address;
+    const std::uint64_t old_size = raw_event.requested_size;
+    const std::uint64_t new_size = raw_event.count;
+    const std::uint64_t new_base = raw_event.result_address;
+
+    const std::size_t free_half_begin = plan.size();
+    plan_subtract(old_base, old_base + old_size, raw_event.completion_sequence, plan);
+    const bool source_tracked = plan.size() != free_half_begin;
+    if (!source_tracked) {
+      // Untracked source range (attach blind spot): the free half pairs with nothing.
+      plan.push_back(make_unmatched_free_record(old_base, old_size));
+    }
+
+    const noleax::trace::MappingId id = next_mapping_id();
+    const CreateSpace space = plan_create_space(new_base, new_base + new_size,
+                                                raw_event.completion_sequence, id.value(), plan);
+    noleax::trace::EventStatus create_status = noleax::trace::EventStatus::kSuccess;
+    if (!source_tracked) {
+      create_status = options_.capture_scope.preexisting_allocations_unknown
+                          ? noleax::trace::EventStatus::kPreexisting
+                          : noleax::trace::EventStatus::kSuccess;
+    }
+    if (section_source) {
+      // A remapped file-backed view stays file-backed; the raw event carries no fd or
+      // protection, so the new view records only what mremap reports.
+      noleax::trace::MapEvent map_event;
+      map_event.target = current_process_target();
+      map_event.result_base = new_base;
+      map_event.view_size = new_size;
+      map_event.mapping_id = id;
+      plan.push_back(VmPlanRecord{map_event, create_status});
+    } else {
+      noleax::trace::VmAllocateEvent allocation;
+      allocation.target = current_process_target();
+      allocation.requested_base = old_base;
+      allocation.result_base = new_base;
+      allocation.requested_size = new_size;
+      allocation.result_size = new_size;
+      allocation.allocation_type = static_cast<std::uint32_t>(raw_event.map_flags);
+      allocation.mapping_id = id;
+      allocation.mapping_base = new_base;
+      allocation.mapping_size = new_size;
+      plan.push_back(VmPlanRecord{allocation, create_status});
+    }
+    track_generation(id, new_base, space.owned_bytes, raw_event.completion_sequence,
+                     section_source);
+    append_trim_records(id, space.stale, plan);
+  }
+
+  // Successful in-place mremap of an untracked source (attach blind spot, or a stale model
+  // that only covers the base mid-fragment): adopt the resized range as a fresh generation
+  // so its later munmap still pairs.
+  void plan_mremap_adopt(const LinuxHeapEvent& raw_event, std::vector<VmPlanRecord>& plan) {
+    const std::uint64_t base = raw_event.result_address;  // == address when in place
+    const std::uint64_t new_size = raw_event.count;
+    const noleax::trace::MappingId id = next_mapping_id();
+    const CreateSpace space =
+        plan_create_space(base, base + new_size, raw_event.completion_sequence, id.value(), plan);
+    noleax::trace::VmAllocateEvent allocation;
+    allocation.target = current_process_target();
+    allocation.requested_base = raw_event.address;
+    allocation.result_base = raw_event.result_address;
+    allocation.requested_size = new_size;
+    allocation.result_size = new_size;
+    allocation.allocation_type = static_cast<std::uint32_t>(raw_event.map_flags);
+    allocation.mapping_id = id;
+    allocation.mapping_base = base;
+    allocation.mapping_size = new_size;
+    const noleax::trace::EventStatus status = options_.capture_scope.preexisting_allocations_unknown
+                                                  ? noleax::trace::EventStatus::kPreexisting
+                                                  : noleax::trace::EventStatus::kSuccess;
+    plan.push_back(VmPlanRecord{allocation, status});
+    track_generation(id, base, space.owned_bytes, raw_event.completion_sequence, false);
+    append_trim_records(id, space.stale, plan);
+  }
+
+  // Dispatches a successful mremap: in-place resize of a tracked anonymous generation, a
+  // free+create pair for a move or a file-backed source, or adoption of an untracked source.
+  void plan_mremap(const LinuxHeapEvent& raw_event, std::vector<VmPlanRecord>& plan) {
+    const std::uint64_t old_base = raw_event.address;
+    const auto fragment = live_mapping_space_.find(old_base);
+    LiveMappingGeneration* source = nullptr;
+    if (fragment.has_value()) {
+      source = &generation_for(fragment->value.mapping_id);
+    }
+    if (source != nullptr && source->section) {
+      plan_mremap_pair(raw_event, true, plan);
+      return;
+    }
+    if (raw_event.result_address != old_base) {
+      plan_mremap_pair(raw_event, false, plan);
+      return;
+    }
+    if (source != nullptr && fragment->begin == old_base) {
+      plan_mremap_resize(raw_event, *source, fragment->end, plan);
+      return;
+    }
+    plan_mremap_adopt(raw_event, plan);
+  }
+
+  // Builds the full record plan for one VM-family raw event. Successful plans apply the
+  // interval model; failed calls keep their single-record shape. The plan size is the number
+  // of wire records (one syscall may emit several free records).
+  void plan_vm_event(const LinuxHeapEvent& raw_event, std::vector<VmPlanRecord>& plan) {
+    const bool succeeded = raw_event.status == LinuxHeapEventStatus::kSuccess;
+    if (!succeeded) {
+      // Failed calls change no generation; record the attempt in the operation's shape.
+      if (raw_event.operation == LinuxHeapEventOperation::kVmUnmap) {
+        VmPlanRecord record = make_vm_free_record(noleax::trace::MappingId{}, raw_event.address,
+                                                  raw_event.requested_size);
+        record.status = noleax::trace::EventStatus::kFailure;
+        plan.push_back(record);
+        return;
+      }
+      noleax::trace::VmAllocateEvent allocation;
+      allocation.target = current_process_target();
+      allocation.requested_base = raw_event.operation == LinuxHeapEventOperation::kVmRemap
+                                      ? raw_event.address
+                                      : raw_event.requested_address;
+      allocation.requested_size = raw_event.operation == LinuxHeapEventOperation::kVmRemap
+                                      ? raw_event.count
+                                      : raw_event.requested_size;
+      allocation.allocation_type = static_cast<std::uint32_t>(raw_event.map_flags);
+      if (raw_event.operation == LinuxHeapEventOperation::kVmAllocate &&
+          raw_event.section_handle != std::numeric_limits<std::uint64_t>::max()) {
+        noleax::trace::MapEvent mapping_event;
+        mapping_event.section_handle = raw_event.section_handle;
+        mapping_event.target = current_process_target();
+        mapping_event.section_offset = raw_event.section_offset;
+        mapping_event.protection = static_cast<std::uint32_t>(raw_event.protection);
+        plan.push_back(VmPlanRecord{mapping_event, noleax::trace::EventStatus::kFailure});
+        return;
+      }
+      allocation.protection = static_cast<std::uint32_t>(raw_event.protection);
+      plan.push_back(VmPlanRecord{allocation, noleax::trace::EventStatus::kFailure});
+      return;
+    }
+    switch (raw_event.operation) {
+      case LinuxHeapEventOperation::kVmAllocate:
+        if (raw_event.section_handle == std::numeric_limits<std::uint64_t>::max()) {
+          plan_mmap_anonymous(raw_event, plan);
+        } else {
+          plan_mmap_section(raw_event, plan);
+        }
+        return;
+      case LinuxHeapEventOperation::kVmUnmap:
+        plan_munmap(raw_event, plan);
+        return;
+      case LinuxHeapEventOperation::kVmRemap:
+        plan_mremap(raw_event, plan);
+        return;
+      default:
+        throw std::invalid_argument{"raw Linux heap event is not a VM operation"};
+    }
   }
 
   void process_event(const LinuxHeapEvent& raw_event) {
@@ -1350,15 +1814,36 @@ class LinuxTraceWriter::Implementation final {
     const std::size_t api_index = hook_api_index(raw_event.api_id);
     ApiCounters& counters = api_counters_[api_index];
     const bool succeeded = raw_event.status == LinuxHeapEventStatus::kSuccess;
-    // Wire records per raw event: a successful mremap that moves (or remaps a file-backed
-    // view) decomposes into a free + create record pair; every other event is one record.
-    const std::uint64_t event_records = raw_event.operation == LinuxHeapEventOperation::kVmRemap
-                                            ? remap_event_records(raw_event)
-                                            : 1U;
+    // Wire records per raw event: a VM syscall can emit several records (per-fragment frees,
+    // overlap evictions, stale trims, the mremap pair), so its plan is built up front and the
+    // plan size is the record count; every heap event stays one record. Building the plan
+    // applies the interval model even when the event turns out trace-full below: post-limit
+    // events emit nothing, so that mutation never reaches the wire.
+    const bool vm_operation = raw_event.operation == LinuxHeapEventOperation::kVmAllocate ||
+                              raw_event.operation == LinuxHeapEventOperation::kVmUnmap ||
+                              raw_event.operation == LinuxHeapEventOperation::kVmRemap;
+    std::vector<VmPlanRecord> vm_plan;
+    if (vm_operation) {
+      plan_vm_event(raw_event, vm_plan);
+    }
+    const std::uint64_t event_records =
+        vm_operation ? static_cast<std::uint64_t>(vm_plan.size()) : 1U;
     if (succeeded) {
       checked_add(counters.successful, event_records, "successful operation count overflow");
     } else {
       checked_add(counters.failed, 1U, "failed operation count overflow");
+    }
+    // Wire-space extras beyond what the hook counters predict: the mremap channel counts a
+    // moved call as a record pair (paired_records); everything further (fragment frees,
+    // evictions, trims) is visible only to the writer and reconciles at finalize.
+    const std::uint64_t hook_predicted = raw_event.operation == LinuxHeapEventOperation::kVmRemap &&
+                                                 succeeded &&
+                                                 raw_event.result_address != raw_event.address
+                                             ? 2U
+                                             : 1U;
+    if (event_records > hook_predicted) {
+      checked_add(counters.extra_records, event_records - hook_predicted,
+                  "extra wire record count overflow");
     }
 
     // Wire sequences: one raw event occupies event_records consecutive values, so the
@@ -1476,85 +1961,18 @@ class LinuxTraceWriter::Implementation final {
         }
       }
       event.payload = free_event;
-    } else if (raw_event.operation == LinuxHeapEventOperation::kVmAllocate) {
-      if (raw_event.section_handle == std::numeric_limits<std::uint64_t>::max()) {
-        // Anonymous mmap: one fresh mapping generation per successful call.
-        noleax::trace::VmAllocateEvent allocation;
-        allocation.target = current_process_target();
-        allocation.requested_base = raw_event.requested_address;
-        allocation.result_base = raw_event.result_address;
-        allocation.requested_size = raw_event.requested_size;
-        allocation.allocation_type = static_cast<std::uint32_t>(raw_event.map_flags);
-        allocation.protection = static_cast<std::uint32_t>(raw_event.protection);
-        if (succeeded) {
-          allocation.result_size = raw_event.requested_size;
-          allocation.mapping_id =
-              create_virtual_mapping(raw_event.result_address, raw_event.requested_size);
-          allocation.mapping_base = raw_event.result_address;
-          allocation.mapping_size = raw_event.requested_size;
-        }
-        event.payload = allocation;
-      } else {
-        // File-backed mmap: a section view keyed by its fd and offset.
-        noleax::trace::MapEvent mapping_event;
-        mapping_event.section_handle = raw_event.section_handle;
-        mapping_event.target = current_process_target();
-        mapping_event.result_base = raw_event.result_address;
-        mapping_event.section_offset = raw_event.section_offset;
-        mapping_event.protection = static_cast<std::uint32_t>(raw_event.protection);
-        if (succeeded) {
-          mapping_event.view_size = raw_event.requested_size;
-          mapping_event.mapping_id =
-              create_section_mapping(raw_event.result_address, raw_event.requested_size);
-        }
-        event.payload = mapping_event;
-      }
-    } else if (raw_event.operation == LinuxHeapEventOperation::kVmUnmap) {
-      const auto vm_mapping = live_vm_mappings_.find(raw_event.address);
-      const auto section_mapping = vm_mapping == live_vm_mappings_.end()
-                                       ? find_section_mapping(raw_event.address)
-                                       : live_section_mappings_.end();
-      if (section_mapping != live_section_mappings_.end()) {
-        // File-backed view: a successful munmap unmaps the whole view generation (the
-        // wire model has no partial unmap; the record carries the view base).
-        noleax::trace::UnmapEvent unmap_event;
-        unmap_event.target = current_process_target();
-        unmap_event.base = section_mapping->second.base;
-        if (succeeded) {
-          unmap_event.mapping_id = section_mapping->second.mapping_id;
-          live_section_mappings_.erase(section_mapping);
-        }
-        event.payload = unmap_event;
-      } else {
-        noleax::trace::VmFreeEvent free_event;
-        free_event.target = current_process_target();
-        free_event.base = raw_event.address;
-        free_event.region_size = raw_event.requested_size;
-        free_event.free_type = kVmFreeTypeRelease;
-        if (succeeded) {
-          if (vm_mapping != live_vm_mappings_.end()) {
-            free_event.mapping_id = vm_mapping->second.mapping_id;
-            live_vm_mappings_.erase(vm_mapping);
-          } else {
-            // munmap of a range the capture never saw: no generation change.
-            event.header.status = unmatched_status(raw_event.address);
-          }
-        }
-        event.payload = free_event;
-      }
-    } else if (!succeeded) {
-      // Failed mremap: no generation change; record the attempt as a failed allocation.
-      noleax::trace::VmAllocateEvent allocation;
-      allocation.target = current_process_target();
-      allocation.requested_base = raw_event.address;
-      allocation.requested_size = raw_event.count;
-      allocation.allocation_type = static_cast<std::uint32_t>(raw_event.map_flags);
-      event.payload = allocation;
     }
-    if (raw_event.operation != LinuxHeapEventOperation::kVmRemap || !succeeded) {
+    if (!vm_operation) {
       noleax::trace::append_event_record(event_payload_, event, options_.maximum_record_size);
     } else {
-      append_vm_remap_records(raw_event, event);
+      // Every planned record shares the raw event's header (thread, API, ticks, stack); the
+      // sequence advances per record and the plan carries each record's status.
+      for (std::size_t index = 0U; index < vm_plan.size(); ++index) {
+        event.header.sequence = noleax::trace::Sequence{wire_begin + index};
+        event.header.status = vm_plan[index].status;
+        event.payload = vm_plan[index].payload;
+        noleax::trace::append_event_record(event_payload_, event, options_.maximum_record_size);
+      }
     }
 
     if (pending_event_count_ == 0U) {
@@ -1572,119 +1990,6 @@ class LinuxTraceWriter::Implementation final {
         event_payload_.size() >= options_.chunk_target_size) {
       flush_pending();
     }
-  }
-
-  // Records a successful mremap emits: an in-place resize of an anonymous or untracked
-  // mapping is a single VmAllocate record; a move (or a file-backed source, whose view
-  // generation the analyzer cannot resize) is a free + create pair.
-  [[nodiscard]] std::uint64_t remap_event_records(const LinuxHeapEvent& raw_event) {
-    if (raw_event.status != LinuxHeapEventStatus::kSuccess) {
-      return 1U;
-    }
-    if (raw_event.result_address != raw_event.address) {
-      return 2U;
-    }
-    const bool anonymous_source = live_vm_mappings_.contains(raw_event.address);
-    const bool section_source = !anonymous_source && find_section_mapping(raw_event.address) !=
-                                                         live_section_mappings_.end();
-    return section_source ? 2U : 1U;
-  }
-
-  // Emits the wire records for a successful mremap; base_event carries the resolved header
-  // (status kSuccess, the interned stack, the first of the allocated wire sequences).
-  void append_vm_remap_records(const LinuxHeapEvent& raw_event,
-                               const noleax::trace::Event& base_event) {
-    const auto vm_source = live_vm_mappings_.find(raw_event.address);
-    const bool has_vm_source = vm_source != live_vm_mappings_.end();
-    const auto section_source =
-        has_vm_source ? live_section_mappings_.end() : find_section_mapping(raw_event.address);
-    const bool has_section_source = section_source != live_section_mappings_.end();
-    const bool in_place = raw_event.result_address == raw_event.address;
-
-    if (!has_section_source && in_place) {
-      // In-place resize: an anonymous generation keeps its mapping_id and grows (the
-      // analyzer's observe_vm_allocate allows same-base growth); an untracked source is
-      // adopted as a fresh generation so its later munmap still pairs.
-      if (has_vm_source) {
-        vm_source->second.size = raw_event.count;
-      }
-      noleax::trace::VmAllocateEvent allocation;
-      allocation.target = current_process_target();
-      allocation.requested_base = raw_event.address;
-      allocation.result_base = raw_event.result_address;
-      allocation.requested_size = raw_event.count;
-      allocation.result_size = raw_event.count;
-      allocation.allocation_type = static_cast<std::uint32_t>(raw_event.map_flags);
-      allocation.mapping_id =
-          has_vm_source ? vm_source->second.mapping_id
-                        : create_virtual_mapping(raw_event.result_address, raw_event.count);
-      allocation.mapping_base = raw_event.result_address;
-      allocation.mapping_size = raw_event.count;
-      noleax::trace::Event update = base_event;
-      if (!has_vm_source && options_.capture_scope.preexisting_allocations_unknown) {
-        update.header.status = noleax::trace::EventStatus::kPreexisting;
-      }
-      update.payload = allocation;
-      noleax::trace::append_event_record(event_payload_, update, options_.maximum_record_size);
-      return;
-    }
-
-    noleax::trace::Event end_event = base_event;
-    if (!has_vm_source && !has_section_source) {
-      // Untracked source range (attach blind spot): the free half pairs with nothing.
-      end_event.header.status = unmatched_status(raw_event.address);
-    }
-    if (has_section_source) {
-      noleax::trace::UnmapEvent unmap_event;
-      unmap_event.target = current_process_target();
-      unmap_event.base = section_source->second.base;
-      unmap_event.mapping_id = section_source->second.mapping_id;
-      live_section_mappings_.erase(section_source);
-      end_event.payload = unmap_event;
-    } else {
-      noleax::trace::VmFreeEvent free_event;
-      free_event.target = current_process_target();
-      free_event.base = raw_event.address;
-      free_event.region_size = raw_event.requested_size;
-      free_event.free_type = kVmFreeTypeRelease;
-      if (has_vm_source) {
-        free_event.mapping_id = vm_source->second.mapping_id;
-        live_vm_mappings_.erase(vm_source);
-      }
-      end_event.payload = free_event;
-    }
-    noleax::trace::append_event_record(event_payload_, end_event, options_.maximum_record_size);
-
-    noleax::trace::Event create_event = base_event;
-    create_event.header.sequence = noleax::trace::Sequence{base_event.header.sequence.value() + 1U};
-    if (!has_vm_source && !has_section_source) {
-      create_event.header.status = options_.capture_scope.preexisting_allocations_unknown
-                                       ? noleax::trace::EventStatus::kPreexisting
-                                       : noleax::trace::EventStatus::kSuccess;
-    }
-    if (has_section_source) {
-      // A remapped file-backed view stays file-backed; the raw event carries no fd or
-      // protection, so the new view records only what mremap reports.
-      noleax::trace::MapEvent map_event;
-      map_event.target = current_process_target();
-      map_event.result_base = raw_event.result_address;
-      map_event.view_size = raw_event.count;
-      map_event.mapping_id = create_section_mapping(raw_event.result_address, raw_event.count);
-      create_event.payload = map_event;
-    } else {
-      noleax::trace::VmAllocateEvent allocation;
-      allocation.target = current_process_target();
-      allocation.requested_base = raw_event.address;
-      allocation.result_base = raw_event.result_address;
-      allocation.requested_size = raw_event.count;
-      allocation.result_size = raw_event.count;
-      allocation.allocation_type = static_cast<std::uint32_t>(raw_event.map_flags);
-      allocation.mapping_id = create_virtual_mapping(raw_event.result_address, raw_event.count);
-      allocation.mapping_base = raw_event.result_address;
-      allocation.mapping_size = raw_event.count;
-      create_event.payload = allocation;
-    }
-    noleax::trace::append_event_record(event_payload_, create_event, options_.maximum_record_size);
   }
 
   void ensure_pending_capacity(std::uint64_t event_records) {
@@ -1963,8 +2268,15 @@ class LinuxTraceWriter::Implementation final {
       noleax::trace::ApiStatistics api;
       api.api_id = api_id;
       if (snapshot != nullptr) {
+        // Wire space: the producer counts calls (plus the mremap move pair); the writer's
+        // extra_records cover the records only it can see (fragment frees, evictions,
+        // trims), so observed/successful count records exactly.
         api.observed_calls = snapshot->recordable_calls;
+        checked_add(api.observed_calls, counters.extra_records,
+                    "per-API observed record count overflow");
         api.successful_operations = snapshot->successful_calls;
+        checked_add(api.successful_operations, counters.extra_records,
+                    "per-API successful record count overflow");
         api.failed_operations = snapshot->failed_calls;
         api.filtered_before_queue = snapshot->filtered_calls;
         api.dropped_events = snapshot->dropped_events;
@@ -2102,6 +2414,10 @@ class LinuxTraceWriter::Implementation final {
   struct ApiCounters {
     std::uint64_t successful{0U};
     std::uint64_t failed{0U};
+    // Wire records beyond the hook-side prediction (the mremap move pair): fragment frees,
+    // overlap evictions, and stale trims exist only in wire space, so the producer snapshots
+    // cannot see them; the finalize reconciliation adds them to observed/successful.
+    std::uint64_t extra_records{0U};
     std::uint64_t pending{0U};
     std::uint64_t written{0U};
     std::uint64_t trace_dropped{0U};
@@ -2126,8 +2442,8 @@ class LinuxTraceWriter::Implementation final {
   std::vector<std::byte> memory_payload_;
   std::unordered_map<std::uint64_t, noleax::trace::AllocationId> live_allocations_;
   std::map<std::uint64_t, LiveModule> live_modules_;
-  std::map<std::uint64_t, LiveMapping> live_vm_mappings_;
-  std::map<std::uint64_t, LiveMapping> live_section_mappings_;
+  LiveMappingSpace live_mapping_space_;
+  std::unordered_map<std::uint64_t, LiveMappingGeneration> live_generations_;
   std::vector<ApiCounters> api_counters_;
   std::unordered_map<noleax::trace::ApiId, std::uint64_t> custom_allocation_counters_;
   std::vector<noleax::trace::CustomHookFailure> custom_hook_failures_;

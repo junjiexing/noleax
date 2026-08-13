@@ -242,6 +242,7 @@ summary:
   ended-by-c: 1
   filtered-out: 1
   outstanding: 1
+  outstanding-virtual-bytes: 0
   trace-events: 3
   loss-records: 0
   bytes-read: 768

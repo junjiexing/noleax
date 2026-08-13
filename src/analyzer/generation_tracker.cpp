@@ -71,7 +71,7 @@ const MemoryGeneration* GenerationTracker::find_allocation(
 const MemoryGeneration* GenerationTracker::find_mapping(
     noleax::trace::MappingId id) const noexcept {
   const auto generation = live_mappings_.find(id.value());
-  return generation == live_mappings_.end() ? nullptr : &generation->second;
+  return generation == live_mappings_.end() ? nullptr : &generation->second.generation;
 }
 
 std::vector<MemoryGeneration> GenerationTracker::live_generations() const {
@@ -81,9 +81,9 @@ std::vector<MemoryGeneration> GenerationTracker::live_generations() const {
     static_cast<void>(id);
     result.push_back(generation);
   }
-  for (const auto& [id, generation] : live_mappings_) {
+  for (const auto& [id, state] : live_mappings_) {
     static_cast<void>(id);
-    result.push_back(generation);
+    result.push_back(state.generation);
   }
   return result;
 }
@@ -181,35 +181,62 @@ void GenerationTracker::observe_vm_allocate(const noleax::trace::Event& event,
   if (!noleax::trace::call_succeeded(event.header.status) || !allocation.mapping_id.is_valid()) {
     return;
   }
+  const noleax::trace::Address update_base =
+      allocation.mapping_base == 0U ? allocation.result_base : allocation.mapping_base;
+  const std::uint64_t update_size =
+      allocation.mapping_size == 0U ? allocation.result_size : allocation.mapping_size;
+  if (update_size > std::numeric_limits<std::uint64_t>::max() - update_base) {
+    throw GenerationStateError{"virtual memory generation range overflows"};
+  }
   if (auto existing_entry = live_mappings_.find(allocation.mapping_id.value());
       existing_entry != live_mappings_.end()) {
-    MemoryGeneration& existing = existing_entry->second;
-    const noleax::trace::Address update_base =
-        allocation.mapping_base == 0U ? allocation.result_base : allocation.mapping_base;
-    const std::uint64_t update_size =
-        allocation.mapping_size == 0U ? allocation.result_size : allocation.mapping_size;
+    // Same-id update: an in-place mremap resize names the resized VMA's base and new size.
+    // The tracked extent is the contiguous run of fragments from the base (an in-place grow
+    // merges the extension into one VMA in the kernel); a grow inserts past the run, a
+    // shrink subtracts the run's tail. A Windows commit update names the reservation base
+    // with its full size (a no-op on the live set).
+    MappingState& state = existing_entry->second;
+    MemoryGeneration& existing = state.generation;
     if (existing.kind != GenerationKind::kVirtualAllocation || update_base < existing.address) {
       throw GenerationStateError{"virtual memory update does not match its mapping generation"};
     }
-    if (update_base == existing.address && update_size > existing.size) {
-      existing.size = update_size;
-      return;
+    const auto fragment = state.live.find(update_base);
+    if (!fragment.has_value()) {
+      throw GenerationStateError{"virtual memory update does not match its mapping generation"};
     }
-    const std::uint64_t offset = update_base - existing.address;
-    if (offset > existing.size || update_size > existing.size - offset) {
+    if (fragment->begin == update_base) {
+      std::uint64_t run_end = fragment->end;
+      for (;;) {
+        const auto next = state.live.find(run_end);
+        if (!next.has_value() || next->begin != run_end) {
+          break;
+        }
+        run_end = next->end;
+      }
+      const std::uint64_t extent = run_end - update_base;
+      if (update_size > extent) {
+        static_cast<void>(state.live.insert(run_end, update_base + update_size, 0U));
+      } else if (update_size < extent) {
+        static_cast<void>(state.live.subtract(update_base + update_size, run_end));
+      }
+    } else if (update_size > fragment->end - update_base) {
       throw GenerationStateError{"virtual memory update exceeds its mapping generation"};
+    }
+    const std::uint64_t live_bytes = state.live.total_bytes();
+    if (live_bytes != existing.size) {
+      existing.size = live_bytes;
+      notify_changed(existing, event);
     }
     return;
   }
-  MemoryGeneration generation;
-  generation.kind = GenerationKind::kVirtualAllocation;
-  generation.mapping_id = allocation.mapping_id;
-  generation.address =
-      allocation.mapping_base == 0U ? allocation.result_base : allocation.mapping_base;
-  generation.size =
-      allocation.mapping_size == 0U ? allocation.result_size : allocation.mapping_size;
-  generation.created_by = event;
-  add_mapping(generation);
+  MappingState state;
+  state.generation.kind = GenerationKind::kVirtualAllocation;
+  state.generation.mapping_id = allocation.mapping_id;
+  state.generation.address = update_base;
+  state.generation.size = update_size;
+  state.generation.created_by = event;
+  static_cast<void>(state.live.insert(update_base, update_base + update_size, 0U));
+  add_mapping(std::move(state));
 }
 
 void GenerationTracker::observe_vm_free(const noleax::trace::Event& event,
@@ -221,8 +248,50 @@ void GenerationTracker::observe_vm_free(const noleax::trace::Event& event,
   if ((free_event.free_type & kMemRelease) == 0U) {
     return;
   }
-  end_mapping(free_event.mapping_id, free_event.base, GenerationKind::kVirtualAllocation,
-              GenerationEndReason::kVirtualFreed, event);
+  auto generation = live_mappings_.find(free_event.mapping_id.value());
+  if (generation == live_mappings_.end()) {
+    checked_increment(orphaned_mapping_end_count_, "orphaned mapping end");
+    return;
+  }
+  MappingState& state = generation->second;
+  if (free_event.region_size == 0U) {
+    // Legacy whole-region release (the Windows MEM_RELEASE shape): the base names the
+    // generation start and only virtual allocations end this way; a file-backed view always
+    // ends through Unmap.
+    if (state.generation.kind != GenerationKind::kVirtualAllocation ||
+        free_event.base != state.generation.address) {
+      throw GenerationStateError{"mapping end address does not match its mapping_id"};
+    }
+    notify_ended(state.generation, GenerationEndReason::kVirtualFreed, event);
+    checked_increment(ended_count_, "ended generation");
+    live_mappings_.erase(generation);
+    return;
+  }
+  // Ranged release (the Linux interval model): subtract [base, base+region_size) from the
+  // generation's live fragments, whichever mapping kind it is. An empty intersection means
+  // the same fragment was already ended — that double end stays a hard error.
+  if (free_event.region_size > std::numeric_limits<std::uint64_t>::max() - free_event.base) {
+    throw GenerationStateError{"virtual memory free range overflows"};
+  }
+  const auto removed =
+      state.live.subtract(free_event.base, free_event.base + free_event.region_size);
+  if (removed.empty()) {
+    throw GenerationStateError{"mapping free matches no live fragment of its mapping_id"};
+  }
+  if (!state.live.empty()) {
+    state.generation.size = state.live.total_bytes();
+    notify_changed(state.generation, event);
+    return;
+  }
+  // The generation's size still holds the live bytes this record removed (they were the
+  // last ones), which is the size the end notification reports.
+  notify_ended(state.generation,
+               state.generation.kind == GenerationKind::kMappedView
+                   ? GenerationEndReason::kUnmapped
+                   : GenerationEndReason::kVirtualFreed,
+               event);
+  checked_increment(ended_count_, "ended generation");
+  live_mappings_.erase(generation);
 }
 
 void GenerationTracker::observe_map(const noleax::trace::Event& event,
@@ -230,13 +299,18 @@ void GenerationTracker::observe_map(const noleax::trace::Event& event,
   if (!noleax::trace::call_succeeded(event.header.status) || !mapping.mapping_id.is_valid()) {
     return;
   }
-  MemoryGeneration generation;
-  generation.kind = GenerationKind::kMappedView;
-  generation.mapping_id = mapping.mapping_id;
-  generation.address = mapping.result_base;
-  generation.size = mapping.view_size;
-  generation.created_by = event;
-  add_mapping(generation);
+  if (mapping.view_size > std::numeric_limits<std::uint64_t>::max() - mapping.result_base) {
+    throw GenerationStateError{"mapped view generation range overflows"};
+  }
+  MappingState state;
+  state.generation.kind = GenerationKind::kMappedView;
+  state.generation.mapping_id = mapping.mapping_id;
+  state.generation.address = mapping.result_base;
+  state.generation.size = mapping.view_size;
+  state.generation.created_by = event;
+  static_cast<void>(
+      state.live.insert(mapping.result_base, mapping.result_base + mapping.view_size, 0U));
+  add_mapping(std::move(state));
 }
 
 void GenerationTracker::observe_unmap(const noleax::trace::Event& event,
@@ -260,16 +334,16 @@ void GenerationTracker::add_allocation(MemoryGeneration generation) {
   notify_created(inserted->second);
 }
 
-void GenerationTracker::add_mapping(MemoryGeneration generation) {
-  require_new_mapping_id(generation.mapping_id);
-  seen_mapping_ids_.insert(generation.mapping_id.value());
+void GenerationTracker::add_mapping(MappingState state) {
+  require_new_mapping_id(state.generation.mapping_id);
+  seen_mapping_ids_.insert(state.generation.mapping_id.value());
   const auto [inserted, was_inserted] =
-      live_mappings_.emplace(generation.mapping_id.value(), generation);
+      live_mappings_.emplace(state.generation.mapping_id.value(), std::move(state));
   if (!was_inserted) {
     throw GenerationStateError{"mapping_id is already live"};
   }
   checked_increment(created_count_, "created generation");
-  notify_created(inserted->second);
+  notify_created(inserted->second.generation);
 }
 
 void GenerationTracker::end_allocation(noleax::trace::AllocationId id,
@@ -302,13 +376,13 @@ void GenerationTracker::end_mapping(noleax::trace::MappingId id,
     checked_increment(orphaned_mapping_end_count_, "orphaned mapping end");
     return;
   }
-  if (generation->second.kind != expected_kind) {
+  if (generation->second.generation.kind != expected_kind) {
     throw GenerationStateError{"mapping end operation does not match its mapping_id kind"};
   }
-  if (generation->second.address != expected_address) {
+  if (generation->second.generation.address != expected_address) {
     throw GenerationStateError{"mapping end address does not match its mapping_id"};
   }
-  notify_ended(generation->second, reason, event);
+  notify_ended(generation->second.generation, reason, event);
   checked_increment(ended_count_, "ended generation");
   live_mappings_.erase(generation);
 }
@@ -341,6 +415,13 @@ void GenerationTracker::notify_ended(const MemoryGeneration& generation, Generat
                                      const noleax::trace::Event& event) const {
   if (callbacks_.on_ended) {
     callbacks_.on_ended(generation, reason, event);
+  }
+}
+
+void GenerationTracker::notify_changed(const MemoryGeneration& generation,
+                                       const noleax::trace::Event& event) const {
+  if (callbacks_.on_changed) {
+    callbacks_.on_changed(generation, event);
   }
 }
 

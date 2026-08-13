@@ -378,3 +378,156 @@ TEST_CASE("generation ends must agree with the generation identified by ID",
     CHECK(tracker.find_mapping(noleax::trace::MappingId{20U}) != nullptr);
   }
 }
+
+namespace {
+
+[[nodiscard]] noleax::trace::Event vm_allocate_sized_event(std::uint64_t sequence, std::uint64_t id,
+                                                           noleax::trace::Address base,
+                                                           std::uint64_t size) {
+  noleax::trace::VmAllocateEvent allocation;
+  allocation.target = current_process();
+  allocation.result_base = base;
+  allocation.requested_size = size;
+  allocation.result_size = size;
+  allocation.mapping_base = base;
+  allocation.mapping_size = size;
+  allocation.mapping_id = noleax::trace::MappingId{id};
+  return noleax::trace::Event{event_header(sequence), allocation};
+}
+
+[[nodiscard]] noleax::trace::Event vm_free_range_event(std::uint64_t sequence, std::uint64_t id,
+                                                       noleax::trace::Address base,
+                                                       std::uint64_t size) {
+  noleax::trace::VmFreeEvent free;
+  free.target = current_process();
+  free.base = base;
+  free.region_size = size;
+  free.free_type = 0x8000U;
+  free.mapping_id = noleax::trace::MappingId{id};
+  return noleax::trace::Event{event_header(sequence), free};
+}
+
+[[nodiscard]] noleax::trace::Event vm_resize_event(std::uint64_t sequence, std::uint64_t id,
+                                                   noleax::trace::Address base,
+                                                   std::uint64_t new_size) {
+  noleax::trace::VmAllocateEvent allocation;
+  allocation.target = current_process();
+  allocation.result_base = base;
+  allocation.requested_size = new_size;
+  allocation.result_size = new_size;
+  allocation.mapping_base = base;
+  allocation.mapping_size = new_size;
+  allocation.mapping_id = noleax::trace::MappingId{id};
+  return noleax::trace::Event{event_header(sequence), allocation};
+}
+
+}  // namespace
+
+TEST_CASE("ranged virtual frees subtract fragments and report remaining bytes",
+          "[analyzer][generation][vm]") {
+  using namespace noleax::analyzer;
+  std::vector<MemoryGeneration> changed;
+  std::vector<MemoryGeneration> ended;
+  GenerationCallbacks callbacks;
+  callbacks.on_changed = [&changed](const MemoryGeneration& generation,
+                                    const noleax::trace::Event&) { changed.push_back(generation); };
+  callbacks.on_ended = [&ended](const MemoryGeneration& generation, GenerationEndReason,
+                                const noleax::trace::Event&) { ended.push_back(generation); };
+  GenerationTracker tracker{callbacks};
+
+  // [0x4000, 0xC000): 32 KiB generation; free a prefix, a suffix, then a middle piece.
+  tracker.observe(vm_allocate_sized_event(1U, 20U, 0x4000U, 0x8000U));
+  tracker.observe(vm_free_range_event(2U, 20U, 0x4000U, 0x2000U));  // prefix
+  tracker.observe(vm_free_range_event(3U, 20U, 0xA000U, 0x2000U));  // suffix
+  tracker.observe(vm_free_range_event(4U, 20U, 0x7000U, 0x1000U));  // middle
+
+  CHECK(tracker.live_count() == 1U);
+  const auto* live = tracker.find_mapping(noleax::trace::MappingId{20U});
+  REQUIRE(live != nullptr);
+  CHECK(live->size == 0x8000U - 0x2000U - 0x2000U - 0x1000U);
+  REQUIRE(changed.size() == 3U);
+  CHECK(changed[0].size == 0x6000U);
+  CHECK(changed[1].size == 0x4000U);
+  CHECK(changed[2].size == 0x3000U);
+  CHECK(ended.empty());
+
+  // The two surviving pieces are [0x6000,0x7000) and [0x8000,0xA000); freeing both ends the
+  // generation exactly once, with the size of the final live piece.
+  tracker.observe(vm_free_range_event(5U, 20U, 0x6000U, 0x1000U));
+  CHECK(tracker.live_count() == 1U);
+  tracker.observe(vm_free_range_event(6U, 20U, 0x8000U, 0x2000U));
+  CHECK(tracker.live_count() == 0U);
+  REQUIRE(ended.size() == 1U);
+  CHECK(ended[0].size == 0x2000U);
+  CHECK(tracker.ended_count() == 1U);
+  CHECK(tracker.orphaned_mapping_end_count() == 0U);
+}
+
+TEST_CASE("a ranged free that matches no live fragment stays a hard error",
+          "[analyzer][generation][vm]") {
+  noleax::analyzer::GenerationTracker tracker;
+  tracker.observe(vm_allocate_event(1U, 20U, 0x4000U));  // [0x4000, 0x6000)
+  tracker.observe(vm_free_range_event(2U, 20U, 0x5000U, 0x1000U));
+
+  // [0x5000, 0x6000) was already ended: a second free of the same fragment must throw.
+  CHECK_THROWS_AS(tracker.observe(vm_free_range_event(3U, 20U, 0x5000U, 0x1000U)),
+                  noleax::analyzer::GenerationStateError);
+  CHECK(tracker.find_mapping(noleax::trace::MappingId{20U}) != nullptr);
+  // A free of an unknown mapping id is tolerated as an orphan, not an error.
+  tracker.observe(vm_free_range_event(4U, 99U, 0x5000U, 0x1000U));
+  CHECK(tracker.orphaned_mapping_end_count() == 1U);
+}
+
+TEST_CASE("ranged virtual frees shrink mapped views and Unmap ends the rest",
+          "[analyzer][generation][vm]") {
+  using namespace noleax::analyzer;
+  std::vector<EndedGeneration> ended;
+  GenerationCallbacks callbacks;
+  callbacks.on_ended = [&ended](const MemoryGeneration& generation, GenerationEndReason reason,
+                                const noleax::trace::Event& event) {
+    ended.push_back(EndedGeneration{generation, reason, event});
+  };
+  GenerationTracker tracker{callbacks};
+
+  tracker.observe(map_event(1U, 21U, 0x8000U));                     // view [0x8000, 0xC000)
+  tracker.observe(vm_free_range_event(2U, 21U, 0x8000U, 0x2000U));  // partial prefix free
+  const auto* live = tracker.find_mapping(noleax::trace::MappingId{21U});
+  REQUIRE(live != nullptr);
+  CHECK(live->kind == GenerationKind::kMappedView);
+  CHECK(live->size == 0x2000U);
+  CHECK(live->address == 0x8000U);
+
+  tracker.observe(unmap_event(3U, 21U, 0x8000U));  // whole-view end for the remainder
+  CHECK(tracker.live_count() == 0U);
+  REQUIRE(ended.size() == 1U);
+  CHECK(ended[0].reason == GenerationEndReason::kUnmapped);
+  CHECK(ended[0].generation.size == 0x2000U);
+}
+
+TEST_CASE("same-id virtual updates grow and shrink the live fragments",
+          "[analyzer][generation][vm]") {
+  using namespace noleax::analyzer;
+  std::vector<MemoryGeneration> changed;
+  GenerationCallbacks callbacks;
+  callbacks.on_changed = [&changed](const MemoryGeneration& generation,
+                                    const noleax::trace::Event&) { changed.push_back(generation); };
+  GenerationTracker tracker{callbacks};
+
+  tracker.observe(vm_allocate_event(1U, 20U, 0x4000U));         // [0x4000, 0x6000)
+  tracker.observe(vm_resize_event(2U, 20U, 0x4000U, 0xC000U));  // grow in place
+  CHECK(tracker.find_mapping(noleax::trace::MappingId{20U})->size == 0xC000U);
+  tracker.observe(vm_resize_event(3U, 20U, 0x4000U, 0x8000U));  // shrink tail
+  CHECK(tracker.find_mapping(noleax::trace::MappingId{20U})->size == 0x8000U);
+  // A hole plus a resize of the second fragment: live bytes track the fragments, not the
+  // span (a resize only touches the fragment starting at its base).
+  tracker.observe(vm_free_range_event(4U, 20U, 0x5000U, 0x1000U));  // middle hole
+  CHECK(tracker.find_mapping(noleax::trace::MappingId{20U})->size == 0x7000U);
+  tracker.observe(vm_resize_event(5U, 20U, 0x6000U, 0x2000U));  // shrink the second fragment
+  CHECK(tracker.find_mapping(noleax::trace::MappingId{20U})->size == 0x3000U);
+  CHECK(changed.size() == 4U);
+  CHECK(tracker.ended_count() == 0U);
+
+  // An update beyond the live extent keeps the strict error.
+  CHECK_THROWS_AS(tracker.observe(vm_resize_event(6U, 20U, 0x4800U, 0x4000U)),
+                  noleax::analyzer::GenerationStateError);
+}

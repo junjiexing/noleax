@@ -212,10 +212,9 @@ Linux writer（`agent/linux/trace_writer.cpp`）复用同一套中性机制（�
 
 - **事件来源**：glibc heap 组（malloc 族）与 VM 组（mmap/munmap/mremap）共享一个事件
   队列；自定义 hook 事件经 `api_id >= 0x1000` 进入同一排水循环。
-- **VM 记录映射**：匿名 mmap → VmAllocate；文件映射（fd ≥ 0）→ Map；munmap 按存活映射
-  的类型匹配 VmFree（带 release 位）或 Unmap；mremap 原地扩保留 mapping_id，迁移展开为
-  VmFree+VmAllocate 记录对——**wire 序列与逐 API 统计按记录计数**（一次迁移调用产生两条
-  记录），hook 侧以 `paired_records` 计数补偿对账。
+- **VM 记录映射**：匿名 mmap → VmAllocate；文件映射（fd ≥ 0）→ Map；munmap → VmFree
+  （带 release 位）或 Unmap；mremap 原地扩缩保留 mapping_id，迁移展开为
+  VmFree+VmAllocate 记录对。记录级细节（部分释放、逐出、裁剪）见 §8.1 的区间模型。
 - **统计口径**：finalize 时从 hook 侧取权威计数快照（`counter_source`），`filtered`
   事件（capture.min_size）不进队列也能入账；对账不变式精确成立。
 - **模块跟踪**：轮询代际（dl_iterate_phdr diff），详见 MODULE_TRACKING.md §6。
@@ -224,3 +223,59 @@ Linux writer（`agent/linux/trace_writer.cpp`）复用同一套中性机制（�
   VmSize→commit；`---p` → Reserve、可执行文件映射 → Image、POSIX PROT 位进 protect）。
 - **scope**：launch → `started_at_process_start`；attach → `preexisting_allocations_unknown`
   （退出码 2 经 analyzer 的 completeness 推导）。
+
+### 8.1 Linux VM 区间与 generation 模型（H3）
+
+Linux 的 munmap 可以释放一个映射的前缀/后缀/中段，也可以一次跨多个映射；MAP_FIXED 类
+放置会隐式替换既有映射；事件又在 libc 调用返回后才入队，被抢占的线程会让"入队顺序"
+偏离"内核 VM 操作顺序"。base 键控的 generation 表无法表达这些情形（旧实现整代擦除，
+部分释放会让 outstanding 少报到 0；同址竞争会以 "virtual mapping creation is
+inconsistent" 杀死 capture）。H3 把 writer 的 VM 生命周期重建为区间模型：
+
+- **完成序号**：mmap/munmap/mremap 的替换体在 libc 调用返回后、任何入队动作之前，从
+  进程级原子计数器取 `completion_sequence`（随原始事件入队）。它按"syscall 完成时刻"
+  全序化 VM 操作；同址 generation 匹配一律按该序号而非队列顺序。返回点到取号之间仍
+  有几条指令的残余窗口（可能被抢占交换两次完成），但相比整个入队路径可忽略。
+- **共享区间语义**：`include/noleax/trace/interval_set.hpp` 是被 writer 与 analyzer
+  共用的有序不重叠区间容器（插入逐出、范围相减、点/范围查询、迭代），同一份实现保证
+  两侧逐位一致。writer 侧的全局地址空间是一张 `IntervalSet<{mapping_id, sequence}>`：
+  每个片段记录属主 generation 与产生它的 create/extend 的完成序号（序号挂在片段上而
+  不是 generation 上，因为原地 mremap 扩展会给旧 generation 增加更年轻的片段）。
+- **create（mmap、mremap 目的地）**：先逐出相交的老片段（creation sequence < 本次序号），
+  每片一条 VmFree（这是内核隐式释放，如 MAP_FIXED 替换）；再发 create 记录；被更年轻
+  片段占用的部分（creation sequence > 本次序号）说明本次 create 已过时，对应范围不记
+  入新 generation，并紧跟 create 记录补发以新 mapping_id 归属的 VmFree 裁剪记录，使
+  analyzer 的逐代字节数与 writer 收敛。
+- **munmap [a, a+len)**：对每个相交的老片段缩/裂/删并各发一条 VmFree（mapping_id +
+  片段基址 + 相交长度），一条 munmap 可以产生多条记录；相邻同代片段合并为一条记录
+  （保持整段释放的单记录线形）。完全未命中（或只命中更年轻的片段）保持原来的单条
+  unmatched/preexisting 记录。文件映射被整代移除时发 Unmap（沿用整视图线形），部分
+  移除时每片一条 VmFree。
+- **mremap**：原地扩缩 = 一条调整后的 VmAllocate（保留 mapping_id；扩 = 区间扩展 +
+  逐出/裁剪，缩 = 尾部静默相减，事件 old_size 超出 VMA 连续段的部分——洞里的邻居、
+  本代的其他片段——发显式记录）；迁移/MREMAP_FIXED/文件视图 = 释放半 + 创建半记录对，
+  两半都走区间模型。释放半完全未命中时保持 unmatched 单记录。以早于 generation 最后
+  一次 create/resize 的序号到达的原地 resize 是过时的：记录映射为当前extent的 no-op
+  更新，不移动模型。
+- **wire 格式无结构变化**：VmFree 记录现在可以是"内部/部分"的（base 位于 generation
+  内部、size 小于该 generation），`free_type` 仍是 `kVmFreeTypeRelease`；同一次调用
+  可以发出 N 条记录。wire 序列与逐 API 统计按记录计数：hook 侧 `paired_records` 只
+  对迁移 mremap 的"记录对"入账（且仅在事件确实入队后计数），其余超出一调用一记录
+  的部分（片段释放/逐出/裁剪）由 writer 的 `extra_records` 在 finalize 对账时补入，
+  `written + filtered + dropped == observed` 在记录空间精确成立。
+- **analyzer 侧**：generation 以同一 IntervalSet 维护存活片段；范围 VmFree 相减，剩余
+  字节为 0 时 generation 结束。`region_size == 0` 的整段释放保持 Windows 线形的严格
+  校验（kind 必须匹配、base 必须是代基址）；范围释放对匿名/文件两种 generation 都
+  适用；对同一片段的重复释放（相交为空）仍是硬错误；未知 mapping_id 的释放计入
+  orphan 计数而不是报错。outstanding 分析里 generation 在 C 点存活当且仅当剩余字节
+  > 0，报告的字节数是 C 点的剩余**虚拟**字节（早于 C 的部分释放/原地扩缩会更新候选
+  的 size，晚于 C 的不影响）；确定在 C 前结束的候选在结束事件到达时即淘汰
+  （early eviction）。
+
+### 8.2 VM 输出的字节语义
+
+leaks/outstanding 输出中 mapping generation 的 `size` 是**虚拟地址空间字节**（剩余
+量），不是驻留内存：JSON 每项带 `size_semantics`（`virtual` / `requested`），summary
+带 `outstanding_virtual_bytes` 合计；console 行内以 `size=NB (virtual)` 标注并在
+summary 增加 `outstanding-virtual-bytes`；CSV 的 `size` 列同义。heap allocation 的
+`size` 仍是请求大小。

@@ -108,6 +108,14 @@ std::array<std::atomic<void*>, kChannelCount> restored_targets{};
 std::atomic<VirtualMemoryHooks*> active_owner{nullptr};
 std::atomic<bool> installation_retired{false};
 
+// Process-global VM completion counter (docs/TRACE_WRITER.md §VM interval model): every
+// recorded mmap/munmap/mremap takes the next value immediately after the libc call returns
+// and before any queueing, so the writer orders same-address generations by syscall
+// completion instead of queue arrival. A thread preempted between the call and the fetch_add
+// can still swap with a competitor, but that window is a handful of instructions versus the
+// whole queueing path; queue order alone was unusable for same-address matching.
+std::atomic<std::uint64_t> vm_completion_sequence{0U};
+
 static_assert(OriginalTrampolineSlot::is_always_lock_free);
 static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
 static_assert(decltype(active_channel_set)::is_always_lock_free);
@@ -177,13 +185,15 @@ struct EventFields {
   std::uint64_t map_flags;
   std::uint64_t section_handle;
   std::uint64_t section_offset;
+  std::uint64_t completion_sequence;
   void* result;
   bool failed;
   int error_code;  // errno of the original call
 };
 
-void emit_event(VirtualMemoryHookChannelSet& set, VirtualMemoryHookChannelState& channel,
-                const EventFields& fields) noexcept {
+[[nodiscard]] bool emit_event(VirtualMemoryHookChannelSet& set,
+                              VirtualMemoryHookChannelState& channel,
+                              const EventFields& fields) noexcept {
   const std::uint16_t maximum_stack_depth = set.maximum_stack_depth;
   const std::uint64_t result_address =
       static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(fields.result));
@@ -206,6 +216,7 @@ void emit_event(VirtualMemoryHookChannelSet& set, VirtualMemoryHookChannelState&
         event.map_flags = fields.map_flags;
         event.section_handle = fields.section_handle;
         event.section_offset = fields.section_offset;
+        event.completion_sequence = fields.completion_sequence;
         event.operation_result = operation_result;
         event.api_id = fields.api_id;
         event.operation = fields.operation;
@@ -216,6 +227,7 @@ void emit_event(VirtualMemoryHookChannelSet& set, VirtualMemoryHookChannelState&
   if (!queued) {
     increment_saturating(channel.dropped_events);
   }
+  return queued;
 }
 
 void note_call_outcome(VirtualMemoryHookChannelState& channel, bool failed) noexcept {
@@ -239,6 +251,8 @@ void record_vm_allocate(VirtualMemoryHookChannelSet& set, VirtualMemoryHookChann
                         const void* requested_address, std::uint64_t requested_size, int protection,
                         int flags, int fd, std::uint64_t section_offset, void* result,
                         int error_code) noexcept {
+  const std::uint64_t completion_sequence =
+      vm_completion_sequence.fetch_add(1U, std::memory_order_relaxed) + 1U;
   const bool failed = result == MAP_FAILED;
   note_call_outcome(channel, failed);
   if (requested_size < set.minimum_capture_size) {
@@ -249,39 +263,49 @@ void record_vm_allocate(VirtualMemoryHookChannelSet& set, VirtualMemoryHookChann
   // apart from a real descriptor zero.
   const std::uint64_t section_handle =
       fd == -1 ? std::numeric_limits<std::uint64_t>::max() : static_cast<std::uint64_t>(fd);
-  emit_event(
+  static_cast<void>(emit_event(
       set, channel,
       EventFields{kMmapApiId, LinuxHeapEventOperation::kVmAllocate, as_u64(requested_address),
                   requested_size, 0U, 0U, 0U, zero_extended(protection), zero_extended(flags),
-                  section_handle, section_offset, failed ? nullptr : result, failed, error_code});
+                  section_handle, section_offset, completion_sequence, failed ? nullptr : result,
+                  failed, error_code}));
 }
 
 void record_vm_unmap(VirtualMemoryHookChannelSet& set, VirtualMemoryHookChannelState& channel,
                      const void* address, std::uint64_t requested_size, int result,
                      int error_code) noexcept {
+  const std::uint64_t completion_sequence =
+      vm_completion_sequence.fetch_add(1U, std::memory_order_relaxed) + 1U;
   const bool failed = result == -1;
   note_call_outcome(channel, failed);
-  emit_event(set, channel,
-             EventFields{kMunmapApiId, LinuxHeapEventOperation::kVmUnmap, 0U, requested_size, 0U,
-                         0U, as_u64(address), 0U, 0U, 0U, 0U, nullptr, failed, error_code});
+  static_cast<void>(emit_event(set, channel,
+                               EventFields{kMunmapApiId, LinuxHeapEventOperation::kVmUnmap, 0U,
+                                           requested_size, 0U, 0U, as_u64(address), 0U, 0U, 0U, 0U,
+                                           completion_sequence, nullptr, failed, error_code}));
 }
 
 void record_vm_remap(VirtualMemoryHookChannelSet& set, VirtualMemoryHookChannelState& channel,
                      const void* old_address, std::uint64_t old_size, std::uint64_t new_size,
                      int flags, const void* requested_new_address, void* result,
                      int error_code) noexcept {
+  const std::uint64_t completion_sequence =
+      vm_completion_sequence.fetch_add(1U, std::memory_order_relaxed) + 1U;
   const bool failed = result == MAP_FAILED;
   note_call_outcome(channel, failed);
-  // A successful move makes the writer emit a VmFree+VmAllocate pair for this one call;
-  // keep the wire-space counter so the statistics reconciliation sees both records.
-  if (!failed && result != old_address) {
-    channel.paired_records.fetch_add(1U, std::memory_order_relaxed);
-  }
-  emit_event(
+  const bool queued = emit_event(
       set, channel,
       EventFields{kMremapApiId, LinuxHeapEventOperation::kVmRemap, 0U, old_size, new_size,
                   as_u64(requested_new_address), as_u64(old_address), 0U, zero_extended(flags), 0U,
-                  0U, failed ? nullptr : result, failed, error_code});
+                  0U, completion_sequence, failed ? nullptr : result, failed, error_code});
+  // A successful move makes the writer emit at least a VmFree+VmAllocate record pair for
+  // this one call (the interval model may add eviction/trim records on top, which the
+  // writer accounts itself). Keep the wire-space counter so the statistics reconciliation
+  // sees the pair — but only when the event actually queued: a dropped call emits no
+  // records, so counting its pair here would break the written+filtered+dropped == observed
+  // conservation.
+  if (queued && !failed && result != old_address) {
+    channel.paired_records.fetch_add(1U, std::memory_order_relaxed);
+  }
 }
 
 }  // namespace
