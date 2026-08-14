@@ -8,17 +8,27 @@
 #include <thread>
 
 #if defined(_WIN32)
-// The deadline wait uses WaitOnAddress/WakeByAddressAll (stable since Windows 8). Declared
-// here with the exact SDK prototypes instead of including <windows.h>: this header is
-// consumed before the Windows TUs' own WIN32_LEAN_AND_MEAN/NOMINMAX defines, and a full
-// windows.h from here would leak the min/max macro set into them. The declarations are
-// redeclaration-compatible with <synchapi.h> whenever a TU includes both.
-extern "C" {
-__declspec(dllimport) int __stdcall WaitOnAddress(volatile void* address, void* compare_address,
-                                                  std::size_t address_size,
-                                                  unsigned long milliseconds);
-__declspec(dllimport) void __stdcall WakeByAddressAll(void* address);
-}
+// The deadline wait uses WaitOnAddress/WakeByAddressAll (stable since Windows 8). Pull the
+// real SDK declarations: hand-written prototypes fight the SDK's own (dllimport mismatch,
+// C4273 under -WX). The guard macros are scoped so including windows.h here neither leaks
+// min/max nor forces the lean set on consumers that wanted the full one.
+# ifndef NOMINMAX
+#  define NOMINMAX
+#  define NOLEAX_DETAIL_UNDEF_NOMINMAX
+# endif
+# ifndef WIN32_LEAN_AND_MEAN
+#  define WIN32_LEAN_AND_MEAN
+#  define NOLEAX_DETAIL_UNDEF_WIN32_LEAN_AND_MEAN
+# endif
+# include <windows.h>
+# ifdef NOLEAX_DETAIL_UNDEF_NOMINMAX
+#  undef NOMINMAX
+#  undef NOLEAX_DETAIL_UNDEF_NOMINMAX
+# endif
+# ifdef NOLEAX_DETAIL_UNDEF_WIN32_LEAN_AND_MEAN
+#  undef WIN32_LEAN_AND_MEAN
+#  undef NOLEAX_DETAIL_UNDEF_WIN32_LEAN_AND_MEAN
+# endif
 #elif defined(__linux__)
 #include <linux/futex.h>
 #include <sys/syscall.h>
