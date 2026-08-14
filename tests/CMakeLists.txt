@@ -373,7 +373,7 @@ endif()
 
 add_test(NAME cli.version COMMAND noleax --version)
 set_tests_properties(cli.version PROPERTIES
-  PASS_REGULAR_EXPRESSION "0\\.5\\.0-dev")
+  PASS_REGULAR_EXPRESSION "0\\.6\\.0-dev")
 
 add_test(NAME cli.help COMMAND noleax --help)
 set_tests_properties(cli.help PROPERTIES
