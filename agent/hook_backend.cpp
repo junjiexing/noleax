@@ -210,8 +210,11 @@ class HookBackend::Impl {
                         [target](const Entry& entry) { return entry.target == target; });
   }
 
-  // Retries the Hoox flush until the deadline, sleeping between attempts instead of
-  // spinning. An already-expired deadline makes no attempt: callers spell the old
+  // Retries the Hoox flush until the deadline, yielding between attempts. The yield (not a
+  // millisecond sleep) keeps per-attempt pacing at microsecond scale: a flush under
+  // contention can need hundreds of rounds, and 1 ms each balloons the finalize path past
+  // the controller's pipe timeout (the Windows capture-lifecycle hang). The deadline
+  // bounds the total; an already-expired deadline makes no attempt: callers spell the old
   // "revert only, flush later" zero-attempt form as steady_clock::now().
   [[nodiscard]] bool flush_locked(QuiescenceDeadline deadline) noexcept {
     if (interceptor_ == nullptr) {
@@ -225,7 +228,7 @@ class HookBackend::Impl {
         pending_teardown_ = false;
         return true;
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds{1});
+      std::this_thread::yield();
     }
     return false;
   }
@@ -306,6 +309,10 @@ std::string_view hook_uninstall_status_name(HookUninstallStatus status) noexcept
 HookBackend::HookBackend() : impl_{std::make_unique<Impl>()} {}
 
 HookBackend::~HookBackend() = default;
+
+void HookBackend::set_external_thread_suspension(bool enabled) noexcept {
+  hoox_memory_set_external_thread_suspension(enabled ? 1 : 0);
+}
 
 FastHookResult HookBackend::install_fast(void* target, void* replacement,
                                          OriginalTrampolineSlot* original_slot) {
