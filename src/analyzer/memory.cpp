@@ -66,7 +66,7 @@ MemoryAnalysisResult analyze_memory(std::istream& input, MemoryWindow window,
   auto counters_at = counters_records.begin();
   auto map_at = map_records.begin();
   auto agent_at = agent_records.begin();
-  const auto ticks_of = [](auto it, auto end) {
+  const auto ticks_of = [](const auto& it, const auto& end) {
     return it != end ? it->monotonic_ticks : std::numeric_limits<std::uint64_t>::max();
   };
   while (counters_at != counters_records.end() || map_at != map_records.end() ||

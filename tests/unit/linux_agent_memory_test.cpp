@@ -95,6 +95,11 @@ TEST_CASE("agent memory registry measures region residency exactly", "[agent][me
   guard.base = ::mmap(nullptr, kBytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   REQUIRE(guard.base != MAP_FAILED);
   guard.bytes = kBytes;
+  // Exact page-granularity residency assumes base pages: on THP-enabled hosts a single
+  // touch can fault in a 2 MiB huge page and mincore reports the whole huge page.
+  if (::madvise(guard.base, kBytes, MADV_NOHUGEPAGE) != 0) {
+    WARN("MADV_NOHUGEPAGE failed; residency assertions may count huge pages");
+  }
   AgentMemoryRegistry::instance().register_region(noleax::trace::AgentMemoryCategory::kEventQueue,
                                                   guard.base, kBytes);
 
