@@ -310,10 +310,6 @@ HookBackend::HookBackend() : impl_{std::make_unique<Impl>()} {}
 
 HookBackend::~HookBackend() = default;
 
-void HookBackend::set_external_thread_suspension(bool enabled) noexcept {
-  hoox_memory_set_external_thread_suspension(enabled ? 1 : 0);
-}
-
 FastHookResult HookBackend::install_fast(void* target, void* replacement,
                                          OriginalTrampolineSlot* original_slot) {
   return impl_->install_fast(target, replacement, original_slot);
