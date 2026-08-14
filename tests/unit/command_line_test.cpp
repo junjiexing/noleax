@@ -115,6 +115,13 @@ TEST_CASE("attach and patch expose positive and negative boolean overrides", "[c
   CHECK(attach_false.overrides.injection.unload_on_stop.specified);
   CHECK_FALSE(attach_false.overrides.injection.unload_on_stop.value);
 
+  const auto strict_true = parse({"run", "--strict-buffer", "app"}, current_directory);
+  CHECK(strict_true.overrides.capture.strict_buffer.specified);
+  CHECK(strict_true.overrides.capture.strict_buffer.value);
+  const auto strict_false = parse({"run", "--no-strict-buffer", "app"}, current_directory);
+  CHECK(strict_false.overrides.capture.strict_buffer.specified);
+  CHECK_FALSE(strict_false.overrides.capture.strict_buffer.value);
+
   const auto patch = parse(
       {"patch", "--input", "in.exe", "--output", "out.exe", "--patch-method", "entrypoint-section",
        "--agent-name", "agent.dll", "--allow-break-signature", "--no-verify"},

@@ -16,7 +16,8 @@ inline constexpr std::array<std::byte, 8> kTraceMagic{
     std::byte{'R'}, std::byte{'A'}, std::byte{'C'}, std::byte{'E'},
 };
 inline constexpr std::uint16_t kTraceFormatMajor = 1;
-inline constexpr std::uint16_t kTraceFormatMinor = 3;
+// minor 4 (H4, P0-1): AgentMemory memory-chunk record + BufferConfiguration metadata record.
+inline constexpr std::uint16_t kTraceFormatMinor = 4;
 inline constexpr std::uint16_t kFileHeaderSize = 68;
 inline constexpr std::uint16_t kChunkHeaderSize = 56;
 inline constexpr std::uint32_t kRecordHeaderSize = 8;

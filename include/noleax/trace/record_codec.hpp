@@ -21,6 +21,8 @@ enum class MetadataRecordType : std::uint16_t {  // NOLINT(performance-enum-size
   kCaptureScope = 1,
   kCustomHookDefinition = 2,
   kCustomHookFailure = 3,
+  // H4 (P0-1): the buffer_size → slot conversion, one record per trace (format minor 4).
+  kBufferConfiguration = 4,
 };
 
 enum class EventRecordType : std::uint16_t {  // NOLINT(performance-enum-size)
@@ -56,6 +58,9 @@ enum class EndRecordType : std::uint16_t {  // NOLINT(performance-enum-size)
 enum class MemoryRecordType : std::uint16_t {  // NOLINT(performance-enum-size)
   kCounters = 1,
   kMap = 2,
+  // H4 (P0-1): agent-owned memory breakdown (format minor 4). Optional: readers must
+  // tolerate its absence (older or non-Linux traces never carry it).
+  kAgentMemory = 3,
 };
 
 using EventChunkRecord = std::variant<Event, LossRecord>;
@@ -116,5 +121,15 @@ void append_memory_counters_record(std::vector<std::byte>& chunk_payload,
 void append_memory_map_record(std::vector<std::byte>& chunk_payload, const MemoryMap& map,
                               std::uint32_t maximum_record_size = kDefaultMaximumRecordSize);
 [[nodiscard]] std::optional<MemoryMap> decode_memory_map_record(const RecordView& record);
+
+void append_agent_memory_record(std::vector<std::byte>& chunk_payload, const AgentMemory& memory,
+                                std::uint32_t maximum_record_size = kDefaultMaximumRecordSize);
+[[nodiscard]] std::optional<AgentMemory> decode_agent_memory_record(const RecordView& record);
+
+void append_buffer_configuration_record(
+    std::vector<std::byte>& chunk_payload, const BufferConfiguration& configuration,
+    std::uint32_t maximum_record_size = kDefaultMaximumRecordSize);
+[[nodiscard]] std::optional<BufferConfiguration> decode_buffer_configuration_record(
+    const RecordView& record);
 
 }  // namespace noleax::trace

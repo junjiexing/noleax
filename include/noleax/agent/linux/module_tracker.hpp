@@ -68,6 +68,9 @@ class LinuxModuleTracker final {
   [[nodiscard]] std::uint64_t take_dropped_event_count() noexcept;
   [[nodiscard]] std::size_t queue_capacity() const noexcept;
   [[nodiscard]] std::size_t live_module_count() const noexcept;
+  // Heap footprint estimate of the tracker's storage (live set, initial snapshot, pending
+  // queue), for the H4 agent-memory accounting. Labeled estimate end to end.
+  [[nodiscard]] std::uint64_t estimated_storage_bytes() const noexcept;
 
  private:
   class Implementation;

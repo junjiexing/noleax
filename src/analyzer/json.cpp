@@ -1009,6 +1009,7 @@ void JsonWriter::write_memory(const MemoryAnalysisResult& result) {
 
   std::uint64_t counters_count = 0U;
   std::uint64_t map_count = 0U;
+  std::uint64_t agent_count = 0U;
   bool first = true;
   for (const MemorySnapshot& snapshot : result.snapshots) {
     if (!first) {
@@ -1067,15 +1068,73 @@ void JsonWriter::write_memory(const MemoryAnalysisResult& result) {
       }
       json.raw("]}");
     }
+    if (snapshot.agent.has_value()) {
+      ++agent_count;
+      const auto& agent = *snapshot.agent;
+      const AgentMemoryTotals totals = agent_memory_totals(agent);
+      json.raw(",\"agent\":{\"sample_kind\":");
+      json.string(agent_memory_sample_kind_name(agent.kind));
+      json.raw(",\"reserved_bytes\":");
+      json.unsigned_number(totals.reserved_bytes);
+      json.raw(",\"resident_bytes\":");
+      json.unsigned_number(totals.resident_bytes);
+      json.raw(",\"exact\":");
+      json.boolean(totals.exact);
+      json.raw(",\"categories\":[");
+      bool first_category = true;
+      for (const auto& category : agent.categories) {
+        if (!first_category) {
+          json.raw(",");
+        }
+        first_category = false;
+        json.raw("{\"category\":");
+        json.string(agent_memory_category_name(category.category));
+        json.raw(",\"reserved_bytes\":");
+        json.unsigned_number(category.reserved_bytes);
+        json.raw(",\"resident_bytes\":");
+        json.unsigned_number(category.resident_bytes);
+        json.raw(",\"exact\":");
+        json.boolean((category.flags & noleax::trace::kAgentMemoryCategoryFlagExact) != 0U);
+        json.raw("}");
+      }
+      json.raw("]}");
+      if (snapshot.counters.has_value()) {
+        json.raw(",\"application_estimate_bytes\":");
+        json.unsigned_number(application_memory_estimate(snapshot));
+        json.raw(",\"application_estimate_exact\":");
+        json.boolean(totals.exact);
+      }
+    }
     json.raw("}");
   }
 
-  json.raw("],\"summary\":{\"snapshots\":");
+  json.raw("],");
+  if (result.trace.buffer_configuration.has_value()) {
+    const auto& configuration = *result.trace.buffer_configuration;
+    json.raw("\"buffer_configuration\":{\"requested_bytes\":");
+    json.unsigned_number(configuration.requested_bytes);
+    json.raw(",\"effective_slots\":");
+    json.unsigned_number(configuration.effective_slots);
+    json.raw(",\"event_size\":");
+    json.unsigned_number(configuration.event_size);
+    json.raw(",\"slot_size\":");
+    json.unsigned_number(configuration.slot_size);
+    json.raw(",\"reserved_bytes\":");
+    json.unsigned_number(configuration.reserved_bytes);
+    json.raw(",\"resident_after_init_bytes\":");
+    json.unsigned_number(configuration.resident_after_init_bytes);
+    json.raw(",\"adjusted\":");
+    json.boolean((configuration.flags & noleax::trace::kBufferConfigurationFlagAdjusted) != 0U);
+    json.raw("},");
+  }
+  json.raw("\"summary\":{\"snapshots\":");
   json.unsigned_number(static_cast<std::uint64_t>(result.snapshots.size()));
   json.raw(",\"counter_snapshots\":");
   json.unsigned_number(counters_count);
   json.raw(",\"map_snapshots\":");
   json.unsigned_number(map_count);
+  json.raw(",\"agent_snapshots\":");
+  json.unsigned_number(agent_count);
   json.raw(",");
   write_summary(result.trace);
   json.raw("}}\n");

@@ -17,6 +17,7 @@
 #include "noleax/trace/completeness.hpp"
 #include "noleax/trace/custom_hook.hpp"
 #include "noleax/trace/identifiers.hpp"
+#include "noleax/trace/memory_snapshot.hpp"
 #include "noleax/trace/trace_reader.hpp"
 #include "noleax/trace/trace_writer.hpp"
 #include "noleax/trace/wire_format.hpp"
@@ -34,6 +35,16 @@ struct LinuxTraceWriterApiCounterSnapshot {
   std::uint64_t failed_calls{0U};
   std::uint64_t filtered_calls{0U};
   std::uint64_t dropped_events{0U};
+};
+
+// H4 (P0-1): one capture-start baseline sample, taken by the runtime before (pre-init)
+// or after (post-init) queue/hook/writer creation. Recorded into the trace as the first
+// kMemory records so the startup RSS step is attributable.
+struct LinuxTraceWriterBaseline {
+  std::uint64_t monotonic_ticks{0U};
+  bool has_counters{false};
+  noleax::trace::MemoryCounters counters{};
+  std::vector<noleax::trace::AgentMemoryCategorySample> categories;
 };
 
 // Linux counterpart of RtlAllocateHeapTraceWriterOptions (docs/LINUX_PORT_PLAN.md M3/M4),
@@ -108,6 +119,8 @@ struct LinuxTraceWriterResult {
   std::uint64_t memory_chunks{0U};
   std::uint64_t memory_counters_records{0U};
   std::uint64_t memory_map_records{0U};
+  // H4 (P0-1): AgentMemory records written (baselines + periodic).
+  std::uint64_t memory_agent_records{0U};
   bool statistics_written{false};
   bool end_of_trace_written{false};
   std::string error_message;
@@ -137,6 +150,11 @@ struct LinuxTraceWriterLiveStatus {
   std::uint64_t bytes_written{0U};
   // CLOCK_MONOTONIC nanoseconds of the last successful stream flush; 0 = never flushed.
   std::uint64_t last_flush_monotonic_ns{0U};
+  // H4 (P0-1): agent-owned totals and the event-queue resident bytes at the last memory
+  // snapshot; zero before the first one.
+  std::uint64_t agent_reserved_bytes{0U};
+  std::uint64_t agent_resident_bytes{0U};
+  std::uint64_t event_queue_resident_bytes{0U};
 };
 
 namespace detail {
@@ -189,6 +207,12 @@ class LinuxTraceWriter final {
   // the capture itself continues with the hooks that did install. Call after hook
   // installation, before begin_capture().
   void note_custom_hook_failures(std::vector<noleax::trace::CustomHookFailure> failures);
+  // H4 (P0-1): records the buffer conversion math (metadata chunk) and the two startup
+  // baselines (first kMemory records). Call after hook installation — the post-init
+  // baseline must already include this writer's own estimates — before begin_capture().
+  void note_startup_memory(noleax::trace::BufferConfiguration configuration,
+                           LinuxTraceWriterBaseline baseline_pre_init,
+                           LinuxTraceWriterBaseline baseline_post_init);
   [[nodiscard]] LinuxTraceWriterResult finish();
   // Finalizes the trace on the calling thread when the worker can no longer run
   // (process teardown). Runs the final drain inline without joining or waking the

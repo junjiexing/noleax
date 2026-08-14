@@ -478,6 +478,9 @@ struct CaptureSettings {
   Setting<bool> live;
   Setting<std::chrono::nanoseconds> memory_counters_interval;
   Setting<std::chrono::nanoseconds> memory_map_interval;
+  // H4 (P0-1): refuse the capture when the buffer_size → slot conversion adjusted the
+  // request (capacity cap / power-of-two floor) instead of only warning about it.
+  Setting<bool> strict_buffer;
 };
 
 struct TraceSettings {
@@ -585,6 +588,7 @@ struct CaptureOverrides {
   SettingOverride<bool> live;
   SettingOverride<std::chrono::nanoseconds> memory_counters_interval;
   SettingOverride<std::chrono::nanoseconds> memory_map_interval;
+  SettingOverride<bool> strict_buffer;
 };
 
 struct TraceOverrides {

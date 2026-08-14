@@ -106,13 +106,13 @@ record_version=1：
 
 | chunk | record_type |
 |---|---|
-| metadata | CaptureScope=1、CustomHookDefinition=2（minor 1 起）、CustomHookFailure=3（minor 3 起） |
+| metadata | CaptureScope=1、CustomHookDefinition=2（minor 1 起）、CustomHookFailure=3（minor 3 起）、BufferConfiguration=4（minor 4 起） |
 | stack | StackDefinition=1 |
 | event | HeapCreate=1、HeapDestroy=2、Allocate=3、Reallocate=4、Free=5 |
 | event | VmAllocate=6、VmFree=7、Map=8、Unmap=9、Loss=10 |
 | statistics | CaptureStatistics=1 |
 | end | EndOfTrace=1 |
-| memory | MemoryCounters=1、MemoryMap=2（minor 2 起） |
+| memory | MemoryCounters=1、MemoryMap=2（minor 2 起）、AgentMemory=3（minor 4 起） |
 
 同一 type 的更高 record_version 按未知 record 跳过并标记 partially understood，不能按 V1
 payload 猜测解析。
@@ -158,6 +158,16 @@ reason:module_not_loaded=1(wait_module 超时也归此)、export_not_found=2、f
 invalid_rva=4、wrong_signature=5、image_identity_mismatch=6、backend_unavailable=7、
 other=255。detail 是人读消息。老 minor reader 将该记录按未知 record 跳过;新 reader 在遇到
 记录时自行设置 bit 10,因此即使 EndOfTrace 缺失该 issue 也不会丢。
+
+format minor 4 增加 BufferConfiguration(record_type=4,H4):Linux agent 把
+trace.buffer_size 换算成定长事件槽位时的精确数学,每条 trace 至多一条,位于 metadata
+chunk(紧随 CaptureScope 之后)。payload 固定 56 bytes:requested_bytes uint64(原始请求)、
+effective_slots uint64(换算后的槽位数)、event_size uint64、slot_size uint64(槽位 =
+事件 + sequence 字)、reserved_bytes uint64(= effective_slots × slot_size,映射保留字节)、
+resident_after_init_bytes uint64(初始化后实测驻留字节)、flags uint32(bit0 = adjusted:
+容量上限或 2 幂下取整改变了请求值)、reserved byte[4]。调整同时触发 agent stderr WARNING、
+CaptureStatus 的 buffer-adjusted 标志(capture.strict_buffer 下直接拒绝启动)。老 minor
+reader 将该记录按未知 record 跳过;新 reader 在 memory 模式输出该对象。
 
 ### 7.1 ProcessInfo
 
@@ -562,7 +572,8 @@ final_monotonic_ticks 必须大于等于 FileHeader.monotonic_origin。
 ## 15. Memory snapshot records
 
 format minor 2 增加 memory chunk（chunk_type=7）：agent 的 writer 线程按独立间隔周期采样进程
-内存状态，每次写出包含一到两条 record 的一个 memory chunk。chunk descriptor 不带 event
+内存状态，每次写出包含一到三条 record 的一个 memory chunk（counters、agent、map；minor 4 起
+counters 采样点总是附带一条 AgentMemory）。chunk descriptor 不带 event
 sequence range；reader 按非 event chunk 要求其为空。两种 record 的 ticks 都来自与事件相同的
 单调时钟，由单线程顺序采样，天然非递减；analyzer 校验 ticks 不小于 monotonic_origin 且不回退。
 捕获开始（基线）和正常收尾各对每个启用的采样器补一条记录；DLL_PROCESS_DETACH 收尾路径不补
@@ -591,6 +602,27 @@ reserved byte[2]。
   （kMaximumMemoryMapRegions，约占单 record 1 MiB 上限的 3/4），超出时截断列表并置
   truncated 标志。
 - 聚合计数（committed/reserved/free/largest_free）始终是全量 walk 的结果，不受列表截断影响。
+
+### 15.3 AgentMemory（record_type=3，minor 4 起）
+
+H4（P0-1）：agent 自身占用的内存分类账，随每个 counters 采样点写入同一 memory chunk
+（紧随 MemoryCounters 之后），使 analyzer 能把 process-inclusive RSS 拆成 agent-owned 与
+application 两部分。payload 固定前缀 16 bytes：monotonic_ticks uint64、sample_kind uint8
+（periodic=1、baseline_pre_init=2、baseline_post_init=3）、reserved byte[3]、
+category_count uint32；随后为 category_count 条各 24 bytes 的 category：category uint32、
+flags uint32（bit0 = exact：驻留字节来自专属映射的页级实测；为 0 表示由容器容量推算的
+估算值，所有输出必须标注 estimate）、reserved_bytes uint64、resident_bytes uint64。
+
+- category：event_queue=1（事件队列槽位环，专属匿名映射，exact）、stack_dictionary=2、
+  trace_buffers=3、module_tracker=4（含 writer 的 live 分配/映射簿记）、hook_backend=5、
+  agent_heap=6。reader 必须容忍未知 category id（原样保留，输出标 `unknown-<id>`）。
+- 两个 baseline 各一条，把捕获启动的 RSS 阶跃夹在"queue/hook/writer 创建前/后"两个采样
+  点之间；pre_init 的 category 列表可以为空（agent 尚未注册任何内存）。
+- application 估算 = 同 tick MemoryCounters.working_set_bytes − 本记录 resident 合计
+  （饱和到 0）；仅当所有 category 都 exact 时标注 exact，否则标注 estimate。
+- codec 校验：category 数 ≤ 64，每条 resident ≤ reserved。老 minor reader 将整个 memory
+  chunk 按未知 chunk 跳过；minor 2/3 的 reader 将本记录按未知 record 跳过并标记
+  partially understood。
 
 ## 16. Compression
 
@@ -641,7 +673,7 @@ fixture，再用正式 TraceReader 和 decoder 验证，不维护第二套 wire-
 
 - chunk 固定按 metadata、event、memory、statistics、end 排列；后四类在没有对应 record 时省略。
 - metadata 当前包含一个 CaptureScope；event chunk 按调用顺序保存 Event 和 Loss。
-- memory chunk 按调用顺序保存 MemoryCounters 和 MemoryMap，其 ticks 同样不得回退。
+- memory chunk 按调用顺序保存 MemoryCounters、MemoryMap 和 AgentMemory，其 ticks 同样不得回退。
 - event sequence 必须严格递增，monotonic ticks 不得回退。
 - event chunk 的 sequence 范围覆盖事件和具有 sequence range 的 Loss；正常结束的最终 sequence
   和 ticks 自动覆盖所有事件及 Loss 范围。

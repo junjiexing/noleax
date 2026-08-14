@@ -221,6 +221,14 @@ class EventStreamDecoder {
         decoded_custom_hook_failures.push_back(std::move(*custom_hook_failure));
         continue;
       }
+      auto buffer_configuration = noleax::trace::decode_buffer_configuration_record(*record);
+      if (buffer_configuration.has_value()) {
+        if (result_.buffer_configuration.has_value()) {
+          throw TraceAnalysisError{"trace contains more than one BufferConfiguration record"};
+        }
+        result_.buffer_configuration = *buffer_configuration;
+        continue;
+      }
       skipped_unknown = true;
     }
 
@@ -478,6 +486,7 @@ class EventStreamDecoder {
     noleax::trace::RecordCursor cursor{payload, maximum_record_size_};
     std::vector<noleax::trace::MemoryCounters> counters_records;
     std::vector<noleax::trace::MemoryMap> map_records;
+    std::vector<noleax::trace::AgentMemory> agent_records;
     bool skipped_unknown = false;
     std::uint64_t previous_ticks = previous_memory_ticks_;
     while (const auto record = cursor.next()) {
@@ -503,6 +512,17 @@ class EventStreamDecoder {
         map_records.push_back(std::move(*map));
         continue;
       }
+      if (auto agent = noleax::trace::decode_agent_memory_record(*record)) {
+        if (agent->monotonic_ticks < result_.file_header.monotonic_origin) {
+          throw TraceAnalysisError{"agent memory monotonic time precedes the trace origin"};
+        }
+        if (agent->monotonic_ticks < previous_ticks) {
+          throw TraceAnalysisError{"memory record monotonic ticks move backwards"};
+        }
+        previous_ticks = agent->monotonic_ticks;
+        agent_records.push_back(std::move(*agent));
+        continue;
+      }
       skipped_unknown = true;
     }
     if (skipped_unknown) {
@@ -519,6 +539,12 @@ class EventStreamDecoder {
       checked_increment(result_.memory_map_count, "memory map");
       if (callbacks_.on_memory_map) {
         callbacks_.on_memory_map(map);
+      }
+    }
+    for (const auto& agent : agent_records) {
+      checked_increment(result_.memory_agent_count, "agent memory");
+      if (callbacks_.on_agent_memory) {
+        callbacks_.on_agent_memory(agent);
       }
     }
   }

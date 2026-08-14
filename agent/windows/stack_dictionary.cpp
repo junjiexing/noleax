@@ -148,6 +148,10 @@ std::size_t RawStackDictionary::capacity() const noexcept { return entries_.size
 
 std::uint64_t RawStackDictionary::segment_count() const noexcept { return segment_count_; }
 
+std::size_t RawStackDictionary::storage_bytes() const noexcept {
+  return entries_.size() * sizeof(Entry) + buckets_.size() * sizeof(std::uint32_t);
+}
+
 void RawStackDictionary::reset_segment() noexcept {
   std::fill(buckets_.begin(), buckets_.end(), kEmptyIndex);
   entry_count_ = 0U;
@@ -197,6 +201,10 @@ std::size_t NormalizedStackDictionary::size() const noexcept { return entry_coun
 std::size_t NormalizedStackDictionary::capacity() const noexcept { return entries_.size(); }
 
 std::uint64_t NormalizedStackDictionary::segment_count() const noexcept { return segment_count_; }
+
+std::size_t NormalizedStackDictionary::storage_bytes() const noexcept {
+  return entries_.size() * sizeof(Entry) + buckets_.size() * sizeof(std::uint32_t);
+}
 
 void NormalizedStackDictionary::reset_segment() noexcept {
   std::fill(buckets_.begin(), buckets_.end(), kEmptyIndex);

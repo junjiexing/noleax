@@ -36,6 +36,9 @@ inline constexpr std::size_t kPerApiStatisticsSize = 48U;
 inline constexpr std::size_t kMemoryCountersPayloadSize = 48U;
 inline constexpr std::size_t kMemoryMapFixedPayloadSize = 48U;
 inline constexpr std::size_t kMemoryMapRegionPayloadSize = 24U;
+inline constexpr std::size_t kAgentMemoryFixedPayloadSize = 16U;
+inline constexpr std::size_t kAgentMemoryCategoryPayloadSize = 24U;
+inline constexpr std::size_t kBufferConfigurationPayloadSize = 56U;
 
 template <typename... Visitors>
 struct Overloaded : Visitors... {
@@ -1305,6 +1308,131 @@ std::optional<MemoryMap> decode_memory_map_record(const RecordView& record) {
     throw RecordCodecError{"invalid MemoryMap record: " + std::string{error.what()}};
   }
   return map;
+}
+
+void append_agent_memory_record(std::vector<std::byte>& chunk_payload, const AgentMemory& memory,
+                                std::uint32_t maximum_record_size) {
+  validate_agent_memory(memory);
+  if (maximum_record_size < kRecordHeaderSize + kAgentMemoryFixedPayloadSize ||
+      memory.categories.size() >
+          (maximum_record_size - kRecordHeaderSize - kAgentMemoryFixedPayloadSize) /
+              kAgentMemoryCategoryPayloadSize) {
+    throw RecordCodecError{"agent memory exceeds the configured record size limit"};
+  }
+
+  std::vector<std::byte> payload;
+  payload.reserve(kAgentMemoryFixedPayloadSize +
+                  memory.categories.size() * kAgentMemoryCategoryPayloadSize);
+  append_u64(payload, memory.monotonic_ticks);
+  append_u8(payload, static_cast<std::uint8_t>(memory.kind));
+  append_u8(payload, 0U);
+  append_u16(payload, 0U);
+  append_u32(payload, static_cast<std::uint32_t>(memory.categories.size()));
+  for (const AgentMemoryCategorySample& category : memory.categories) {
+    append_u32(payload, static_cast<std::uint32_t>(category.category));
+    append_u32(payload, category.flags);
+    append_u64(payload, category.reserved_bytes);
+    append_u64(payload, category.resident_bytes);
+  }
+  append_record(chunk_payload, static_cast<std::uint16_t>(MemoryRecordType::kAgentMemory),
+                kRecordVersion, payload, maximum_record_size);
+}
+
+std::optional<AgentMemory> decode_agent_memory_record(const RecordView& record) {
+  if (record.type != static_cast<std::uint16_t>(MemoryRecordType::kAgentMemory) ||
+      record.version != kRecordVersion) {
+    return std::nullopt;
+  }
+  if (record.payload.size() < kAgentMemoryFixedPayloadSize) {
+    throw RecordCodecError{"agent memory payload is truncated"};
+  }
+  PayloadReader reader{record.payload};
+  AgentMemory memory;
+  memory.monotonic_ticks = reader.read_u64();
+  switch (reader.read_u8()) {
+    case static_cast<std::uint8_t>(AgentMemorySampleKind::kPeriodic):
+      memory.kind = AgentMemorySampleKind::kPeriodic;
+      break;
+    case static_cast<std::uint8_t>(AgentMemorySampleKind::kBaselinePreInit):
+      memory.kind = AgentMemorySampleKind::kBaselinePreInit;
+      break;
+    case static_cast<std::uint8_t>(AgentMemorySampleKind::kBaselinePostInit):
+      memory.kind = AgentMemorySampleKind::kBaselinePostInit;
+      break;
+    default:
+      throw RecordCodecError{"agent memory sample kind is not supported"};
+  }
+  reader.expect_zeros(3U);
+  const std::uint32_t category_count = reader.read_u32();
+  if (category_count > kMaximumAgentMemoryCategories ||
+      kAgentMemoryFixedPayloadSize +
+              static_cast<std::size_t>(category_count) * kAgentMemoryCategoryPayloadSize !=
+          record.payload.size()) {
+    throw RecordCodecError{"agent memory category count does not match the record payload"};
+  }
+  memory.categories.reserve(category_count);
+  for (std::uint32_t index = 0U; index < category_count; ++index) {
+    AgentMemoryCategorySample category;
+    // Unknown category ids are preserved, not rejected: a newer agent may add categories at
+    // this same record version, and the analyzer labels them "unknown-<id>".
+    category.category = static_cast<AgentMemoryCategory>(reader.read_u32());
+    category.flags = reader.read_u32();
+    category.reserved_bytes = reader.read_u64();
+    category.resident_bytes = reader.read_u64();
+    memory.categories.push_back(category);
+  }
+  reader.expect_done();
+  try {
+    validate_agent_memory(memory);
+  } catch (const MemorySnapshotValidationError& error) {
+    throw RecordCodecError{"invalid AgentMemory record: " + std::string{error.what()}};
+  }
+  return memory;
+}
+
+void append_buffer_configuration_record(std::vector<std::byte>& chunk_payload,
+                                        const BufferConfiguration& configuration,
+                                        std::uint32_t maximum_record_size) {
+  validate_buffer_configuration(configuration);
+  std::vector<std::byte> payload;
+  payload.reserve(kBufferConfigurationPayloadSize);
+  append_u64(payload, configuration.requested_bytes);
+  append_u64(payload, configuration.effective_slots);
+  append_u64(payload, configuration.event_size);
+  append_u64(payload, configuration.slot_size);
+  append_u64(payload, configuration.reserved_bytes);
+  append_u64(payload, configuration.resident_after_init_bytes);
+  append_u32(payload, configuration.flags);
+  append_zeros(payload, 4U);
+  append_record(chunk_payload, static_cast<std::uint16_t>(MetadataRecordType::kBufferConfiguration),
+                kRecordVersion, payload, maximum_record_size);
+}
+
+std::optional<BufferConfiguration> decode_buffer_configuration_record(const RecordView& record) {
+  if (record.type != static_cast<std::uint16_t>(MetadataRecordType::kBufferConfiguration) ||
+      record.version != kRecordVersion) {
+    return std::nullopt;
+  }
+  if (record.payload.size() != kBufferConfigurationPayloadSize) {
+    throw RecordCodecError{"buffer configuration payload has an invalid size"};
+  }
+  PayloadReader reader{record.payload};
+  BufferConfiguration configuration;
+  configuration.requested_bytes = reader.read_u64();
+  configuration.effective_slots = reader.read_u64();
+  configuration.event_size = reader.read_u64();
+  configuration.slot_size = reader.read_u64();
+  configuration.reserved_bytes = reader.read_u64();
+  configuration.resident_after_init_bytes = reader.read_u64();
+  configuration.flags = reader.read_u32();
+  reader.expect_zeros(4U);
+  reader.expect_done();
+  try {
+    validate_buffer_configuration(configuration);
+  } catch (const MemorySnapshotValidationError& error) {
+    throw RecordCodecError{"invalid BufferConfiguration record: " + std::string{error.what()}};
+  }
+  return configuration;
 }
 
 }  // namespace noleax::trace

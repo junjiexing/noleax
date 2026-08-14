@@ -69,11 +69,18 @@ summary 分别显示候选数、截至 c 已结束数、最终过滤数、outsta
 `trace-end`），但只有时间界有效。`snapshots:` 段每个采样 tick 一行：相对时间后跟该 tick 到期的
 采样字段——计数器为 `working-set=`、`peak-working-set=`、`private=`、`commit=`，map 聚合为
 `committed=`、`reserved=`、`free=`、`largest-free=`、`regions=`，列表截断时追加 `truncated`；
-该 tick 未到期的采样器对应字段整组留空。区域明细不进 console。
+agent 采样（H4）追加 `agent-resident=`、`agent-reserved=`（agent 自有内存的分类合计），基线
+样本另追加 `baseline=pre-init`/`baseline=post-init`；该 tick 未到期的采样器对应字段整组留空。
+区域明细不进 console。同一 tick 同时有计数器和 agent 采样时追加 `application=NB (estimate)`
+——working set 减去 agent 驻留合计的应用自有部分；只有每个 agent 分类都精确测量时才标注
+`(exact)`，否则恒为 `(estimate)`。
 
 `peaks:` 段给出各计数器的峰值及其首次出现的采样 tick（working-set、private、commit 来自计数器
 采样，committed、reserved 来自 map 采样）；相应采样器从未出现时该段显示 `none`。summary 依次列出
-窗口内的 snapshots、counter-snapshots、map-snapshots 计数与公共 trace 摘要。
+窗口内的 snapshots、counter-snapshots、map-snapshots、agent-snapshots 计数与公共 trace 摘要。
+trace 携带 BufferConfiguration 记录时 summary 另有一行 `buffer:`，给出
+requested/slots/slot/event/reserved/resident-after-init 的精确槽位换算和 `adjusted=` 标记
+（请求字节数被容量上限或 2 的幂向下取整移动时为 true）。
 
 ## 6. 完整性警告
 
@@ -114,7 +121,10 @@ status: state=capturing observed=1442 written=1442 filtered=0 dropped=0 queued=0
 字段：`state`（idle/starting/capturing/drained/finalized/failed）、守恒计数
 `observed/written/filtered/dropped`、`queued=占用/容量`、`high_water`（消费侧采样的队列占用高
 水位）、`consumed`（累计出队数）、`bytes`（writer 已写字节）、`last_flush_age_ms`（距上次
-flush；从未 flush 显示 `last_flush=never`）。
+flush；从未 flush 显示 `last_flush=never`）。H4 起追加 buffer 与 agent 归属字段（队列建立后
+出现）：`buffer=请求B->保留B slots=槽位数`、`buffer_resident`（槽位环驻留字节，取最近一次内存
+快照）、`agent_resident`（全部 agent-owned 类别的驻留合计），以及请求被换算调整时的
+`buffer=adjusted` 标志。
 
 ## 7. 颜色
 

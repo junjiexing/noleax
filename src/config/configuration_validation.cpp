@@ -73,6 +73,8 @@ void require_default_capture(const Configuration& configuration, const Configura
                   operation);
   require_default(configuration.capture.memory_map_interval, defaults.capture.memory_map_interval,
                   "capture.memory_map_interval", operation);
+  require_default(configuration.capture.strict_buffer, defaults.capture.strict_buffer,
+                  "capture.strict_buffer", operation);
 }
 
 void require_default_trace(const Configuration& configuration, const Configuration& defaults,

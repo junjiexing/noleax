@@ -45,6 +45,7 @@ duration = ""
 live = false
 memory_counters_interval = "1s"
 memory_map_interval = "1s"
+strict_buffer = false
 
 [trace]
 path = "example.nlx"
@@ -273,6 +274,11 @@ CLI subcommand存在时覆盖 operation。若 CLI 和配置均缺失，显示顶
 - compression=zstd 时 V1 接受 0（codec 默认，即 level 1）或 1。
 - capture.memory_counters_interval / capture.memory_map_interval 为 duration，`0s` 关闭对应
   内存快照采样器，上限 1h；仅 run/attach 可非默认。
+- capture.strict_buffer（H4）：Linux agent 把 trace.buffer_size 换算为定长事件槽位
+  （`bit_floor(min(buffer_size / 648, 2^24))`，槽位 = 事件 648B + sequence 8B）。换算调整
+  （容量上限或 2 幂下取整改变了请求值）总是打印 WARNING 并把精确槽位数学写入启动日志、
+  CaptureStatus 与 trace 的 BufferConfiguration metadata 记录；strict_buffer = true 时
+  直接拒绝启动（稳定错误码 8，agent start error）。Windows agent 暂不执行该检查。
 - trace.path 的父目录必须存在或可创建。
 - custom_hooks：alloc 与 free 必填，每角色的定位互斥（导出名 / `_pdb` / `_sym` / `_rva`
   四选一；`*_pdb` 仅 Windows、`*_sym` 仅 Linux，错配平台即报错），参数位 0–7，legacy 共享键

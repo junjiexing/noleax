@@ -233,6 +233,76 @@ TEST_CASE("standalone max_stack_depth limits recorded stacks", "[linux][standalo
   std::filesystem::remove(stderr_capture, error);
 }
 
+TEST_CASE("standalone capture logs and records the buffer slot math", "[linux][standalone]") {
+  // H4 (P0-1): the default 16 MiB buffer floors to 16384 slots — an adjustment that must
+  // be visible in the startup log and the trace's BufferConfiguration metadata record.
+  const auto config = unique_path("config.toml");
+  const auto trace = unique_path("trace.nlx");
+  const auto stderr_capture = unique_path("stderr.txt");
+  write_config(config, "linux-glibc-heap", trace);
+
+  const StandaloneRun run = run_standalone(config, stderr_capture);
+  INFO(run.agent_stderr);
+  REQUIRE(run.exit_code == 42);
+  CHECK(run.agent_stderr.find("WARNING: trace buffer_size=16777216B was adjusted to 16384 "
+                              "slots") != std::string::npos);
+  CHECK(run.agent_stderr.find("trace event buffer: requested=16777216B effective_slots=16384 "
+                              "slot=656B event=648B reserved=10747904B") != std::string::npos);
+
+  std::ifstream input{trace, std::ios::binary};
+  REQUIRE(input);
+  const auto result = noleax::analyzer::analyze_event_stream(input);
+  REQUIRE(result.buffer_configuration.has_value());
+  CHECK(result.buffer_configuration->requested_bytes == 16U * 1024U * 1024U);
+  CHECK(result.buffer_configuration->effective_slots == 16'384U);
+  CHECK(result.buffer_configuration->event_size == 648U);
+  CHECK(result.buffer_configuration->slot_size == 656U);
+  CHECK(result.buffer_configuration->reserved_bytes == 16'384ULL * 656U);
+  CHECK((result.buffer_configuration->flags & noleax::trace::kBufferConfigurationFlagAdjusted) !=
+        0U);
+  // The two startup baselines are the first agent memory records of the trace.
+  std::vector<noleax::trace::AgentMemorySampleKind> kinds;
+  std::ifstream input_again{trace, std::ios::binary};
+  noleax::analyzer::EventStreamCallbacks callbacks;
+  callbacks.on_agent_memory = [&kinds](const noleax::trace::AgentMemory& agent) {
+    kinds.push_back(agent.kind);
+  };
+  static_cast<void>(noleax::analyzer::analyze_event_stream(input_again, callbacks));
+  REQUIRE(kinds.size() >= 2U);
+  CHECK(kinds[0] == noleax::trace::AgentMemorySampleKind::kBaselinePreInit);
+  CHECK(kinds[1] == noleax::trace::AgentMemorySampleKind::kBaselinePostInit);
+
+  std::error_code error;
+  std::filesystem::remove(config, error);
+  std::filesystem::remove(trace, error);
+  std::filesystem::remove(stderr_capture, error);
+}
+
+TEST_CASE("standalone strict_buffer rejects an adjusted buffer with a stable error",
+          "[linux][standalone]") {
+  // H4 (P0-1): 15 MiB is not a power-of-two slot count, so strict mode refuses the
+  // capture with the dedicated error and the target runs on undisturbed.
+  const auto config = unique_path("config.toml");
+  const auto trace = unique_path("trace.nlx");
+  const auto stderr_capture = unique_path("stderr.txt");
+  write_config(config, "linux-glibc-heap", trace, "strict_buffer = true\n",
+               "buffer_size = \"15MiB\"\n");
+
+  const StandaloneRun run = run_standalone(config, stderr_capture);
+  INFO(run.agent_stderr);
+  CHECK(run.exit_code == 42);
+  CHECK(run.agent_stderr.find("WARNING: trace buffer_size=15728640B was adjusted") !=
+        std::string::npos);
+  CHECK(run.agent_stderr.find("trace.buffer_size was adjusted by the capacity cap / "
+                              "power-of-two floor and capture.strict_buffer is set") !=
+        std::string::npos);
+  std::error_code error;
+  CHECK(!std::filesystem::exists(trace, error));
+
+  std::filesystem::remove(config, error);
+  std::filesystem::remove(stderr_capture, error);
+}
+
 TEST_CASE("standalone min_size filters small allocations", "[linux][standalone]") {
   const auto baseline_config = unique_path("config.toml");
   const auto baseline_trace = unique_path("trace.nlx");
@@ -350,7 +420,19 @@ TEST_CASE("standalone virtual-memory capture tolerates concurrent address reuse"
   const std::string agent_stderr{std::istreambuf_iterator<char>{stderr_stream},
                                  std::istreambuf_iterator<char>{}};
   INFO(agent_stderr);
-  CHECK(agent_stderr.empty());
+  // The H4 buffer transparency lines are expected startup output; anything beyond them
+  // is a warning or error and still fails the test. (Each fprintf is one unwrapped line.)
+  std::string unexpected_stderr;
+  std::istringstream stderr_lines{agent_stderr};
+  std::string line;
+  while (std::getline(stderr_lines, line)) {
+    if (line.find("noleax-agent: trace event buffer:") == std::string::npos &&
+        line.find("noleax-agent: WARNING: trace buffer_size=") == std::string::npos) {
+      unexpected_stderr += line;
+      unexpected_stderr += '\n';
+    }
+  }
+  CHECK(unexpected_stderr.empty());
 
   std::error_code error;
   std::filesystem::remove(config, error);

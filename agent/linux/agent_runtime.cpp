@@ -26,12 +26,14 @@
 #include <array>
 #include <atomic>
 #include <bit>
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <new>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -40,9 +42,11 @@
 
 #include "noleax/agent/hook_backend.hpp"
 #include "noleax/agent/hook_guard.hpp"
+#include "noleax/agent/linux/agent_memory.hpp"
 #include "noleax/agent/linux/bootstrap.hpp"
 #include "noleax/agent/linux/custom_symbol_hooks.hpp"
 #include "noleax/agent/linux/glibc_heap_hooks.hpp"
+#include "noleax/agent/linux/memory_snapshot.hpp"
 #include "noleax/agent/linux/module_tracker.hpp"
 #include "noleax/agent/linux/trace_writer.hpp"
 #include "noleax/agent/linux/virtual_memory_hooks.hpp"
@@ -62,6 +66,8 @@ using namespace std::chrono_literals;
 std::atomic<bool> bootstrap_started{false};
 
 // Alias the wire-contract codes once; the controller maps them to its failure kinds.
+using noleax::ipc::kAgentStartErrorAgentMemory;
+using noleax::ipc::kAgentStartErrorBufferAdjusted;
 using noleax::ipc::kAgentStartErrorGeneric;
 using noleax::ipc::kAgentStartErrorHookInstall;
 using noleax::ipc::kAgentStartErrorTraceWriter;
@@ -242,29 +248,76 @@ class LinuxCaptureRuntime {
     retain_patches_on_finalize_ = request.capture_kind == noleax::ipc::CaptureKind::kAttach;
 
     const std::uint64_t origin = monotonic_now_ns();
+
+    // H4 (P0-1) baseline 1/2: process + agent-owned memory before any capture component
+    // exists; baseline 2/2 lands after queue/hook/writer creation. Both are recorded
+    // into the trace so the startup RSS step is attributable.
+    noleax::agent::linux::LinuxTraceWriterBaseline baseline_pre;
+    baseline_pre.monotonic_ticks = monotonic_now_ns();
+    baseline_pre.has_counters =
+        noleax::agent::linux::capture_memory_counters(baseline_pre.counters);
+    noleax::agent::linux::AgentMemoryRegistry::instance().snapshot(baseline_pre.categories);
+
     tracker_ = std::make_unique<noleax::agent::linux::LinuxModuleTracker>(origin);
     backend_ = std::make_unique<noleax::agent::HookBackend>();
 
-    constexpr std::uint64_t kMaximumCapacity = 1U << 24U;
-    const std::uint64_t requested = (std::max)(
-        std::uint64_t{2U}, request.buffer_size / sizeof(noleax::agent::linux::LinuxHeapEvent));
-    const auto capacity =
-        static_cast<std::size_t>(std::bit_floor((std::min)(requested, kMaximumCapacity)));
-    if (want_heap) {
-      heap_hooks_ = std::make_unique<noleax::agent::linux::GlibcHeapHooks>(
-          *backend_, capacity, request.maximum_stack_depth, request.minimum_capture_size);
-    }
-    if (want_vm) {
-      // linux-native merges both families into the heap-owned queue (the owner coordinates
-      // queue lifecycle, mirroring the Windows profile orchestration).
-      if (heap_hooks_ != nullptr) {
-        vm_hooks_ = std::make_unique<noleax::agent::linux::VirtualMemoryHooks>(
-            *backend_, heap_hooks_->event_queue(), request.maximum_stack_depth,
-            request.minimum_capture_size);
-      } else {
-        vm_hooks_ = std::make_unique<noleax::agent::linux::VirtualMemoryHooks>(
-            *backend_, capacity, request.maximum_stack_depth, request.minimum_capture_size);
+    // H4 (P0-1): the buffer_size → slot conversion is no longer silent. The exact math
+    // goes to stderr, CaptureStatus, and a BufferConfiguration metadata record; an
+    // adjustment warns, and capture.strict_buffer refuses the capture outright.
+    const noleax::agent::linux::EventQueuePlan queue_plan =
+        noleax::agent::linux::plan_event_queue(request.buffer_size);
+    buffer_configuration_ = queue_plan.configuration;
+    if ((buffer_configuration_.flags & noleax::trace::kBufferConfigurationFlagAdjusted) != 0U) {
+      std::fprintf(stderr,
+                   "noleax-agent: WARNING: trace buffer_size=%lluB was adjusted to %llu slots "
+                   "(%lluB reserved: slot=%lluB, event=%lluB) by the capacity cap / power-of-two "
+                   "floor\n",
+                   static_cast<unsigned long long>(buffer_configuration_.requested_bytes),
+                   static_cast<unsigned long long>(buffer_configuration_.effective_slots),
+                   static_cast<unsigned long long>(buffer_configuration_.reserved_bytes),
+                   static_cast<unsigned long long>(buffer_configuration_.slot_size),
+                   static_cast<unsigned long long>(buffer_configuration_.event_size));
+      if (request.strict_buffer) {
+        start_error_ = noleax::ipc::ErrorResponse{
+            kAgentStartErrorBufferAdjusted, 0U,
+            "trace.buffer_size was adjusted by the capacity cap / power-of-two floor and "
+            "capture.strict_buffer is set"};
+        state_ = noleax::ipc::AgentState::kFailed;
+        return false;
       }
+    }
+    try {
+      if (want_heap) {
+        heap_hooks_ = std::make_unique<noleax::agent::linux::GlibcHeapHooks>(
+            *backend_, queue_plan.capacity, request.maximum_stack_depth,
+            request.minimum_capture_size);
+      }
+      if (want_vm) {
+        // linux-native merges both families into the heap-owned queue (the owner coordinates
+        // queue lifecycle, mirroring the Windows profile orchestration).
+        if (heap_hooks_ != nullptr) {
+          vm_hooks_ = std::make_unique<noleax::agent::linux::VirtualMemoryHooks>(
+              *backend_, heap_hooks_->event_queue(), request.maximum_stack_depth,
+              request.minimum_capture_size);
+        } else {
+          vm_hooks_ = std::make_unique<noleax::agent::linux::VirtualMemoryHooks>(
+              *backend_, queue_plan.capacity, request.maximum_stack_depth,
+              request.minimum_capture_size);
+        }
+      }
+    } catch (const noleax::agent::linux::AgentMemoryError& error) {
+      start_error_ = noleax::ipc::ErrorResponse{
+          kAgentStartErrorAgentMemory, error.system_error(),
+          std::string{"cannot allocate the event queue: "} + error.what()};
+      state_ = noleax::ipc::AgentState::kFailed;
+      return false;
+    } catch (const std::bad_alloc&) {
+      // No bad_alloc escapes into target code: the controller gets a stable code.
+      start_error_ = noleax::ipc::ErrorResponse{kAgentStartErrorAgentMemory,
+                                                static_cast<std::uint32_t>(ENOMEM),
+                                                "agent allocation failed during capture setup"};
+      state_ = noleax::ipc::AgentState::kFailed;
+      return false;
     }
     noleax::agent::linux::LinuxHeapEventQueue& event_queue =
         heap_hooks_ != nullptr ? heap_hooks_->event_queue() : vm_hooks_->event_queue();
@@ -334,6 +387,63 @@ class LinuxCaptureRuntime {
     }
     install_exit_hooks();
 
+    // H4 (P0-1): with every capture component in place, publish the remaining estimate
+    // categories, measure the queue ring's post-init residency, take baseline 2/2, and
+    // hand the whole startup accounting to the writer (BufferConfiguration metadata
+    // record + the two baseline kMemory records). The block runs with the hooks live,
+    // so its own bookkeeping allocations are internal-thread work, never business events.
+    {
+      const noleax::agent::InternalThreadScope internal_scope;
+      const std::uint64_t hook_count =
+          static_cast<std::uint64_t>(noleax::agent::linux::kLinuxHookRegistry.size()) +
+          (custom_hooks_ != nullptr ? static_cast<std::uint64_t>(custom_hooks_->point_count())
+                                    : 0U);
+      noleax::agent::linux::AgentMemoryRegistry& registry =
+          noleax::agent::linux::AgentMemoryRegistry::instance();
+      registry.set_estimate(
+          noleax::trace::AgentMemoryCategory::kHookBackend,
+          noleax::agent::linux::kHookBackendBaseEstimateBytes +
+              hook_count * noleax::agent::linux::kHookBackendPerHookEstimateBytes,
+          noleax::agent::linux::kHookBackendBaseEstimateBytes +
+              hook_count * noleax::agent::linux::kHookBackendPerHookEstimateBytes);
+      registry.set_estimate(noleax::trace::AgentMemoryCategory::kAgentHeap,
+                            noleax::agent::linux::kAgentHeapReservedEstimateBytes,
+                            noleax::agent::linux::kAgentHeapResidentEstimateBytes);
+      // The writer folds its live bookkeeping maps into this category on every tick; the
+      // baseline gets the tracker's own storage.
+      const std::uint64_t tracker_bytes = tracker_->estimated_storage_bytes();
+      registry.set_estimate(noleax::trace::AgentMemoryCategory::kModuleTracker, tracker_bytes,
+                            tracker_bytes);
+      noleax::agent::linux::LinuxTraceWriterBaseline baseline_post;
+      baseline_post.monotonic_ticks = monotonic_now_ns();
+      baseline_post.has_counters =
+          noleax::agent::linux::capture_memory_counters(baseline_post.counters);
+      registry.snapshot(baseline_post.categories);
+      for (const noleax::trace::AgentMemoryCategorySample& category : baseline_post.categories) {
+        if (category.category == noleax::trace::AgentMemoryCategory::kEventQueue) {
+          buffer_configuration_.resident_after_init_bytes = category.resident_bytes;
+        }
+      }
+      // The full slot math, always: this line is the startup-log half of the H4
+      // transparency requirement (the trace half is the BufferConfiguration record).
+      std::fprintf(
+          stderr,
+          "noleax-agent: trace event buffer: requested=%lluB effective_slots=%llu "
+          "slot=%lluB event=%lluB reserved=%lluB resident_after_init=%lluB "
+          "adjusted=%s\n",
+          static_cast<unsigned long long>(buffer_configuration_.requested_bytes),
+          static_cast<unsigned long long>(buffer_configuration_.effective_slots),
+          static_cast<unsigned long long>(buffer_configuration_.slot_size),
+          static_cast<unsigned long long>(buffer_configuration_.event_size),
+          static_cast<unsigned long long>(buffer_configuration_.reserved_bytes),
+          static_cast<unsigned long long>(buffer_configuration_.resident_after_init_bytes),
+          (buffer_configuration_.flags & noleax::trace::kBufferConfigurationFlagAdjusted) != 0U
+              ? "yes"
+              : "no");
+      writer_->note_startup_memory(buffer_configuration_, std::move(baseline_pre),
+                                   std::move(baseline_post));
+    }
+
     try {
       writer_->begin_capture();
     } catch (const noleax::trace::TraceWriteError& error) {
@@ -361,6 +471,17 @@ class LinuxCaptureRuntime {
     noleax::ipc::CaptureStatus status;
     status.state = state_;
     status.flags = status_flags_.load(std::memory_order_acquire);
+    if (buffer_configuration_.effective_slots != 0U) {
+      // H4 (P0-1): the buffer conversion math and the last sampled agent-owned totals.
+      status.buffer_requested_bytes = buffer_configuration_.requested_bytes;
+      status.buffer_effective_slots = buffer_configuration_.effective_slots;
+      status.buffer_slot_bytes = buffer_configuration_.slot_size;
+      status.buffer_reserved_bytes = buffer_configuration_.reserved_bytes;
+      status.buffer_resident_bytes = buffer_configuration_.resident_after_init_bytes;
+      if ((buffer_configuration_.flags & noleax::trace::kBufferConfigurationFlagAdjusted) != 0U) {
+        status.flags |= noleax::ipc::kCaptureStatusFlagBufferAdjusted;
+      }
+    }
     if (event_queue_ != nullptr) {
       status.queued_events = event_queue_->occupancy();
       status.queue_capacity = event_queue_->capacity();
@@ -371,6 +492,11 @@ class LinuxCaptureRuntime {
       const noleax::agent::linux::LinuxTraceWriterLiveStatus live = writer_->live_status();
       status.bytes_written = live.bytes_written;
       status.last_flush_monotonic_ns = live.last_flush_monotonic_ns;
+      status.agent_reserved_bytes = live.agent_reserved_bytes;
+      status.agent_resident_bytes = live.agent_resident_bytes;
+      if (live.event_queue_resident_bytes != 0U) {
+        status.buffer_resident_bytes = live.event_queue_resident_bytes;
+      }
     }
     if (writer_ != nullptr && state_ != noleax::ipc::AgentState::kCapturing) {
       const auto result = writer_result_;
@@ -597,6 +723,9 @@ class LinuxCaptureRuntime {
   // kCaptureStatusFlag* mask reported through CaptureStatus::flags.
   std::atomic<std::uint32_t> status_flags_{0U};
   noleax::ipc::ErrorResponse start_error_{};
+  // H4 (P0-1): the buffer conversion math of the active capture (effective_slots != 0
+  // once start() planned the queue); surfaced in CaptureStatus and the trace metadata.
+  noleax::trace::BufferConfiguration buffer_configuration_{};
   // Set from StartCaptureRequest::capture_kind: attach captures keep their patches on
   // finalize (no safe live unpatch outside the ptrace stop window); launch captures
   // go through the physical teardown.
@@ -855,6 +984,7 @@ bool session_bootstrap(std::string_view socket_name_without_nul,
       break;
   }
   request.compression_level = configuration.trace.compression_level.value;
+  request.strict_buffer = configuration.capture.strict_buffer.value;
   if (configuration.trace.path.value.has_value()) {
     const auto utf8 = configuration.trace.path.value->generic_u8string();
     request.trace_path_utf8 = std::string{utf8.begin(), utf8.end()};
@@ -876,7 +1006,8 @@ bool session_bootstrap(std::string_view socket_name_without_nul,
 
 // Standalone mode honors a fixed subset of the configuration (see
 // docs/LINUX_LAUNCH_INJECTION.md): [capture] hook_profile/max_stack_depth/min_size/
-// duration/memory_counters_interval/memory_map_interval, [trace] path/buffer_size/
+// duration/memory_counters_interval/memory_map_interval/strict_buffer, [trace] path/
+// buffer_size/
 // max_file_size/flush_interval/compression/compression_level, and [[custom_hooks]].
 // Anything else with a non-default value would be silently ignored, so it is rejected up
 // front. Field names only — never values — so diagnostics cannot leak configured paths or

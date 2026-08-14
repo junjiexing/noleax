@@ -1416,6 +1416,7 @@ class InterruptHandlerGuard final {
   const auto trace_utf8 = std::filesystem::absolute(trace_path).generic_u8string();
   capture.start.trace_path_utf8 = std::string{trace_utf8.begin(), trace_utf8.end()};
   capture.start.unload_on_stop = configuration.injection.unload_on_stop.value;
+  capture.start.strict_buffer = configuration.capture.strict_buffer.value;
   capture.start.custom_hooks = resolve_custom_hooks(configuration);
   return capture;
 }
@@ -1469,6 +1470,17 @@ void print_live_status(const noleax::ipc::CaptureStatus& status) {
   if ((status.flags & noleax::ipc::kCaptureStatusFlagUnpatchIncomplete) != 0U) {
     std::cout << " unpatch=incomplete";
   }
+  if (status.buffer_effective_slots != 0U) {
+    // H4 (P0-1): the buffer conversion math and the agent-owned totals at the last
+    // memory snapshot (zeros until the first periodic sample).
+    std::cout << " buffer=" << status.buffer_requested_bytes << "B->"
+              << status.buffer_reserved_bytes << "B slots=" << status.buffer_effective_slots
+              << " buffer_resident=" << status.buffer_resident_bytes
+              << " agent_resident=" << status.agent_resident_bytes;
+    if ((status.flags & noleax::ipc::kCaptureStatusFlagBufferAdjusted) != 0U) {
+      std::cout << " buffer=adjusted";
+    }
+  }
   std::cout << std::endl;
 }
 
@@ -1488,6 +1500,14 @@ void print_live_status(const noleax::ipc::CaptureStatus& status) {
     note +=
         "the hook teardown did not complete; the patches stay installed (dormant) "
         "until the target exits";
+  }
+  if ((flags & noleax::ipc::kCaptureStatusFlagBufferAdjusted) != 0U) {
+    if (!note.empty()) {
+      note += "; ";
+    }
+    note +=
+        "the requested trace buffer size was adjusted to the event slot ring; the exact "
+        "slot math is in the startup log and the trace's BufferConfiguration record";
   }
   return note;
 }

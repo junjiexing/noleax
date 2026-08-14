@@ -18,6 +18,8 @@
 #include <vector>
 
 #include "noleax/agent/hook_backend.hpp"
+#include "noleax/agent/hook_guard.hpp"
+#include "noleax/agent/linux/agent_memory.hpp"
 #include "noleax/agent/linux/glibc_heap_hooks.hpp"
 #include "noleax/agent/linux/heap_event.hpp"
 #include "noleax/agent/linux/hook_registry.hpp"
@@ -315,6 +317,26 @@ int main() {
     }
   }
   const std::size_t drained_b = drain_events(hooks.event_queue(), events_b);
+
+  // ---- H4 regression: agent mmap-region machinery never enters the heap event stream ----
+  // The queue factory mmaps its slot ring (a syscall, not a heap call) and the resident
+  // accounting runs on the agent's internal threads; under the internal-thread scope the
+  // whole sequence — factory, page touches, registry snapshot, destruction — must record
+  // nothing and count nothing recordable.
+  {
+    const noleax::agent::InternalThreadScope internal_scope;
+    auto h4_queue = noleax::agent::linux::make_linux_heap_event_queue(16'384U);
+    LinuxHeapEvent h4_event{};
+    for (std::size_t index = 0U; index < 4'096U; ++index) {
+      if (!h4_queue->try_push(h4_event)) {
+        break;
+      }
+    }
+    std::vector<noleax::trace::AgentMemoryCategorySample> categories;
+    noleax::agent::linux::AgentMemoryRegistry::instance().snapshot(categories);
+  }
+  const std::size_t drained_h4 = drain_events(hooks.event_queue(), events_c);
+  check(drained_h4 == 0U, "H4 mmap-region allocations stay out of the heap event stream");
 
   std::array<GlibcHeapHookApiCounters, 8> pre_stop{};
   for (std::size_t index = 0U; index < pre_stop.size(); ++index) {

@@ -644,6 +644,67 @@ TEST_CASE("event stream rejects malformed memory snapshot chunks", "[analyzer][e
   }
 }
 
+TEST_CASE("event stream decodes agent memory and buffer configuration records",
+          "[analyzer][events][memory]") {
+  using namespace noleax::trace;
+  const MemoryCounters counters{10U, 100U, 200U, 50U, 60U};
+  AgentMemory agent;
+  agent.monotonic_ticks = 10U;
+  agent.kind = AgentMemorySampleKind::kBaselinePostInit;
+  agent.categories = {
+      AgentMemoryCategorySample{AgentMemoryCategory::kEventQueue, kAgentMemoryCategoryFlagExact,
+                                0x1000U, 0x800U},
+      AgentMemoryCategorySample{AgentMemoryCategory::kStackDictionary, 0U, 0x2000U, 0x2000U},
+  };
+
+  std::vector<std::byte> payload;
+  append_memory_counters_record(payload, counters);
+  append_agent_memory_record(payload, agent);
+  std::vector<std::byte> metadata = metadata_payload();
+  const BufferConfiguration configuration{16U * 1024U * 1024U,
+                                          16'384U,
+                                          648U,
+                                          656U,
+                                          16'384ULL * 656U,
+                                          0U,
+                                          kBufferConfigurationFlagAdjusted};
+  append_buffer_configuration_record(metadata, configuration);
+  const std::vector chunks{
+      ChunkInput{descriptor(ChunkType::kMetadata), metadata},
+      ChunkInput{descriptor(ChunkType::kMemory), payload},
+      ChunkInput{descriptor(ChunkType::kEnd), end_payload(normal_end(0U, 10U))},
+  };
+
+  std::vector<AgentMemory> seen_agent;
+  noleax::analyzer::EventStreamCallbacks callbacks;
+  callbacks.on_agent_memory = [&seen_agent](const AgentMemory& value) {
+    seen_agent.push_back(value);
+  };
+  const auto result = analyze(write_trace(chunks), callbacks);
+  CHECK(seen_agent == std::vector{agent});
+  CHECK(result.memory_counters_count == 1U);
+  CHECK(result.memory_agent_count == 1U);
+  REQUIRE(result.buffer_configuration.has_value());
+  CHECK(*result.buffer_configuration == configuration);
+  CHECK(result.completeness.overall_state() == CompletenessState::kComplete);
+}
+
+TEST_CASE("event stream rejects a second buffer configuration record",
+          "[analyzer][events][memory]") {
+  using namespace noleax::trace;
+  std::vector<std::byte> metadata = metadata_payload();
+  const BufferConfiguration configuration{16U * 1024U * 1024U, 16'384U, 648U, 656U,
+                                          16'384ULL * 656U,    0U,      0U};
+  append_buffer_configuration_record(metadata, configuration);
+  append_buffer_configuration_record(metadata, configuration);
+  const std::vector chunks{
+      ChunkInput{descriptor(ChunkType::kMetadata), metadata},
+  };
+  std::istringstream input{write_trace(chunks), std::ios::binary};
+  CHECK_THROWS_AS(noleax::analyzer::analyze_event_stream(input),
+                  noleax::analyzer::TraceAnalysisError);
+}
+
 TEST_CASE("event stream surfaces custom hook install failures", "[analyzer][events]") {
   using namespace noleax::trace;
   const CustomHookDefinition definition{kCustomHookApiIdBase, "noleax-missing.dll", "my_malloc"};

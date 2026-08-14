@@ -26,6 +26,7 @@
 
 #include "noleax/agent/hook_guard.hpp"
 #include "noleax/agent/hook_section.hpp"
+#include "noleax/agent/linux/agent_memory.hpp"
 #include "noleax/agent/patch_rendezvous.hpp"
 #include "noleax/agent/replacement_lifecycle.hpp"
 
@@ -65,7 +66,7 @@ struct VirtualMemoryHookChannelState {
 // NtMemoryHookState pattern from agent/windows/nt_memory_hooks.cpp).
 struct VirtualMemoryHookChannelSet {
   explicit VirtualMemoryHookChannelSet(std::size_t event_queue_capacity)
-      : owned_event_queue{std::make_unique<LinuxHeapEventQueue>(event_queue_capacity)},
+      : owned_event_queue{make_linux_heap_event_queue(event_queue_capacity)},
         event_queue{owned_event_queue.get()} {}
 
   explicit VirtualMemoryHookChannelSet(LinuxHeapEventQueue& shared_queue)

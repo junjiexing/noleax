@@ -332,6 +332,9 @@ std::string serialize_effective_config(const Configuration& configuration) {
   append_setting(output, "memory_map_interval",
                  quote_toml(format_duration(configuration.capture.memory_map_interval.value)),
                  configuration.capture.memory_map_interval.source);
+  append_setting(output, "strict_buffer",
+                 configuration.capture.strict_buffer.value ? "true" : "false",
+                 configuration.capture.strict_buffer.source);
 
   append_table(output, "trace");
   append_setting(output, "path", format_path(configuration.trace.path.value),

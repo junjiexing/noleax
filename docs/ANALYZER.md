@@ -146,19 +146,23 @@ ConsoleMetadataResolver 可注入 module+offset、symbol+offset 和绝对地址�
 
 ## 8. JSON 输出
 
-JsonWriter 生成 `noleax.analysis` schema version 4。events 模式把匹配 Event 和全部 Loss 直接从
+JsonWriter 生成 `noleax.analysis` schema version 6。events 模式把匹配 Event 和全部 Loss 直接从
 analyzer callback 流式写入数组；outstanding 模式输出窗口和最终存活 generation；memory 模式输出
-窗口与按采样 tick 合并的 `snapshots` 数组（计数器和/或 map，map 含完整区域明细）。根对象统一包含
+窗口与按采样 tick 合并的 `snapshots` 数组（计数器和/或 map，map 含完整区域明细；minor 4 起还有
+agent 记录——memory 模式据此输出 process RSS / agent-owned / application-estimate 的三组拆分，
+并在 trace 携带 BufferConfiguration 记录时输出精确的 buffer 槽位数学）。根对象统一包含
 metadata、实际 filters、summary（含 `custom_hook_failures` 明细）和 completeness，地址/handle/flags/错误码使用十六进制字符串，
 64 位 size、ID、sequence 和 ticks 使用无损 JSON integer。
 
 EventPresentationResolver 为 console 和 JSON 共享 API/module、stack status 与解析帧。trace 内仍以
-stack_id 去重；JSON 保留 ID 并为自包含消费展开可用帧。所有文本严格验证 UTF-8，v4 根对象、九类
+stack_id 去重；JSON 保留 ID 并为自包含消费展开可用帧。所有文本严格验证 UTF-8，v6 根对象、九类
 payload 和 memory 快照结构由 [JSON_OUTPUT.md](JSON_OUTPUT.md) 与
-[noleax-analysis-v4.schema.json](schema/noleax-analysis-v4.schema.json) 固定；旧版结构继续由
+[noleax-analysis-v6.schema.json](schema/noleax-analysis-v6.schema.json) 固定；旧版结构继续由
 [noleax-analysis-v1.schema.json](schema/noleax-analysis-v1.schema.json)、
-[noleax-analysis-v2.schema.json](schema/noleax-analysis-v2.schema.json) 和
-[noleax-analysis-v3.schema.json](schema/noleax-analysis-v3.schema.json) 固定。
+[noleax-analysis-v2.schema.json](schema/noleax-analysis-v2.schema.json)、
+[noleax-analysis-v3.schema.json](schema/noleax-analysis-v3.schema.json)、
+[noleax-analysis-v4.schema.json](schema/noleax-analysis-v4.schema.json) 和
+[noleax-analysis-v5.schema.json](schema/noleax-analysis-v5.schema.json) 固定。
 
 ## 9. CSV 输出
 

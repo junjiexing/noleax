@@ -158,6 +158,7 @@ duration = "3m"
 live = true
 memory_counters_interval = "500ms"
 memory_map_interval = "2s"
+strict_buffer = true
 
 [trace]
 path = "traces/app.nlx"
@@ -238,6 +239,7 @@ color = "always"
   CHECK(overrides.capture.live.specified);
   CHECK(overrides.capture.memory_counters_interval.specified);
   CHECK(overrides.capture.memory_map_interval.specified);
+  CHECK(overrides.capture.strict_buffer.specified);
   CHECK(overrides.trace.path.specified);
   CHECK(overrides.trace.buffer_size.specified);
   CHECK(overrides.trace.max_file_size.specified);
@@ -292,6 +294,7 @@ color = "always"
   CHECK(overrides.capture.min_size.value == 4U * 1024U);
   CHECK(overrides.capture.memory_counters_interval.value == std::chrono::milliseconds{500});
   CHECK(overrides.capture.memory_map_interval.value == std::chrono::seconds{2});
+  CHECK(overrides.capture.strict_buffer.value);
   CHECK(overrides.trace.compression.value == noleax::config::Compression::kZstd);
   CHECK(overrides.analysis.inputs.value.front() == temporary.path() / "one.nlx");
   CHECK_FALSE(overrides.analysis.trim_agent_frames.value);
@@ -323,6 +326,7 @@ TEST_CASE("TOML loader rejects missing schema, unknown keys, and wrong types", "
       "schema_version = 1\nunknown = true\n",
       "schema_version = 1\noperation = 7\n",
       "schema_version = 1\n[capture]\nmax_stack_depth = \"64\"\n",
+      "schema_version = 1\n[capture]\nstrict_buffer = \"yes\"\n",
       "schema_version = 1\n[trace]\nunknown = true\n",
       "schema_version = 1\n[filters]\nevents = [\"ALLOC\"]\n",
       "schema_version = 1\n[target]\nargs = [\"ok\", 7]\n",

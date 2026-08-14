@@ -21,6 +21,7 @@ duration = "" # source: default
 live = false # source: default
 memory_counters_interval = "1s" # source: default
 memory_map_interval = "1s" # source: default
+strict_buffer = false # source: default
 
 [trace]
 path = "" # source: default

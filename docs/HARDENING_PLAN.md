@@ -162,18 +162,25 @@ libdwarf 只进 analyzer（`noleax symbols`/`analyze`），**不进 agent**—�
 ### H4（P0-1）：agent 内存归属与量化
 
 - **范围**：buffer 换算透明化、agent-owned 内存分类统计、写入 trace、analyzer 拆分输出。
-- **设计要点**：
-  1. buffer_size → slot 的换算结果全量上报（requested bytes、effective slots、
-     sizeof(event)/sizeof(slot)、reserved bytes、实际 resident、是否被上限/2 幂调整）；
-     调整即 warning，严格模式拒绝启动。
-  2. agent 大块内存迁独立 `mmap` region（queue、stack dictionary、chunk/compression buffer），
-     自记 resident pages；module tracker、hook backend/trampoline 单独归类；其余进 agent heap。
-  3. agent-owned 统计随 memory snapshot 写入 trace；memory mode 输出 process-inclusive /
-     agent-owned / application-estimate 三组曲线（estimate 明确标注精确或估算）。
-  4. 队列不再为初始化 sequence 而触碰整个多 GiB buffer（分段/惰性提交，附并发论证）。
-  5. capture 启动记录 hook/queue 创建前后两个基线点。
-  6. 所有 agent 分配继续被 HookGuard 排除（回归测试）。
-- **改动面**：heap_event queue、writer、module tracker、snapshot、analyzer memory 模式。
+- **状态**：**已实现**（本分支；验收 1–5 全部带测试，见下）。相对设计要点的偏差：栈字典未迁
+  独立 arena——其存储在构造期即全量提交（entries 定容 16,384），改为暴露精确
+  `storage_bytes()` 并以 estimate 类别上报；module tracker / hook backend / agent heap 同为
+  标注估算。事件队列走专属匿名 mmap（`AgentMemoryRegistry` 登记，mincore 实测驻留，exact）。
+- **落地要点**：
+  1. `plan_event_queue` 统一换算；调整即 stderr WARNING + CaptureStatus buffer-adjusted
+     标志 + trace 的 BufferConfiguration metadata 记录（format minor 4）；
+     `capture.strict_buffer`（CLI `--strict-buffer`）下以稳定错误码 8 拒绝启动；mmap 失败
+     以错误码 9 拒绝（无 bad_alloc 进入目标）。
+  2. 队列 slot 改存"逻辑 sequence − 下标"，全零页即第 0 圈空闲态：构造与
+     `reset_quiescent` 不再触碰整个槽位环（touched watermark 精确重零已写前缀，并发论证
+     见 bounded_mpsc_queue.hpp 与 EVENT_QUEUE.md §2）。
+  3. AgentMemory 记录（memory chunk record_type=3）随每个 counters 采样点写入，含两条
+     启动基线（pre/post init）；analyzer memory 模式输出 process/agent/application 三组，
+     application 标注 exact/estimate（JSON schema v6）。
+  4. 验收对应：8 GiB 换算精确说明（linux_agent_memory_test + standalone e2e）；启动 RSS
+     阶跃可归因（probe phase 13，5%+2MiB 容差）；字典/簿记增长不产生 application 伪增长
+     （probe phase 13）；HookGuard 排除回归（linux_glibc_heap_hooks_probe H4 段 +
+     hook_guard_test 全绿）；调整/严格/分配失败稳定错误码（standalone e2e + plan 单测）。
 - **验收**：需求文档 §4.1 全部 5 条（8 GiB 请求的精确说明；空闲 workload RSS 增量
   ≤5% 误差可归因；dictionary 增长不产生 application 伪增长；HookGuard 排除回归；
   调整/失败稳定错误码）。
