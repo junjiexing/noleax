@@ -30,7 +30,9 @@ revert，再等 replacement counter”仍不安全。
 2. 等待 `recording_in_flight` 归零；新进入调用仍可透传 original，但不会访问 queue。
 3. writer final drain、写 Statistics/EndOfTrace 并退出。
 4. controller 停止或挂起目标 worker，避免物理 patch 时仍持续创建并运行目标线程。
-5. 调用 `HookBackend::uninstall(target, 0)`，只 revert，禁止 Hoox flush。
+5. 调用 `HookBackend::uninstall(target, steady_clock::now())`，只 revert，禁止 Hoox flush
+   （已过期的 deadline 不做任何 flush 尝试——H1-A 起所有 quiescence 等待都改为
+   `steady_clock` 绝对 deadline + 睡眠唤醒，不再使用 yield 计数自旋）。
 6. revert 返回后发布 `target` 路由，再等待完整 replacement `in_flight` 归零。
 7. 释放 trampoline lifetime lease，随后才允许 Hoox flush 和 deinit。
 
@@ -53,8 +55,11 @@ adapter 在激活 patch 前取得 backend 的 trampoline lifetime lease。lease 
 
 ## 4. 超时和析构的 fail-safe
 
-`uninstall(0)` 一定留下显式 `teardown_pending`；调用方通过 `flush(max_attempts)` 重试。若
-replacement 未在有界等待内退出，lease 不释放，Hoox 不 flush。若对象在此状态析构，session、
+`uninstall(steady_clock::now())` 一定留下显式 `teardown_pending`；调用方通过 `flush(deadline)`
+重试（H1-A：`flush`/`uninstall`/`shutdown` 与全部 lifecycle/gate 等待一样取
+`steady_clock` 绝对 deadline，默认 `kDefaultQuiescenceBudget` 30 s；等待方睡眠在 quiescence
+epoch 上，被等待计数归零时 notify 唤醒，deadline 耗尽返回 false——任何路径都不会无限忙等）。
+若 replacement 未在预算内退出，lease 不释放，Hoox 不 flush。若对象在此状态析构，session、
 original trampoline、event queue、guard runtime 引用和 backend lease 都转为进程级保留，不能为了
 避免泄漏而释放仍可能被线程使用的状态。
 

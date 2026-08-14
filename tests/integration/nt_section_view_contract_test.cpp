@@ -4,6 +4,7 @@
 #include <winternl.h>
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -282,10 +283,10 @@ class TemporaryFile final {
 }
 
 [[nodiscard]] bool finish_uninstall(noleax::agent::windows::NtMemoryHooks& hooks) noexcept {
-  if (hooks.uninstall(0U)) {
+  if (hooks.uninstall(std::chrono::steady_clock::now())) {
     return true;
   }
-  return hooks.flush(100'000U) && hooks.uninstall(0U);
+  return hooks.flush() && hooks.uninstall(std::chrono::steady_clock::now());
 }
 
 }  // namespace

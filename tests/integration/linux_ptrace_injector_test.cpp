@@ -219,10 +219,16 @@ TEST_CASE("linux ptrace injector attaches the agent to a running process",
 
   const noleax::ipc::Message drained = roundtrip(channel, MessageType::kStopCapture, 3U);
   REQUIRE(drained.type == MessageType::kCaptureDrained);
+  CHECK(noleax::ipc::decode_capture_status(drained.payload).state ==
+        noleax::ipc::AgentState::kDrained);
   const noleax::ipc::Message finalized = roundtrip(channel, MessageType::kFinalizeHooks, 4U);
   REQUIRE(finalized.type == MessageType::kCaptureFinalized);
-  CHECK(noleax::ipc::decode_capture_status(finalized.payload).state ==
-        noleax::ipc::AgentState::kFinalized);
+  // H1-A: attach captures never live-unpatch — the patches stay installed but dormant
+  // (drain already routed replacements to the originals), so the agent reports kDormant
+  // instead of kFinalized and the fixture keeps running with them in place.
+  const auto final_status = noleax::ipc::decode_capture_status(finalized.payload);
+  CHECK(final_status.state == noleax::ipc::AgentState::kDormant);
+  CHECK(final_status.flags == 0U);
 
   // Orderly fixture exit: release it and check its own exit code and report survived the
   // injection (the only thread was hijacked, restored, and detached mid-run).

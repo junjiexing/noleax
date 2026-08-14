@@ -149,3 +149,21 @@ TEST_CASE("linux end-to-end custom hooks capture a declared allocator", "[linux]
   std::filesystem::remove(trace);
   std::filesystem::remove(leaks_out);
 }
+
+TEST_CASE("linux attach --unload-on-stop fails fast before any injection", "[linux][e2e]") {
+  const auto stamp = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+  const std::filesystem::path log =
+      std::filesystem::temp_directory_path() / ("noleax-e2e-unload-on-stop-" + stamp + ".log");
+
+  // The capability gate rejects the option before any attach attempt, so even a live
+  // pid is never touched (the shell's own pid stands in).
+  const CommandResult run = run_shell(
+      "\"" NOLEAX_CLI_PATH "\" attach --pid $$ --unload-on-stop > \"" + log.string() + "\" 2>&1");
+  const std::string output = read_all(log);
+  INFO(output);
+  CHECK(run.exit_code != 0);
+  CHECK(output.find("--unload-on-stop is not supported on Linux: no safe out-of-process "
+                    "unpatch") != std::string::npos);
+
+  std::filesystem::remove(log);
+}

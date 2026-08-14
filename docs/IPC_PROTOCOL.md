@@ -55,11 +55,35 @@ ABI 5 在任何发布之前原地扩展 `CaptureStatus`（版本号不升）：�
 flush）。agent 侧尚无队列或 writer 时这些字段为零。编解码仍要求完整消费 payload，两侧同版
 本构建因此总是同形。
 
+同为 ABI 5 原地扩展（H1-A）：`CaptureStatus` 再追加一个 uint32 `flags`，携带非致命的
+停止/收尾降级——`kCaptureStatusFlagDrainIncomplete`（bit 0：逻辑停止在 drain 预算内没有等到
+replacement 静默，仍在飞行的调用与 trace 切断）和 `kCaptureStatusFlagUnpatchIncomplete`
+（bit 1：物理拆钩未能在预算内证明完成，patch 保留为 dormant）。`AgentState` 同时追加三个取值
+（编解码合法域随之扩到 8）：`kDraining=6`、`kDormant=7`、`kUnpatching=8`。Linux agent 的
+显式状态机为：
+
+- `drain()`（StopCapture / standalone duration / 退出钩子）：`kCapturing → kDraining →
+  kDrained`；quiescence 超时置 `kDrainIncomplete` 后照常收尾，writer 失败落 `kFailed`。
+- `finalize()`（FinalizeHooks）：launch 捕获 `kDrained → kUnpatching → kFinalized`；物理拆钩
+  失败（预算耗尽）不崩溃、不无限重试，落 `kDormant` 并置 `kUnpatchIncomplete`。attach 捕获
+  从不 live-unpatch（ptrace 停核窗口外没有安全的运行中撤钩），`kDrained → kDormant`，patch
+  保持安装但已 dormant（drain 已把 replacement 路由回 original）。
+- 进程退出路径只做 drain-only 收尾，状态落 `kDormant`（该路径不做物理拆除，不会到
+  `kFinalized`）。
+
+`kDraining`/`kUnpatching` 是瞬态：会话循环顺序处理消息，controller 只能在 drain/finalize
+应答里观察到终态；两个瞬态供 QueryStatus 与后续 attach bootstrap（H1-B）的并发观察使用。
+
+`StartCapture` 的 `unload_on_stop` 仅 Windows attach 有意义；Linux agent 以稳定错误码 7
+（`kAgentStartErrorUnsupportedOption`）拒绝该请求（CLI 侧在注入前已由
+`validate_capture_support` 拒绝，agent 侧防御覆盖手写 controller）。
+
 agent 在 drain 后把 writer 失败映射到会话状态：`CaptureDrained`/`CaptureFinalized` 携带的
 `AgentState` 为 `kFailed` 表示 writer 失败（trace 尾部保有细节），controller 据此分类为
 writer-error；`StartCapture` 的 `ErrorResponse` 错误码约定为 1=一般 agent 错误、3=内置
 profile hook 安装失败、5=不支持的 hook profile、6=trace writer 启动失败（此时
-`system_error` 携带 open 阶段的 errno）。
+`system_error` 携带 open 阶段的 errno）、7=不支持的捕获选项（如 Linux 上的
+`unload_on_stop`）。
 
 ## 3. 传输和安全边界
 

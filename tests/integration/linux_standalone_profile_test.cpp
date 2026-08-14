@@ -23,6 +23,7 @@
 #include <string>
 #include <system_error>
 #include <thread>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -61,11 +62,12 @@ struct StandaloneRun {
 
 // Runs a target with the agent preloaded in standalone mode. When wait is false the caller
 // owns the child (check liveness, then waitpid); the workload exits 42 on success and the
-// exit hook finalizes the trace before the process dies.
-[[nodiscard]] StandaloneRun run_standalone(const std::filesystem::path& config,
-                                           const std::filesystem::path& stderr_capture,
-                                           const char* executable = NOLEAX_WORKLOAD_PATH,
-                                           const char* argument = nullptr, bool wait = true) {
+// exit hook finalizes the trace before the process dies. extra_env, when set, is added to
+// the child environment (the H1-A drain-budget test seam uses it).
+[[nodiscard]] StandaloneRun run_standalone(
+    const std::filesystem::path& config, const std::filesystem::path& stderr_capture,
+    const char* executable = NOLEAX_WORKLOAD_PATH, const char* argument = nullptr, bool wait = true,
+    const std::pair<std::string, std::string>* extra_env = nullptr) {
   const pid_t pid = ::fork();
   if (pid == 0) {
     const int fd = ::open(stderr_capture.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -75,6 +77,9 @@ struct StandaloneRun {
     }
     ::setenv("LD_PRELOAD", NOLEAX_AGENT_PATH, 1);
     ::setenv("NOLEAX_AGENT_CONFIG", config.c_str(), 1);
+    if (extra_env != nullptr) {
+      ::setenv(extra_env->first.c_str(), extra_env->second.c_str(), 1);
+    }
     if (argument == nullptr) {
       ::execl(executable, executable, static_cast<char*>(nullptr));
     } else {
@@ -306,6 +311,7 @@ TEST_CASE("standalone rejects unsupported non-default fields", "[linux][standalo
       {"rotate", "", "on_full = \"rotate\"\n", "trace.on_full"},
       {"maxfiles", "", "max_files = 2\n", "trace.max_files"},
       {"method", "", "", "injection.method"},
+      {"unloadonstop", "", "", "injection.unload_on_stop"},
   };
   for (const auto& test_case : cases) {
     const auto config = unique_path("config.toml");
@@ -315,6 +321,10 @@ TEST_CASE("standalone rejects unsupported non-default fields", "[linux][standalo
     if (test_case.name == "method") {
       std::ofstream append{config, std::ios::app};
       append << "\n[injection]\nmethod = \"ptrace\"\n";
+    }
+    if (test_case.name == "unloadonstop") {
+      std::ofstream append{config, std::ios::app};
+      append << "\n[injection]\nunload_on_stop = true\n";
     }
 
     const StandaloneRun run = run_standalone(config, stderr_capture);
@@ -459,4 +469,91 @@ free_sym = "_Z11hidden_freePv"
   CHECK(free_event->address == allocation->result_address);
 
   remove_all(config, trace, stderr_capture);
+}
+
+// ---- drain quiescence (H1-A): the capture stop waits out slow in-flight calls ----
+
+namespace {
+
+// Custom hook on the workload's slow_alloc/slow_free: the 500 ms sleep inside slow_alloc
+// spans the 100 ms capture duration, so the drain always starts with the call in flight.
+void write_slow_hook_config(const std::filesystem::path& path, const std::filesystem::path& trace) {
+  write_config(path, "linux-glibc-heap", trace, "duration = \"100ms\"\n", "",
+               R"toml(
+[[custom_hooks]]
+module = "noleax-linux-workload-target"
+alloc = "slow_alloc"
+free = "slow_free"
+)toml");
+}
+
+}  // namespace
+
+TEST_CASE("standalone drain waits out an in-flight custom hook call",
+          "[linux][standalone][custom-hook][quiescence]") {
+  const auto config = unique_path("config.toml");
+  const auto trace = unique_path("trace.nlx");
+  const auto stderr_capture = unique_path("stderr.txt");
+  write_slow_hook_config(config, trace);
+
+  const StandaloneRun run =
+      run_standalone(config, stderr_capture, NOLEAX_WORKLOAD_PATH, "--slow-custom-alloc");
+  INFO(run.agent_stderr);
+  REQUIRE(run.exit_code == 42);
+
+  // The drain started at 100 ms with the 500 ms slow_alloc in flight and still produced
+  // exactly one correctly recorded event with a clean EndOfTrace: the stop waited for the
+  // call instead of cutting it off.
+  const CustomHookTrace collected = collect_custom_events(trace);
+  check_clean_finalize(collected.result);
+  std::optional<noleax::trace::AllocationEvent> allocation;
+  for (const noleax::trace::Event& event : collected.events) {
+    if (const auto* payload = std::get_if<noleax::trace::AllocationEvent>(&event.payload)) {
+      CHECK_FALSE(allocation.has_value());
+      allocation = *payload;
+    }
+  }
+  REQUIRE(allocation.has_value());
+  CHECK(allocation->requested_size == 2048U);
+
+  remove_all(config, trace, stderr_capture);
+}
+
+TEST_CASE("standalone drain timeout reports incomplete and never spins",
+          "[linux][standalone][custom-hook][quiescence]") {
+  const auto config = unique_path("config.toml");
+  const auto trace = unique_path("trace.nlx");
+  const auto stderr_capture = unique_path("stderr.txt");
+  write_slow_hook_config(config, trace);
+
+  // The test seam shrinks the drain budget below the 500 ms in-flight call: the stop
+  // times out, reports the incomplete drain on the target's stderr, and the target keeps
+  // running normally (bounded well under the 500 ms slow path plus slack).
+  const std::pair<std::string, std::string> budget{"NOLEAX_DRAIN_BUDGET_MS", "50"};
+  const auto begin = std::chrono::steady_clock::now();
+  const StandaloneRun run = run_standalone(config, stderr_capture, NOLEAX_WORKLOAD_PATH,
+                                           "--slow-custom-alloc", true, &budget);
+  const auto elapsed = std::chrono::steady_clock::now() - begin;
+  INFO(run.agent_stderr);
+  REQUIRE(run.exit_code == 42);
+  CHECK(elapsed < std::chrono::seconds{20});
+  CHECK(run.agent_stderr.find("did not reach replacement quiescence") != std::string::npos);
+
+  // The writer cannot reconcile a capture cut off mid-flight (the in-flight call counted
+  // recordable at entry but never completed), so it fails closed through the error tail:
+  // no atomic rename, and the .partial keeps everything up to the stop with an abnormal
+  // EndOfTrace. The late event lands after the writer closed and is never recorded.
+  std::error_code error;
+  CHECK(!std::filesystem::exists(trace, error));
+  const std::filesystem::path partial = trace.string() + ".partial";
+  REQUIRE(std::filesystem::exists(partial, error));
+  const CustomHookTrace collected = collect_custom_events(partial);
+  CHECK(collected.events.empty());
+  REQUIRE(collected.result.end_of_trace.has_value());
+  CHECK_FALSE(collected.result.end_of_trace->normal_stop);
+  CHECK(collected.result.completeness.has(noleax::trace::CompletenessIssue::kAbnormalStop));
+
+  std::filesystem::remove(config, error);
+  std::filesystem::remove(partial, error);
+  std::filesystem::remove(stderr_capture, error);
 }

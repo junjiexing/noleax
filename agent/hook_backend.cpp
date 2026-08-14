@@ -3,6 +3,7 @@
 #include <hoox.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -50,7 +51,7 @@ class HookBackend::Impl {
 
   ~Impl() {
     std::scoped_lock lock{mutex_};
-    if (interceptor_ != nullptr && !shutdown_locked(HookBackend::kDefaultFlushAttempts)) {
+    if (interceptor_ != nullptr && !shutdown_locked(quiescence_deadline_after())) {
       // Revert has already stopped new calls. Retain the Hoox references instead of freeing a
       // trampoline covered by a replacement lease or instrumentation still being executed.
       interceptor_ = nullptr;
@@ -109,7 +110,7 @@ class HookBackend::Impl {
       hoox_interceptor_revert(interceptor_, target);
       pending_teardown_ = true;
       hoox_interceptor_end_transaction(interceptor_);
-      static_cast<void>(flush_locked(HookBackend::kDefaultFlushAttempts));
+      static_cast<void>(flush_locked(quiescence_deadline_after()));
       return {HookInstallStatus::kMissingOriginal, nullptr};
     }
 
@@ -119,7 +120,7 @@ class HookBackend::Impl {
       hoox_interceptor_revert(interceptor_, target);
       pending_teardown_ = true;
       hoox_interceptor_end_transaction(interceptor_);
-      static_cast<void>(flush_locked(HookBackend::kDefaultFlushAttempts));
+      static_cast<void>(flush_locked(quiescence_deadline_after()));
       throw;
     }
 
@@ -130,7 +131,7 @@ class HookBackend::Impl {
     return {HookInstallStatus::kInstalled, original};
   }
 
-  [[nodiscard]] HookUninstallStatus uninstall(void* target, std::uint32_t flush_attempts) noexcept {
+  [[nodiscard]] HookUninstallStatus uninstall(void* target, QuiescenceDeadline deadline) noexcept {
     std::scoped_lock lock{mutex_};
     if (interceptor_ == nullptr || stopping_) {
       return HookUninstallStatus::kBackendStopped;
@@ -143,18 +144,18 @@ class HookBackend::Impl {
     hoox_interceptor_revert(interceptor_, target);
     entries_.erase(entry);
     pending_teardown_ = true;
-    return flush_locked(flush_attempts) ? HookUninstallStatus::kUninstalled
-                                        : HookUninstallStatus::kTeardownPending;
+    return flush_locked(deadline) ? HookUninstallStatus::kUninstalled
+                                  : HookUninstallStatus::kTeardownPending;
   }
 
-  [[nodiscard]] bool flush(std::uint32_t max_attempts) noexcept {
+  [[nodiscard]] bool flush(QuiescenceDeadline deadline) noexcept {
     std::scoped_lock lock{mutex_};
-    return flush_locked(max_attempts);
+    return flush_locked(deadline);
   }
 
-  [[nodiscard]] bool shutdown(std::uint32_t flush_attempts) noexcept {
+  [[nodiscard]] bool shutdown(QuiescenceDeadline deadline) noexcept {
     std::scoped_lock lock{mutex_};
-    return shutdown_locked(flush_attempts);
+    return shutdown_locked(deadline);
   }
 
   [[nodiscard]] bool acquire_trampoline_lifetime_lease() noexcept {
@@ -209,26 +210,30 @@ class HookBackend::Impl {
                         [target](const Entry& entry) { return entry.target == target; });
   }
 
-  [[nodiscard]] bool flush_locked(std::uint32_t max_attempts) noexcept {
+  // Retries the Hoox flush until the deadline, yielding between attempts. The yield (not a
+  // millisecond sleep) keeps per-attempt pacing at microsecond scale: a flush under
+  // contention can need hundreds of rounds, and 1 ms each balloons the finalize path past
+  // the controller's pipe timeout (the Windows capture-lifecycle hang). The deadline
+  // bounds the total; an already-expired deadline makes no attempt: callers spell the old
+  // "revert only, flush later" zero-attempt form as steady_clock::now().
+  [[nodiscard]] bool flush_locked(QuiescenceDeadline deadline) noexcept {
     if (interceptor_ == nullptr) {
       return true;
     }
     if (trampoline_lifetime_leases_ != 0U) {
       return false;
     }
-    for (std::uint32_t attempt = 0U; attempt < max_attempts; ++attempt) {
+    while (std::chrono::steady_clock::now() < deadline) {
       if (hoox_interceptor_flush(interceptor_) != 0) {
         pending_teardown_ = false;
         return true;
       }
-      if (attempt + 1U < max_attempts) {
-        std::this_thread::yield();
-      }
+      std::this_thread::yield();
     }
     return false;
   }
 
-  [[nodiscard]] bool shutdown_locked(std::uint32_t flush_attempts) noexcept {
+  [[nodiscard]] bool shutdown_locked(QuiescenceDeadline deadline) noexcept {
     if (interceptor_ == nullptr) {
       return true;
     }
@@ -243,7 +248,7 @@ class HookBackend::Impl {
       entries_.clear();
       pending_teardown_ = true;
     }
-    if (!flush_locked(flush_attempts)) {
+    if (!flush_locked(deadline)) {
       return false;
     }
 
@@ -315,14 +320,14 @@ FastHookResult HookBackend::install_fast_forced(void* target, void* replacement,
   return impl_->install_fast_forced(target, replacement, original_slot);
 }
 
-HookUninstallStatus HookBackend::uninstall(void* target, std::uint32_t flush_attempts) noexcept {
-  return impl_->uninstall(target, flush_attempts);
+HookUninstallStatus HookBackend::uninstall(void* target, QuiescenceDeadline deadline) noexcept {
+  return impl_->uninstall(target, deadline);
 }
 
-bool HookBackend::flush(std::uint32_t max_attempts) noexcept { return impl_->flush(max_attempts); }
+bool HookBackend::flush(QuiescenceDeadline deadline) noexcept { return impl_->flush(deadline); }
 
-bool HookBackend::shutdown(std::uint32_t flush_attempts) noexcept {
-  return impl_->shutdown(flush_attempts);
+bool HookBackend::shutdown(QuiescenceDeadline deadline) noexcept {
+  return impl_->shutdown(deadline);
 }
 
 bool HookBackend::acquire_trampoline_lifetime_lease() noexcept {

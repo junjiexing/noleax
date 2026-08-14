@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -1266,13 +1267,13 @@ void NtMemoryHooks::release_failed_initial_install() noexcept {
   release_owner(this, true);
 }
 
-bool NtMemoryHooks::uninstall(std::uint32_t flush_attempts) noexcept {
+bool NtMemoryHooks::uninstall(QuiescenceDeadline deadline) noexcept {
   const InternalThreadScope internal_thread;
   if (state_ == State::kInactive || state_ == State::kRetired) {
     return true;
   }
   if (state_ == State::kTeardownPending) {
-    return try_finish_teardown(flush_attempts);
+    return try_finish_teardown(deadline);
   }
 
   if (allocate_lifecycle_started_) {
@@ -1295,19 +1296,19 @@ bool NtMemoryHooks::uninstall(std::uint32_t flush_attempts) noexcept {
   HookUninstallStatus unmap_status = HookUninstallStatus::kNotInstalled;
   HookUninstallStatus unmap_ex_status = HookUninstallStatus::kNotInstalled;
   if (allocate_hook_installed_) {
-    allocate_status = backend_->uninstall(allocate_target_, 0U);
+    allocate_status = backend_->uninstall(allocate_target_, std::chrono::steady_clock::now());
   }
   if (free_hook_installed_) {
-    free_status = backend_->uninstall(free_target_, 0U);
+    free_status = backend_->uninstall(free_target_, std::chrono::steady_clock::now());
   }
   if (map_hook_installed_) {
-    map_status = backend_->uninstall(map_target_, 0U);
+    map_status = backend_->uninstall(map_target_, std::chrono::steady_clock::now());
   }
   if (unmap_hook_installed_) {
-    unmap_status = backend_->uninstall(unmap_target_, 0U);
+    unmap_status = backend_->uninstall(unmap_target_, std::chrono::steady_clock::now());
   }
   if (unmap_ex_hook_installed_) {
-    unmap_ex_status = backend_->uninstall(unmap_ex_target_, 0U);
+    unmap_ex_status = backend_->uninstall(unmap_ex_target_, std::chrono::steady_clock::now());
   }
   allocate_replacement_lifecycle.route_to_target();
   free_replacement_lifecycle.route_to_target();
@@ -1320,20 +1321,20 @@ bool NtMemoryHooks::uninstall(std::uint32_t flush_attempts) noexcept {
   backend_teardown_complete_ = finished(allocate_status) && finished(free_status) &&
                                finished(map_status) && finished(unmap_status) &&
                                finished(unmap_ex_status);
-  return try_finish_teardown(flush_attempts);
+  return try_finish_teardown(deadline);
 }
 
-bool NtMemoryHooks::flush(std::uint32_t max_attempts) noexcept {
+bool NtMemoryHooks::flush(QuiescenceDeadline deadline) noexcept {
   if (state_ == State::kInactive || state_ == State::kRetired) {
     return true;
   }
   if (state_ == State::kInstalled) {
     return false;
   }
-  return try_finish_teardown(max_attempts);
+  return try_finish_teardown(deadline);
 }
 
-bool NtMemoryHooks::stop_recording(std::uint32_t max_attempts) noexcept {
+bool NtMemoryHooks::stop_recording(QuiescenceDeadline deadline) noexcept {
   if (state_ != State::kInstalled) {
     return state_ == State::kInactive || state_ == State::kRetired;
   }
@@ -1341,18 +1342,17 @@ bool NtMemoryHooks::stop_recording(std::uint32_t max_attempts) noexcept {
   free_replacement_lifecycle.stop_recording();
   map_replacement_lifecycle.stop_recording();
   unmap_replacement_lifecycle.stop_recording();
-  const bool allocate_done =
-      allocate_replacement_lifecycle.wait_for_recording_quiescence(max_attempts);
-  const bool free_done = free_replacement_lifecycle.wait_for_recording_quiescence(max_attempts);
-  const bool map_done = map_replacement_lifecycle.wait_for_recording_quiescence(max_attempts);
-  const bool unmap_done = unmap_replacement_lifecycle.wait_for_recording_quiescence(max_attempts);
+  const bool allocate_done = allocate_replacement_lifecycle.wait_for_recording_quiescence(deadline);
+  const bool free_done = free_replacement_lifecycle.wait_for_recording_quiescence(deadline);
+  const bool map_done = map_replacement_lifecycle.wait_for_recording_quiescence(deadline);
+  const bool unmap_done = unmap_replacement_lifecycle.wait_for_recording_quiescence(deadline);
   return allocate_done && free_done && map_done && unmap_done;
 }
 
-bool NtMemoryHooks::try_finish_teardown(std::uint32_t max_attempts) noexcept {
+bool NtMemoryHooks::try_finish_teardown(QuiescenceDeadline deadline) noexcept {
   if (!allocate_replacement_quiescent_) {
     if (allocate_lifecycle_started_ &&
-        !allocate_replacement_lifecycle.wait_for_quiescence(max_attempts)) {
+        !allocate_replacement_lifecycle.wait_for_quiescence(deadline)) {
       return false;
     }
     allocate_replacement_quiescent_ = true;
@@ -1362,7 +1362,7 @@ bool NtMemoryHooks::try_finish_teardown(std::uint32_t max_attempts) noexcept {
     }
   }
   if (!free_replacement_quiescent_) {
-    if (free_lifecycle_started_ && !free_replacement_lifecycle.wait_for_quiescence(max_attempts)) {
+    if (free_lifecycle_started_ && !free_replacement_lifecycle.wait_for_quiescence(deadline)) {
       return false;
     }
     free_replacement_quiescent_ = true;
@@ -1372,7 +1372,7 @@ bool NtMemoryHooks::try_finish_teardown(std::uint32_t max_attempts) noexcept {
     }
   }
   if (!map_replacement_quiescent_) {
-    if (map_lifecycle_started_ && !map_replacement_lifecycle.wait_for_quiescence(max_attempts)) {
+    if (map_lifecycle_started_ && !map_replacement_lifecycle.wait_for_quiescence(deadline)) {
       return false;
     }
     map_replacement_quiescent_ = true;
@@ -1382,8 +1382,7 @@ bool NtMemoryHooks::try_finish_teardown(std::uint32_t max_attempts) noexcept {
     }
   }
   if (!unmap_replacement_quiescent_) {
-    if (unmap_lifecycle_started_ &&
-        !unmap_replacement_lifecycle.wait_for_quiescence(max_attempts)) {
+    if (unmap_lifecycle_started_ && !unmap_replacement_lifecycle.wait_for_quiescence(deadline)) {
       return false;
     }
     unmap_replacement_quiescent_ = true;
@@ -1397,7 +1396,7 @@ bool NtMemoryHooks::try_finish_teardown(std::uint32_t max_attempts) noexcept {
     }
   }
   if (!backend_teardown_complete_) {
-    backend_teardown_complete_ = backend_->flush(max_attempts);
+    backend_teardown_complete_ = backend_->flush(deadline);
   }
   if (!backend_teardown_complete_) {
     return false;

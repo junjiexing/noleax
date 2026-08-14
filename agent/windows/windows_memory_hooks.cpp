@@ -1,5 +1,6 @@
 #include "noleax/agent/windows/windows_memory_hooks.hpp"
 
+#include <chrono>
 #include <limits>
 #include <stdexcept>
 
@@ -64,7 +65,7 @@ WindowsMemoryHookInstallResult WindowsMemoryHooks::install() {
   if (nt_heap_hooks_ != nullptr) {
     result.nt_heap = nt_heap_hooks_->install();
     if (!result.nt_heap->installed()) {
-      static_cast<void>(nt_heap_hooks_->stop_recording(0U));
+      static_cast<void>(nt_heap_hooks_->stop_recording(std::chrono::steady_clock::now()));
       static_cast<void>(nt_heap_hooks_->uninstall());
       return result;
     }
@@ -74,16 +75,16 @@ WindowsMemoryHookInstallResult WindowsMemoryHooks::install() {
       result.virtual_memory = virtual_memory_hooks_->install();
     } catch (...) {
       if (nt_heap_hooks_ != nullptr) {
-        static_cast<void>(nt_heap_hooks_->stop_recording(0U));
+        static_cast<void>(nt_heap_hooks_->stop_recording(std::chrono::steady_clock::now()));
         static_cast<void>(nt_heap_hooks_->uninstall());
       }
       throw;
     }
     if (!result.virtual_memory->installed()) {
-      static_cast<void>(virtual_memory_hooks_->stop_recording(0U));
+      static_cast<void>(virtual_memory_hooks_->stop_recording(std::chrono::steady_clock::now()));
       static_cast<void>(virtual_memory_hooks_->uninstall());
       if (nt_heap_hooks_ != nullptr) {
-        static_cast<void>(nt_heap_hooks_->stop_recording(0U));
+        static_cast<void>(nt_heap_hooks_->stop_recording(std::chrono::steady_clock::now()));
         static_cast<void>(nt_heap_hooks_->uninstall());
       }
       return result;
@@ -97,25 +98,25 @@ WindowsMemoryHookInstallResult WindowsMemoryHooks::install() {
   return result;
 }
 
-bool WindowsMemoryHooks::stop_recording(std::uint32_t max_attempts) noexcept {
+bool WindowsMemoryHooks::stop_recording(QuiescenceDeadline deadline) noexcept {
   // Route every selected family to its original trampoline before waiting for any one family.
   if (nt_heap_hooks_ != nullptr) {
-    static_cast<void>(nt_heap_hooks_->stop_recording(0U));
+    static_cast<void>(nt_heap_hooks_->stop_recording(std::chrono::steady_clock::now()));
   }
   if (virtual_memory_hooks_ != nullptr) {
-    static_cast<void>(virtual_memory_hooks_->stop_recording(0U));
+    static_cast<void>(virtual_memory_hooks_->stop_recording(std::chrono::steady_clock::now()));
   }
   if (custom_hooks_ != nullptr) {
-    static_cast<void>(custom_hooks_->stop_recording(0U));
+    static_cast<void>(custom_hooks_->stop_recording(std::chrono::steady_clock::now()));
   }
-  const bool heap_done = nt_heap_hooks_ == nullptr || nt_heap_hooks_->stop_recording(max_attempts);
+  const bool heap_done = nt_heap_hooks_ == nullptr || nt_heap_hooks_->stop_recording(deadline);
   const bool virtual_memory_done =
-      virtual_memory_hooks_ == nullptr || virtual_memory_hooks_->stop_recording(max_attempts);
-  const bool custom_done = custom_hooks_ == nullptr || custom_hooks_->stop_recording(max_attempts);
+      virtual_memory_hooks_ == nullptr || virtual_memory_hooks_->stop_recording(deadline);
+  const bool custom_done = custom_hooks_ == nullptr || custom_hooks_->stop_recording(deadline);
   return heap_done && virtual_memory_done && custom_done;
 }
 
-bool WindowsMemoryHooks::uninstall(std::uint32_t flush_attempts) noexcept {
+bool WindowsMemoryHooks::uninstall(QuiescenceDeadline deadline) noexcept {
   const InternalThreadScope internal_thread;
   if (is_recording() || recording_in_flight_count() != 0U) {
     return false;
@@ -123,18 +124,18 @@ bool WindowsMemoryHooks::uninstall(std::uint32_t flush_attempts) noexcept {
   // Revert every physical target before asking either family to flush the shared backend. A
   // family-local flush cannot complete while the other family still owns installed targets.
   if (custom_hooks_ != nullptr) {
-    static_cast<void>(custom_hooks_->uninstall(0U));
+    static_cast<void>(custom_hooks_->uninstall(std::chrono::steady_clock::now()));
   }
   if (virtual_memory_hooks_ != nullptr) {
-    static_cast<void>(virtual_memory_hooks_->uninstall(0U));
+    static_cast<void>(virtual_memory_hooks_->uninstall(std::chrono::steady_clock::now()));
   }
   if (nt_heap_hooks_ != nullptr) {
-    static_cast<void>(nt_heap_hooks_->uninstall(0U));
+    static_cast<void>(nt_heap_hooks_->uninstall(std::chrono::steady_clock::now()));
   }
-  const bool custom_done = custom_hooks_ == nullptr || custom_hooks_->uninstall(flush_attempts);
+  const bool custom_done = custom_hooks_ == nullptr || custom_hooks_->uninstall(deadline);
   const bool virtual_memory_done =
-      virtual_memory_hooks_ == nullptr || virtual_memory_hooks_->uninstall(flush_attempts);
-  const bool heap_done = nt_heap_hooks_ == nullptr || nt_heap_hooks_->uninstall(flush_attempts);
+      virtual_memory_hooks_ == nullptr || virtual_memory_hooks_->uninstall(deadline);
+  const bool heap_done = nt_heap_hooks_ == nullptr || nt_heap_hooks_->uninstall(deadline);
   return custom_done && virtual_memory_done && heap_done;
 }
 

@@ -10,11 +10,14 @@
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
+#include <csignal>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #include "noleax/ipc/linux/unix_socket.hpp"
@@ -83,6 +86,78 @@ struct LaunchedTarget {
   return message;
 }
 
+[[nodiscard]] noleax::ipc::Message roundtrip(SocketChannel& channel, MessageType type,
+                                             std::uint64_t request_id) {
+  noleax::ipc::Message request;
+  request.type = type;
+  request.request_id = request_id;
+  channel.send(request, 10s);
+  return channel.receive(10s);
+}
+
+// Drives a full launch-shaped session against /bin/sleep and returns the states the agent
+// reported at each step. capture_kind selects the finalize shape: launch unpatches to
+// kFinalized, attach retains the patches and lands on kDormant (H1-A).
+struct SessionStates {
+  noleax::ipc::CaptureStatus ready;
+  noleax::ipc::CaptureStatus capturing;
+  noleax::ipc::CaptureStatus drained;
+  noleax::ipc::CaptureStatus finalized;
+};
+
+[[nodiscard]] SessionStates drive_session(noleax::ipc::CaptureKind kind, std::uint64_t seed,
+                                          const std::filesystem::path& trace) {
+  const auto token = make_token(seed);
+  const std::string socket_name = noleax::ipc::linux::make_socket_name(token);
+  UnixSocketServer server{socket_name};
+
+  const std::uint32_t controller_pid = static_cast<std::uint32_t>(::getpid());
+  const pid_t child = launch_target(socket_name.substr(1U), hex_token(token), controller_pid, "30");
+  REQUIRE(child > 0);
+
+  SocketChannel channel = server.accept(10s);
+  const noleax::ipc::Message hello = channel.receive(10s);
+  REQUIRE(hello.type == MessageType::kAgentHello);
+
+  noleax::ipc::StartCaptureRequest request;
+  request.capture_kind = kind;
+  request.hook_profile = noleax::ipc::HookProfile::kLinuxGlibcHeap;
+  request.trace_path_utf8 = trace.string();
+  noleax::ipc::Message start;
+  start.type = MessageType::kStartCapture;
+  start.request_id = hello.request_id;
+  start.payload = noleax::ipc::encode_start_capture(request);
+  channel.send(start, 10s);
+
+  SessionStates states;
+  const noleax::ipc::Message ready = channel.receive(10s);
+  REQUIRE(ready.type == MessageType::kCaptureReady);
+  states.ready = noleax::ipc::decode_capture_status(ready.payload);
+
+  const noleax::ipc::Message capturing = roundtrip(channel, MessageType::kQueryStatus, 2U);
+  REQUIRE(capturing.type == MessageType::kCaptureStatus);
+  states.capturing = noleax::ipc::decode_capture_status(capturing.payload);
+
+  const noleax::ipc::Message drained = roundtrip(channel, MessageType::kStopCapture, 3U);
+  REQUIRE(drained.type == MessageType::kCaptureDrained);
+  states.drained = noleax::ipc::decode_capture_status(drained.payload);
+
+  const noleax::ipc::Message queried = roundtrip(channel, MessageType::kQueryStatus, 4U);
+  REQUIRE(queried.type == MessageType::kCaptureStatus);
+  CHECK(noleax::ipc::decode_capture_status(queried.payload).state == states.drained.state);
+
+  const noleax::ipc::Message finalized = roundtrip(channel, MessageType::kFinalizeHooks, 5U);
+  REQUIRE(finalized.type == MessageType::kCaptureFinalized);
+  states.finalized = noleax::ipc::decode_capture_status(finalized.payload);
+
+  // The session loop returns after the finalize response; the target itself keeps
+  // running until killed (hooks reverted for launch, dormant for attach).
+  ::kill(child, SIGTERM);
+  int status = 0;
+  CHECK(::waitpid(child, &status, 0) == child);
+  return states;
+}
+
 }  // namespace
 
 TEST_CASE("linux agent bootstraps over the env channel and runs the session protocol",
@@ -140,4 +215,80 @@ TEST_CASE("linux agent refuses a controller with the wrong pid", "[agent][runtim
 
   int status = 0;
   static_cast<void>(::waitpid(child, &status, 0));
+}
+
+TEST_CASE("linux agent reports the explicit capture state machine over IPC",
+          "[agent][runtime][linux][lifecycle]") {
+  const auto stamp = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+  const std::filesystem::path trace =
+      std::filesystem::temp_directory_path() / ("noleax-lifecycle-" + stamp + ".nlx");
+
+  const SessionStates states =
+      drive_session(noleax::ipc::CaptureKind::kLaunch, 0x4e4c5820203403ULL, trace);
+  CHECK(states.ready.state == noleax::ipc::AgentState::kCapturing);
+  CHECK(states.capturing.state == noleax::ipc::AgentState::kCapturing);
+  CHECK(states.drained.state == noleax::ipc::AgentState::kDrained);
+  // Launch captures go through the physical unpatch: kDrained -> kUnpatching -> kFinalized
+  // (the transient kUnpatching is never observable over the sequential session channel).
+  CHECK(states.finalized.state == noleax::ipc::AgentState::kFinalized);
+  CHECK(states.finalized.flags == 0U);
+
+  std::error_code error;
+  std::filesystem::remove(trace, error);
+}
+
+TEST_CASE("linux attach-kind capture finalizes dormant and keeps its patches",
+          "[agent][runtime][linux][lifecycle]") {
+  const auto stamp = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+  const std::filesystem::path trace =
+      std::filesystem::temp_directory_path() / ("noleax-dormant-" + stamp + ".nlx");
+
+  // The retain decision is driven by StartCaptureRequest::capture_kind alone, so a
+  // preload-launched target told kAttach exercises it without the ptrace injector (the
+  // injector-level attach path asserts the same state in linux_ptrace_injector_test).
+  const SessionStates states =
+      drive_session(noleax::ipc::CaptureKind::kAttach, 0x4e4c5820203504ULL, trace);
+  CHECK(states.ready.state == noleax::ipc::AgentState::kCapturing);
+  CHECK(states.drained.state == noleax::ipc::AgentState::kDrained);
+  CHECK(states.finalized.state == noleax::ipc::AgentState::kDormant);
+  CHECK(states.finalized.flags == 0U);
+
+  std::error_code error;
+  std::filesystem::remove(trace, error);
+}
+
+TEST_CASE("linux agent rejects unload_on_stop at capture start",
+          "[agent][runtime][linux][lifecycle]") {
+  const auto token = make_token(0x4e4c5820203605ULL);
+  const std::string socket_name = noleax::ipc::linux::make_socket_name(token);
+  UnixSocketServer server{socket_name};
+
+  const std::uint32_t controller_pid = static_cast<std::uint32_t>(::getpid());
+  const pid_t child = launch_target(socket_name.substr(1U), hex_token(token), controller_pid, "5");
+  REQUIRE(child > 0);
+
+  SocketChannel channel = server.accept(10s);
+  const noleax::ipc::Message hello = channel.receive(10s);
+  REQUIRE(hello.type == MessageType::kAgentHello);
+
+  noleax::ipc::StartCaptureRequest request;
+  request.capture_kind = noleax::ipc::CaptureKind::kAttach;
+  request.hook_profile = noleax::ipc::HookProfile::kLinuxGlibcHeap;
+  request.trace_path_utf8 = "/tmp/noleax-unload-on-stop.nlx";
+  request.unload_on_stop = true;
+  noleax::ipc::Message start;
+  start.type = MessageType::kStartCapture;
+  start.request_id = hello.request_id;
+  start.payload = noleax::ipc::encode_start_capture(request);
+  channel.send(start, 10s);
+
+  const noleax::ipc::Message rejected = channel.receive(10s);
+  REQUIRE(rejected.type == MessageType::kError);
+  const auto error = noleax::ipc::decode_error_response(rejected.payload);
+  CHECK(error.error_code == noleax::ipc::kAgentStartErrorUnsupportedOption);
+  CHECK(error.message.find("unload_on_stop is not supported") != std::string::npos);
+
+  int status = 0;
+  CHECK(::waitpid(child, &status, 0) == child);
+  CHECK(WIFEXITED(status));
 }

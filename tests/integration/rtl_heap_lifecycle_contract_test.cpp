@@ -2,6 +2,7 @@
 #define NOMINMAX
 #include <windows.h>
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -84,19 +85,19 @@ struct CallObservation {
 }
 
 [[nodiscard]] bool finish_uninstall(noleax::agent::windows::RtlHeapHooks& hooks) noexcept {
-  if (hooks.uninstall(0U)) {
+  if (hooks.uninstall(std::chrono::steady_clock::now())) {
     return true;
   }
-  return hooks.flush(100'000U) && hooks.uninstall(0U);
+  return hooks.flush() && hooks.uninstall(std::chrono::steady_clock::now());
 }
 
 [[nodiscard]] bool finish_uninstall(noleax::agent::windows::RtlAllocateHeapHook& hook) noexcept {
-  const auto status = hook.uninstall(0U);
+  const auto status = hook.uninstall(std::chrono::steady_clock::now());
   if (status == noleax::agent::HookUninstallStatus::kUninstalled ||
       status == noleax::agent::HookUninstallStatus::kNotInstalled) {
     return true;
   }
-  return hook.flush(100'000U);
+  return hook.flush();
 }
 
 [[nodiscard]] int run_partial_install_rollback() {

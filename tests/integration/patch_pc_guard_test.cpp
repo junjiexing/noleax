@@ -67,11 +67,11 @@ void replacement_function() { g_replaced.store(true, std::memory_order_release);
 }
 
 [[nodiscard]] bool uninstall_fully(noleax::agent::HookBackend& backend, void* target) noexcept {
-  auto status = backend.uninstall(target, 0U);
+  auto status = backend.uninstall(target, std::chrono::steady_clock::now());
   for (std::uint32_t retry = 0U;
        retry < kFlushRetries && status == noleax::agent::HookUninstallStatus::kTeardownPending;
        ++retry) {
-    if (backend.flush(100'000U)) {
+    if (backend.flush()) {
       status = noleax::agent::HookUninstallStatus::kUninstalled;
     }
   }

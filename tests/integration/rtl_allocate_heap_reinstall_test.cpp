@@ -2,6 +2,7 @@
 #define NOMINMAX
 #include <windows.h>
 
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 
@@ -16,11 +17,11 @@ using RtlFreeHeapFunction = BOOLEAN(NTAPI*)(PVOID heap, ULONG flags, PVOID alloc
 constexpr std::uint32_t kFlushRetries = 16U;
 
 [[nodiscard]] bool uninstall_fully(noleax::agent::windows::RtlAllocateHeapHook& hook) noexcept {
-  auto status = hook.uninstall(0U);
+  auto status = hook.uninstall(std::chrono::steady_clock::now());
   for (std::uint32_t retry = 0U;
        retry < kFlushRetries && status == noleax::agent::HookUninstallStatus::kTeardownPending;
        ++retry) {
-    if (hook.flush(100'000U)) {
+    if (hook.flush()) {
       status = noleax::agent::HookUninstallStatus::kUninstalled;
     }
   }

@@ -1,5 +1,6 @@
 #include "noleax/agent/windows/rtl_heap_hooks.hpp"
 
+#include <chrono>
 #include <limits>
 
 #include "noleax/agent/hook_guard.hpp"
@@ -92,31 +93,28 @@ bool RtlHeapHooks::has_pending_teardown() const noexcept {
          destroy_hook_.has_pending_teardown();
 }
 
-bool RtlHeapHooks::uninstall(std::uint32_t flush_attempts) noexcept {
+bool RtlHeapHooks::uninstall(QuiescenceDeadline deadline) noexcept {
   const InternalThreadScope internal_thread;
-  auto create_status = create_hook_.uninstall(0U);
-  auto allocate_status = allocate_hook_.uninstall(0U);
-  auto reallocate_status = reallocate_hook_.uninstall(0U);
-  auto free_status = free_hook_.uninstall(0U);
-  auto destroy_status = destroy_hook_.uninstall(0U);
+  auto create_status = create_hook_.uninstall(std::chrono::steady_clock::now());
+  auto allocate_status = allocate_hook_.uninstall(std::chrono::steady_clock::now());
+  auto reallocate_status = reallocate_hook_.uninstall(std::chrono::steady_clock::now());
+  auto free_status = free_hook_.uninstall(std::chrono::steady_clock::now());
+  auto destroy_status = destroy_hook_.uninstall(std::chrono::steady_clock::now());
 
-  if (destroy_status == HookUninstallStatus::kTeardownPending &&
-      destroy_hook_.flush(flush_attempts)) {
+  if (destroy_status == HookUninstallStatus::kTeardownPending && destroy_hook_.flush(deadline)) {
     destroy_status = HookUninstallStatus::kUninstalled;
   }
-  if (free_status == HookUninstallStatus::kTeardownPending && free_hook_.flush(flush_attempts)) {
+  if (free_status == HookUninstallStatus::kTeardownPending && free_hook_.flush(deadline)) {
     free_status = HookUninstallStatus::kUninstalled;
   }
   if (reallocate_status == HookUninstallStatus::kTeardownPending &&
-      reallocate_hook_.flush(flush_attempts)) {
+      reallocate_hook_.flush(deadline)) {
     reallocate_status = HookUninstallStatus::kUninstalled;
   }
-  if (allocate_status == HookUninstallStatus::kTeardownPending &&
-      allocate_hook_.flush(flush_attempts)) {
+  if (allocate_status == HookUninstallStatus::kTeardownPending && allocate_hook_.flush(deadline)) {
     allocate_status = HookUninstallStatus::kUninstalled;
   }
-  if (create_status == HookUninstallStatus::kTeardownPending &&
-      create_hook_.flush(flush_attempts)) {
+  if (create_status == HookUninstallStatus::kTeardownPending && create_hook_.flush(deadline)) {
     create_status = HookUninstallStatus::kUninstalled;
   }
 
@@ -133,26 +131,26 @@ bool RtlHeapHooks::uninstall(std::uint32_t flush_attempts) noexcept {
   return create_done && allocate_done && reallocate_done && free_done && destroy_done;
 }
 
-bool RtlHeapHooks::flush(std::uint32_t max_attempts) noexcept {
-  const bool destroy_done = destroy_hook_.flush(max_attempts);
-  const bool free_done = free_hook_.flush(max_attempts);
-  const bool reallocate_done = reallocate_hook_.flush(max_attempts);
-  const bool allocate_done = allocate_hook_.flush(max_attempts);
-  const bool create_done = create_hook_.flush(max_attempts);
+bool RtlHeapHooks::flush(QuiescenceDeadline deadline) noexcept {
+  const bool destroy_done = destroy_hook_.flush(deadline);
+  const bool free_done = free_hook_.flush(deadline);
+  const bool reallocate_done = reallocate_hook_.flush(deadline);
+  const bool allocate_done = allocate_hook_.flush(deadline);
+  const bool create_done = create_hook_.flush(deadline);
   return destroy_done && free_done && reallocate_done && allocate_done && create_done;
 }
 
-bool RtlHeapHooks::stop_recording(std::uint32_t max_attempts) noexcept {
-  static_cast<void>(create_hook_.stop_recording(0U));
-  static_cast<void>(allocate_hook_.stop_recording(0U));
-  static_cast<void>(reallocate_hook_.stop_recording(0U));
-  static_cast<void>(free_hook_.stop_recording(0U));
-  static_cast<void>(destroy_hook_.stop_recording(0U));
-  const bool create_done = create_hook_.stop_recording(max_attempts);
-  const bool allocate_done = allocate_hook_.stop_recording(max_attempts);
-  const bool reallocate_done = reallocate_hook_.stop_recording(max_attempts);
-  const bool free_done = free_hook_.stop_recording(max_attempts);
-  const bool destroy_done = destroy_hook_.stop_recording(max_attempts);
+bool RtlHeapHooks::stop_recording(QuiescenceDeadline deadline) noexcept {
+  static_cast<void>(create_hook_.stop_recording(std::chrono::steady_clock::now()));
+  static_cast<void>(allocate_hook_.stop_recording(std::chrono::steady_clock::now()));
+  static_cast<void>(reallocate_hook_.stop_recording(std::chrono::steady_clock::now()));
+  static_cast<void>(free_hook_.stop_recording(std::chrono::steady_clock::now()));
+  static_cast<void>(destroy_hook_.stop_recording(std::chrono::steady_clock::now()));
+  const bool create_done = create_hook_.stop_recording(deadline);
+  const bool allocate_done = allocate_hook_.stop_recording(deadline);
+  const bool reallocate_done = reallocate_hook_.stop_recording(deadline);
+  const bool free_done = free_hook_.stop_recording(deadline);
+  const bool destroy_done = destroy_hook_.stop_recording(deadline);
   return create_done && allocate_done && reallocate_done && free_done && destroy_done;
 }
 

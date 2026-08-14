@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -8,6 +9,38 @@
 #include <string_view>
 
 namespace noleax::agent {
+
+// Absolute steady_clock deadline bounding one quiescence operation (H1-A,
+// docs/HARDENING_PLAN.md): every wait in the hook stack sleeps on the quiescence epoch
+// (see replacement_lifecycle.hpp) and reports failure at its deadline instead of spinning
+// a yield counter. Callers that do not care get kDefaultQuiescenceBudget; the capture
+// drain is not retryable, so it waits out slow in-flight calls under the larger
+// kDrainQuiescenceBudget.
+using QuiescenceDeadline = std::chrono::steady_clock::time_point;
+inline constexpr std::chrono::milliseconds kDefaultQuiescenceBudget{30'000};
+inline constexpr std::chrono::milliseconds kDrainQuiescenceBudget{120'000};
+
+[[nodiscard]] inline QuiescenceDeadline quiescence_deadline_after(
+    std::chrono::steady_clock::duration budget = kDefaultQuiescenceBudget) noexcept {
+  return std::chrono::steady_clock::now() + budget;
+}
+
+namespace detail {
+
+// Test seam (H1-A): millisecond override of kDrainQuiescenceBudget, armed by the agent
+// bootstrap from NOLEAX_DRAIN_BUDGET_MS so integration tests can force a drain timeout
+// against a slow in-flight call. 0 keeps the named constant. Process-global; set once
+// before any capture starts, read at each drain.
+inline std::atomic<std::int64_t> drain_quiescence_budget_override_ms{0};
+
+}  // namespace detail
+
+[[nodiscard]] inline QuiescenceDeadline drain_quiescence_deadline() noexcept {
+  const std::int64_t override_ms =
+      detail::drain_quiescence_budget_override_ms.load(std::memory_order_acquire);
+  return quiescence_deadline_after(override_ms > 0 ? std::chrono::milliseconds{override_ms}
+                                                   : kDrainQuiescenceBudget);
+}
 
 using OriginalTrampolineSlot = std::atomic<void*>;
 
@@ -49,8 +82,6 @@ class HookBackendError final : public std::runtime_error {
 
 class HookBackend {
  public:
-  static constexpr std::uint32_t kDefaultFlushAttempts = 1024U;
-
   HookBackend();
   ~HookBackend();
 
@@ -65,10 +96,13 @@ class HookBackend {
   // fails the checked relocation (for example a relative call inside the copied bytes).
   [[nodiscard]] FastHookResult install_fast_forced(void* target, void* replacement,
                                                    OriginalTrampolineSlot* original_slot = nullptr);
+  // Reverts the target, then retries the pending-trampoline flush until the deadline. An
+  // already-expired deadline (std::chrono::steady_clock::now()) makes no flush attempt at
+  // all, preserving the old "revert only" zero-attempt spelling.
   [[nodiscard]] HookUninstallStatus uninstall(
-      void* target, std::uint32_t flush_attempts = kDefaultFlushAttempts) noexcept;
-  [[nodiscard]] bool flush(std::uint32_t max_attempts = kDefaultFlushAttempts) noexcept;
-  [[nodiscard]] bool shutdown(std::uint32_t flush_attempts = kDefaultFlushAttempts) noexcept;
+      void* target, QuiescenceDeadline deadline = quiescence_deadline_after()) noexcept;
+  [[nodiscard]] bool flush(QuiescenceDeadline deadline = quiescence_deadline_after()) noexcept;
+  [[nodiscard]] bool shutdown(QuiescenceDeadline deadline = quiescence_deadline_after()) noexcept;
 
   // A direct replacement can be paused before it enters the Hoox trampoline. While a lease is
   // held, revert is allowed but flush/deinit must retain the trampoline for that replacement.

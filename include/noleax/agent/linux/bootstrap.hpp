@@ -23,6 +23,10 @@ inline constexpr char kSessionTokenEnv[] = "NOLEAX_SESSION_TOKEN";
 inline constexpr char kControllerPidEnv[] = "NOLEAX_CONTROLLER_PID";
 inline constexpr char kConnectTimeoutEnv[] = "NOLEAX_CONNECT_TIMEOUT_MS";
 inline constexpr char kAgentConfigEnv[] = "NOLEAX_AGENT_CONFIG";
+// Test seam (H1-A, docs/HARDENING_PLAN.md): shrinks the capture-stop drain quiescence
+// budget (milliseconds, 1..3600000) so tests can force a bounded drain timeout against a
+// slow in-flight replacement call. Scrubbed with the rest of the channel.
+inline constexpr char kDrainBudgetEnv[] = "NOLEAX_DRAIN_BUDGET_MS";
 
 inline constexpr std::uint32_t kDefaultConnectTimeoutMs = 10'000U;
 

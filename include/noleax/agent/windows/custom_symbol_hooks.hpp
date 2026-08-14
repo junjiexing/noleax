@@ -68,12 +68,10 @@ class CustomSymbolHooks final {
   // back, recorded in the returned failure list, and the remaining points still install.
   // Throws std::logic_error only for API misuse (for example a repeated install).
   std::vector<noleax::trace::CustomHookFailure> install();
-  [[nodiscard]] bool uninstall(
-      std::uint32_t flush_attempts = HookBackend::kDefaultFlushAttempts) noexcept;
-  [[nodiscard]] bool flush(
-      std::uint32_t max_attempts = HookBackend::kDefaultFlushAttempts) noexcept;
+  [[nodiscard]] bool uninstall(QuiescenceDeadline deadline = quiescence_deadline_after()) noexcept;
+  [[nodiscard]] bool flush(QuiescenceDeadline deadline = quiescence_deadline_after()) noexcept;
   [[nodiscard]] bool stop_recording(
-      std::uint32_t max_attempts = HookBackend::kDefaultFlushAttempts) noexcept;
+      QuiescenceDeadline deadline = quiescence_deadline_after()) noexcept;
 
   [[nodiscard]] bool is_installed() const noexcept;
   [[nodiscard]] bool is_recording() const noexcept;

@@ -4,6 +4,7 @@
 #include <winternl.h>
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -183,10 +184,10 @@ struct WorkloadArtifacts {
 }
 
 [[nodiscard]] bool finish_uninstall(noleax::agent::windows::NtMemoryHooks& hooks) noexcept {
-  if (hooks.uninstall(0U)) {
+  if (hooks.uninstall(std::chrono::steady_clock::now())) {
     return true;
   }
-  return hooks.flush(100'000U) && hooks.uninstall(0U);
+  return hooks.flush() && hooks.uninstall(std::chrono::steady_clock::now());
 }
 
 }  // namespace
@@ -344,7 +345,7 @@ int main() {
       map_statistics.recordable_calls == event_counts[2] + map_statistics.dropped_events &&
       unmap_statistics.recordable_calls == event_counts[3] + unmap_statistics.dropped_events;
 
-  const auto heap_uninstall_status = heap_hook.uninstall(100'000U);
+  const auto heap_uninstall_status = heap_hook.uninstall();
   const bool heap_uninstalled =
       heap_uninstall_status == noleax::agent::HookUninstallStatus::kUninstalled ||
       heap_uninstall_status == noleax::agent::HookUninstallStatus::kNotInstalled;

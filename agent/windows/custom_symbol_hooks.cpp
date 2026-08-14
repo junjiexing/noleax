@@ -708,10 +708,10 @@ class CustomSymbolHooks::Implementation final {
 
   ~Implementation() {
     if (is_installed()) {
-      static_cast<void>(uninstall(HookBackend::kDefaultFlushAttempts));
+      static_cast<void>(uninstall(quiescence_deadline_after()));
     }
     if (has_pending_teardown()) {
-      static_cast<void>(flush(HookBackend::kDefaultFlushAttempts));
+      static_cast<void>(flush(quiescence_deadline_after()));
     }
     if (has_pending_teardown()) {
       abandon_pending_teardown();
@@ -768,7 +768,7 @@ class CustomSymbolHooks::Implementation final {
     return failures;
   }
 
-  [[nodiscard]] bool uninstall(std::uint32_t flush_attempts) noexcept {
+  [[nodiscard]] bool uninstall(QuiescenceDeadline deadline) noexcept {
     const InternalThreadScope internal_thread;
     for (PointState& point : points_) {
       if (!point.installed || point.teardown_pending) {
@@ -781,22 +781,22 @@ class CustomSymbolHooks::Implementation final {
       // for replacement quiescence before releasing the trampoline lifetime leases.
       for (RoleState* role : {&point.alloc, &point.realloc, &point.free}) {
         if (role->installed) {
-          static_cast<void>(backend_->uninstall(role->target, 0U));
+          static_cast<void>(backend_->uninstall(role->target, std::chrono::steady_clock::now()));
         }
       }
       slot.lifecycle.route_to_target();
     }
-    return try_finish_teardown(flush_attempts);
+    return try_finish_teardown(deadline);
   }
 
-  [[nodiscard]] bool flush(std::uint32_t max_attempts) noexcept {
+  [[nodiscard]] bool flush(QuiescenceDeadline deadline) noexcept {
     if (is_installed()) {
       return false;
     }
-    return try_finish_teardown(max_attempts);
+    return try_finish_teardown(deadline);
   }
 
-  [[nodiscard]] bool stop_recording(std::uint32_t max_attempts) noexcept {
+  [[nodiscard]] bool stop_recording(QuiescenceDeadline deadline) noexcept {
     bool recording = false;
     for (PointState& point : points_) {
       if (point.installed && !point.teardown_pending) {
@@ -810,7 +810,7 @@ class CustomSymbolHooks::Implementation final {
     for (PointState& point : points_) {
       if (point.installed && !point.teardown_pending &&
           !g_custom_hook_slots[point.slot_index].lifecycle.wait_for_recording_quiescence(
-              max_attempts)) {
+              deadline)) {
         return false;
       }
     }
@@ -990,7 +990,7 @@ class CustomSymbolHooks::Implementation final {
     } catch (...) {
       for (RoleState* role : {&point.alloc, &point.realloc, &point.free}) {
         if (role->installed) {
-          static_cast<void>(backend_->uninstall(role->target, 0U));
+          static_cast<void>(backend_->uninstall(role->target, std::chrono::steady_clock::now()));
           role->installed = false;
         }
         if (role->lease_acquired) {
@@ -1117,14 +1117,14 @@ class CustomSymbolHooks::Implementation final {
     return CustomHookFailureReason::kOther;
   }
 
-  [[nodiscard]] bool try_finish_teardown(std::uint32_t max_attempts) noexcept {
+  [[nodiscard]] bool try_finish_teardown(QuiescenceDeadline deadline) noexcept {
     bool all_retired = true;
     for (PointState& point : points_) {
       if (!point.teardown_pending || point.retired) {
         continue;
       }
       CustomHookSlot& slot = g_custom_hook_slots[point.slot_index];
-      if (!slot.lifecycle.wait_for_quiescence(max_attempts)) {
+      if (!slot.lifecycle.wait_for_quiescence(deadline)) {
         all_retired = false;
         continue;
       }
@@ -1141,7 +1141,7 @@ class CustomSymbolHooks::Implementation final {
       return false;
     }
     if (!backend_flush_complete_) {
-      backend_flush_complete_ = backend_->flush(max_attempts);
+      backend_flush_complete_ = backend_->flush(deadline);
     }
     if (!backend_flush_complete_) {
       return false;
@@ -1215,16 +1215,16 @@ std::vector<noleax::trace::CustomHookFailure> CustomSymbolHooks::install() {
   return implementation_->install();
 }
 
-bool CustomSymbolHooks::uninstall(std::uint32_t flush_attempts) noexcept {
-  return implementation_->uninstall(flush_attempts);
+bool CustomSymbolHooks::uninstall(QuiescenceDeadline deadline) noexcept {
+  return implementation_->uninstall(deadline);
 }
 
-bool CustomSymbolHooks::flush(std::uint32_t max_attempts) noexcept {
-  return implementation_->flush(max_attempts);
+bool CustomSymbolHooks::flush(QuiescenceDeadline deadline) noexcept {
+  return implementation_->flush(deadline);
 }
 
-bool CustomSymbolHooks::stop_recording(std::uint32_t max_attempts) noexcept {
-  return implementation_->stop_recording(max_attempts);
+bool CustomSymbolHooks::stop_recording(QuiescenceDeadline deadline) noexcept {
+  return implementation_->stop_recording(deadline);
 }
 
 bool CustomSymbolHooks::is_installed() const noexcept { return implementation_->is_installed(); }

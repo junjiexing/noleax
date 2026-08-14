@@ -110,6 +110,9 @@ noleax attach --pid PID [capture-options] [injection-options]
 | --capture-duration DURATION | capture.duration | 直到目标退出或用户停止 |
 | --unload-on-stop / --no-unload-on-stop | injection.unload_on_stop | false |
 
+`--unload-on-stop` 仅 Windows attach 支持；Linux 上该选项在注入前直接报错（H1-A：没有安全的
+进程外撤钩，agent 不会从运行中的目标卸载，attach 收尾后 patch 保持 dormant）。
+
 attach 注入方法（按平台）：
 
 - remote-thread（Windows）

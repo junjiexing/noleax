@@ -720,10 +720,19 @@ void validate_capture_support(const noleax::config::Configuration& configuration
       configuration.trace.max_files.value != 1U) {
     unsupported("P6 supports only --on-trace-full stop with --max-trace-files 1");
   }
+#if defined(_WIN32)
   if (configuration.injection.unload_on_stop.value &&
       *configuration.operation.value != noleax::config::Operation::kAttach) {
     unsupported("--unload-on-stop is only supported for attach");
   }
+#else
+  // H1-A: there is no safe out-of-process unpatch on Linux (no stop-the-world window
+  // outside the ptrace seizure), so the agent module can never be unloaded from a
+  // running target. Reject the option outright, whatever the operation.
+  if (configuration.injection.unload_on_stop.value) {
+    unsupported("--unload-on-stop is not supported on Linux: no safe out-of-process unpatch");
+  }
+#endif
 }
 
 #if defined(_WIN32)
@@ -1425,6 +1434,12 @@ class InterruptHandlerGuard final {
       return "finalized";
     case noleax::ipc::AgentState::kFailed:
       return "failed";
+    case noleax::ipc::AgentState::kDraining:
+      return "draining";
+    case noleax::ipc::AgentState::kDormant:
+      return "dormant";
+    case noleax::ipc::AgentState::kUnpatching:
+      return "unpatching";
   }
   return "unknown";
 }
@@ -1448,7 +1463,33 @@ void print_live_status(const noleax::ipc::CaptureStatus& status) {
         now_ns - static_cast<std::int64_t>(status.last_flush_monotonic_ns), std::int64_t{0}));
     std::cout << " last_flush_age_ms=" << age_ns / 1'000'000U;
   }
+  if ((status.flags & noleax::ipc::kCaptureStatusFlagDrainIncomplete) != 0U) {
+    std::cout << " drain=incomplete";
+  }
+  if ((status.flags & noleax::ipc::kCaptureStatusFlagUnpatchIncomplete) != 0U) {
+    std::cout << " unpatch=incomplete";
+  }
   std::cout << std::endl;
+}
+
+// Human-readable note for the kCaptureStatusFlag* bits a stop/finalize can report; empty
+// when the capture ended cleanly.
+[[nodiscard]] std::string capture_status_flag_note(std::uint32_t flags) {
+  std::string note;
+  if ((flags & noleax::ipc::kCaptureStatusFlagDrainIncomplete) != 0U) {
+    note =
+        "the capture stop timed out with calls still in flight; the trace can miss "
+        "events recorded after the drain budget expired";
+  }
+  if ((flags & noleax::ipc::kCaptureStatusFlagUnpatchIncomplete) != 0U) {
+    if (!note.empty()) {
+      note += "; ";
+    }
+    note +=
+        "the hook teardown did not complete; the patches stay installed (dormant) "
+        "until the target exits";
+  }
+  return note;
 }
 
 [[nodiscard]] int print_capture_summary(const std::filesystem::path& trace_path, std::uint32_t pid,
@@ -1561,6 +1602,7 @@ void print_live_status(const noleax::ipc::CaptureStatus& status) {
     // second and prints the conservation and queue telemetry.
     bool target_exited = false;
     bool detached = false;
+    std::string stop_note;
     const bool live = configuration.capture.live.value;
     const auto deadline =
         configuration.capture.duration.value.has_value()
@@ -1582,7 +1624,7 @@ void print_live_status(const noleax::ipc::CaptureStatus& status) {
         next_status_poll = now + std::chrono::seconds{1};
       }
       if (now >= deadline) {
-        static_cast<void>(session->stop());
+        stop_note = capture_status_flag_note(session->stop().flags);
         break;
       }
     }
@@ -1591,7 +1633,7 @@ void print_live_status(const noleax::ipc::CaptureStatus& status) {
                                  target_exited && !is_attach
                                      ? std::optional<std::uint32_t>{session->target_exit_code()}
                                      : std::nullopt,
-                                 detached);
+                                 detached, stop_note);
   } catch (const ApplicationError&) {
     throw;
   } catch (const noleax::controller::linux::ControllerError& error) {

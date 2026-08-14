@@ -65,6 +65,7 @@ std::atomic<bool> bootstrap_started{false};
 using noleax::ipc::kAgentStartErrorGeneric;
 using noleax::ipc::kAgentStartErrorHookInstall;
 using noleax::ipc::kAgentStartErrorTraceWriter;
+using noleax::ipc::kAgentStartErrorUnsupportedOption;
 using noleax::ipc::kAgentStartErrorUnsupportedProfile;
 
 class HookGuardRuntimeLease final {
@@ -93,6 +94,8 @@ struct BootstrapEnvironment {
   std::uint32_t controller_pid{0U};
   std::uint32_t connect_timeout_ms{noleax::agent::linux::kDefaultConnectTimeoutMs};
   std::string standalone_config_path;  // empty unless standalone mode
+  // Test seam (H1-A): drain quiescence budget override in milliseconds; 0 = unset.
+  std::uint32_t drain_budget_ms{0U};
 };
 
 // Reads and then scrubs every NOLEAX_* variable so the target's children never
@@ -117,12 +120,19 @@ struct BootstrapEnvironment {
   if (const char* value = std::getenv(noleax::agent::linux::kAgentConfigEnv)) {
     environment.standalone_config_path = value;
   }
+  if (const char* value = std::getenv(noleax::agent::linux::kDrainBudgetEnv)) {
+    const unsigned long budget = std::strtoul(value, nullptr, 10);
+    if (budget > 0UL && budget <= 3'600'000UL) {
+      environment.drain_budget_ms = static_cast<std::uint32_t>(budget);
+    }
+  }
 
   unsetenv(noleax::agent::linux::kBootstrapSocketEnv);
   unsetenv(noleax::agent::linux::kSessionTokenEnv);
   unsetenv(noleax::agent::linux::kControllerPidEnv);
   unsetenv(noleax::agent::linux::kConnectTimeoutEnv);
   unsetenv(noleax::agent::linux::kAgentConfigEnv);
+  unsetenv(noleax::agent::linux::kDrainBudgetEnv);
   return environment;
 }
 
@@ -192,6 +202,16 @@ class LinuxCaptureRuntime {
   // Runs on the constructor thread (loader-lock discipline, see the file header).
   [[nodiscard]] bool start(const noleax::ipc::StartCaptureRequest& request,
                            const std::array<std::byte, 16U>& session_id) {
+    if (request.unload_on_stop) {
+      // H1-A: no live unpatch outside the ptrace stop window exists on Linux, so the
+      // agent module can never be safely unloaded from a running target. Reject up
+      // front instead of silently keeping the module loaded.
+      start_error_ = noleax::ipc::ErrorResponse{
+          kAgentStartErrorUnsupportedOption, 0U,
+          "unload_on_stop is not supported by the Linux agent: no safe out-of-process "
+          "unpatch"};
+      return false;
+    }
     const bool want_heap = request.hook_profile == noleax::ipc::HookProfile::kLinuxGlibcHeap ||
                            request.hook_profile == noleax::ipc::HookProfile::kLinuxNative;
     const bool want_vm = request.hook_profile == noleax::ipc::HookProfile::kLinuxVirtualMemory ||
@@ -202,6 +222,10 @@ class LinuxCaptureRuntime {
       return false;
     }
     state_ = noleax::ipc::AgentState::kStarting;
+    // Attach captures never live-unpatch: finalize() keeps the patches installed but
+    // dormant (drain() already routed replacements to the originals), because there is
+    // no stop-the-world window outside ptrace seizure to revert them safely.
+    retain_patches_on_finalize_ = request.capture_kind == noleax::ipc::CaptureKind::kAttach;
 
     const std::uint64_t origin = monotonic_now_ns();
     tracker_ = std::make_unique<noleax::agent::linux::LinuxModuleTracker>(origin);
@@ -322,6 +346,7 @@ class LinuxCaptureRuntime {
   [[nodiscard]] noleax::ipc::CaptureStatus status() const noexcept {
     noleax::ipc::CaptureStatus status;
     status.state = state_;
+    status.flags = status_flags_.load(std::memory_order_acquire);
     if (event_queue_ != nullptr) {
       status.queued_events = event_queue_->occupancy();
       status.queue_capacity = event_queue_->capacity();
@@ -371,19 +396,33 @@ class LinuxCaptureRuntime {
     return status;
   }
 
-  // Logical stop: replacements route to original, the writer drains and closes the trace.
+  // Logical stop: replacements route to original, in-flight recording calls drain out
+  // under the drain deadline, then the writer drains and closes the trace. A quiescence
+  // timeout never spins and never crashes the target: the capture stops with the
+  // drain-incomplete flag set, and a late call can only record into the retired queue,
+  // where its event is never consumed.
   void drain() {
-    if (state_ != noleax::ipc::AgentState::kCapturing) {
+    noleax::ipc::AgentState expected = noleax::ipc::AgentState::kCapturing;
+    if (!state_.compare_exchange_strong(expected, noleax::ipc::AgentState::kDraining)) {
       return;
     }
+    const noleax::agent::QuiescenceDeadline deadline = noleax::agent::drain_quiescence_deadline();
+    bool quiesced = true;
     if (heap_hooks_ != nullptr) {
-      static_cast<void>(heap_hooks_->stop_recording());
+      quiesced = heap_hooks_->stop_recording(deadline) && quiesced;
     }
     if (vm_hooks_ != nullptr) {
-      static_cast<void>(vm_hooks_->stop_recording());
+      quiesced = vm_hooks_->stop_recording(deadline) && quiesced;
     }
     if (custom_hooks_ != nullptr) {
-      static_cast<void>(custom_hooks_->stop_recording());
+      quiesced = custom_hooks_->stop_recording(deadline) && quiesced;
+    }
+    if (!quiesced) {
+      status_flags_.fetch_or(noleax::ipc::kCaptureStatusFlagDrainIncomplete,
+                             std::memory_order_acq_rel);
+      std::fprintf(stderr,
+                   "noleax-agent: capture stop did not reach replacement quiescence within "
+                   "the drain budget; calls still in flight are cut off from the trace\n");
     }
     writer_result_ = writer_->finish();
     // A writer failure stays visible in the session status so the controller classifies
@@ -393,26 +432,63 @@ class LinuxCaptureRuntime {
                  : noleax::ipc::AgentState::kDrained;
   }
 
-  // Physical teardown: revert every patch and shut the backend down.
+  // Finalizes a drained capture. Launch captures go through the physical teardown
+  // (kUnpatching): revert every patch and shut the backend down. Attach captures keep
+  // their patches (retain_patches_on_finalize_): with no stop-the-world window outside
+  // the ptrace seizure there is no safe live unpatch, so they stay installed but dormant
+  // and the state lands on kDormant. A teardown that cannot prove completion within its
+  // budget never retries forever and never crashes the target: kDormant plus the
+  // unpatch-incomplete flag.
   void finalize() {
     if (state_ == noleax::ipc::AgentState::kCapturing) {
       drain();
     }
-    if (state_ != noleax::ipc::AgentState::kDrained && state_ != noleax::ipc::AgentState::kFailed) {
+    const noleax::ipc::AgentState current = state_;
+    if (current != noleax::ipc::AgentState::kDrained &&
+        current != noleax::ipc::AgentState::kFailed) {
       return;
     }
-    const bool writer_failed = state_ == noleax::ipc::AgentState::kFailed;
+    const bool writer_failed = current == noleax::ipc::AgentState::kFailed;
+    if (retain_patches_on_finalize_) {
+      state_ = writer_failed ? noleax::ipc::AgentState::kFailed : noleax::ipc::AgentState::kDormant;
+      return;
+    }
+    noleax::ipc::AgentState expected = current;
+    if (!state_.compare_exchange_strong(expected, noleax::ipc::AgentState::kUnpatching)) {
+      return;
+    }
+    const noleax::agent::QuiescenceDeadline deadline = noleax::agent::quiescence_deadline_after();
+    bool unpatched = true;
     if (custom_hooks_ != nullptr) {
-      static_cast<void>(custom_hooks_->uninstall());
+      unpatched = custom_hooks_->uninstall(deadline) && unpatched;
     }
     if (vm_hooks_ != nullptr) {
-      static_cast<void>(vm_hooks_->uninstall());
+      unpatched = vm_hooks_->uninstall(deadline) && unpatched;
     }
     if (heap_hooks_ != nullptr) {
-      static_cast<void>(heap_hooks_->uninstall());
+      unpatched = heap_hooks_->uninstall(deadline) && unpatched;
     }
-    static_cast<void>(backend_->shutdown());
-    state_ = writer_failed ? noleax::ipc::AgentState::kFailed : noleax::ipc::AgentState::kFinalized;
+    unpatched = backend_->shutdown(deadline) && unpatched;
+    if (!unpatched) {
+      status_flags_.fetch_or(noleax::ipc::kCaptureStatusFlagUnpatchIncomplete,
+                             std::memory_order_acq_rel);
+      std::fprintf(stderr,
+                   "noleax-agent: hook teardown did not complete within its budget; the "
+                   "patches stay installed (dormant) for the rest of the process lifetime\n");
+    }
+    if (writer_failed) {
+      state_ = noleax::ipc::AgentState::kFailed;
+    } else {
+      state_ = unpatched ? noleax::ipc::AgentState::kFinalized : noleax::ipc::AgentState::kDormant;
+    }
+  }
+
+  // Parks a drained capture: the process keeps running with the patches installed but
+  // dormant (drain routed replacements to the originals and the writer is closed).
+  void retire_to_dormant() noexcept {
+    if (state_ == noleax::ipc::AgentState::kDrained) {
+      state_ = noleax::ipc::AgentState::kDormant;
+    }
   }
 
   [[nodiscard]] noleax::ipc::AgentState state() const noexcept { return state_; }
@@ -433,7 +509,8 @@ class LinuxCaptureRuntime {
   // exit trampoline happens after this returns, so tearing the backend down would free
   // that trampoline out from under the caller. The process is exiting anyway, so
   // leaving the patches installed is harmless (mirrors the Windows exit-hook path,
-  // which also finalizes gracefully without physical teardown).
+  // which also finalizes gracefully without physical teardown). Nothing is uninstalled
+  // on this path, so the state lands on kDormant, not kFinalized.
   void finalize_on_exit() noexcept {
     bool expected = false;
     if (!exit_finalize_started.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
@@ -444,6 +521,7 @@ class LinuxCaptureRuntime {
     const noleax::agent::InternalThreadScope internal_scope;
     try {
       drain();
+      retire_to_dormant();
     } catch (...) {
     }
   }
@@ -501,8 +579,14 @@ class LinuxCaptureRuntime {
   // for the live status telemetry.
   noleax::agent::linux::LinuxHeapEventQueue* event_queue_{nullptr};
   noleax::agent::linux::LinuxTraceWriterResult writer_result_{};
-  noleax::ipc::AgentState state_{noleax::ipc::AgentState::kIdle};
+  std::atomic<noleax::ipc::AgentState> state_{noleax::ipc::AgentState::kIdle};
+  // kCaptureStatusFlag* mask reported through CaptureStatus::flags.
+  std::atomic<std::uint32_t> status_flags_{0U};
   noleax::ipc::ErrorResponse start_error_{};
+  // Set from StartCaptureRequest::capture_kind: attach captures keep their patches on
+  // finalize (no safe live unpatch outside the ptrace stop window); launch captures
+  // go through the physical teardown.
+  bool retain_patches_on_finalize_{false};
 };
 
 std::atomic<LinuxCaptureRuntime*> LinuxCaptureRuntime::active_runtime{nullptr};
@@ -932,7 +1016,10 @@ bool standalone_bootstrap(const std::string& config_path) {
     const auto duration = *configuration.capture.duration.value;
     std::thread{[runtime, duration] {
       std::this_thread::sleep_for(duration);
-      runtime->finalize();
+      // H1-A: a standalone duration stop is drain-only. The process keeps running with
+      // the patches installed but dormant; nothing is uninstalled while threads are live.
+      runtime->drain();
+      runtime->retire_to_dormant();
     }}.detach();
   }
   return true;
@@ -944,6 +1031,10 @@ bool standalone_bootstrap(const std::string& config_path) {
 
 __attribute__((constructor)) void noleax_agent_linux_init() {
   BootstrapEnvironment environment = take_bootstrap_environment();
+  if (environment.drain_budget_ms != 0U) {
+    noleax::agent::detail::drain_quiescence_budget_override_ms.store(
+        static_cast<std::int64_t>(environment.drain_budget_ms), std::memory_order_release);
+  }
   const bool has_session = !environment.socket_name.empty();
   const bool has_standalone = !environment.standalone_config_path.empty();
   if (has_session == has_standalone) {

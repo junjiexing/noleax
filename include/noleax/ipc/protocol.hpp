@@ -61,6 +61,13 @@ enum class AgentState : std::uint8_t {
   kDrained = 3U,
   kFinalized = 4U,
   kFailed = 5U,
+  // ABI 5 in-place extension (ABI 5 predates any release): the explicit lifecycle states
+  // of the Linux H1-A state machine. kDraining/kUnpatching are transient (a concurrent
+  // QueryStatus can observe them); kDormant is terminal — patches stay installed but
+  // route to the originals, the capture is drained and the writer closed.
+  kDraining = 6U,
+  kDormant = 7U,
+  kUnpatching = 8U,
 };
 
 enum class Architecture : std::uint16_t {  // NOLINT(performance-enum-size)
@@ -167,12 +174,22 @@ struct StartCaptureRequest {
   std::uint64_t memory_map_interval_ns{1'000U * 1000U * 1000U};
   std::int32_t compression_level{0};
   std::string trace_path_utf8;
-  // Unload the agent module from the target after the capture finalizes (attach).
+  // Unload the agent module from the target after the capture finalizes (attach,
+  // Windows only; the Linux agent rejects the request — no safe out-of-process unpatch).
   bool unload_on_stop{false};
   std::vector<CustomHookSpec> custom_hooks;
 
   bool operator==(const StartCaptureRequest&) const = default;
 };
+
+// CaptureStatus::flags bits (in-place ABI 5 extension, appended after
+// last_flush_monotonic_ns): non-fatal stop/finalize degradation the controller must see.
+// kDrainIncomplete: the logical stop timed out with replacement calls still in flight;
+// events those calls record afterwards never reach the trace. kUnpatchIncomplete: the
+// physical teardown could not prove completion within its budget; the patches stay
+// installed (dormant) and the agent reports kDormant instead of kFinalized.
+inline constexpr std::uint32_t kCaptureStatusFlagDrainIncomplete = 1U << 0U;
+inline constexpr std::uint32_t kCaptureStatusFlagUnpatchIncomplete = 1U << 1U;
 
 struct CaptureStatus {
   AgentState state{AgentState::kIdle};
@@ -191,6 +208,8 @@ struct CaptureStatus {
   // CLOCK_MONOTONIC nanoseconds of the agent writer's last successful stream flush;
   // 0 = never flushed.
   std::uint64_t last_flush_monotonic_ns{0U};
+  // kCaptureStatusFlag* mask; 0 when the stop/finalize completed cleanly.
+  std::uint32_t flags{0U};
 
   bool operator==(const CaptureStatus&) const = default;
 };
@@ -209,6 +228,7 @@ inline constexpr std::uint32_t kAgentStartErrorGeneric = 1U;
 inline constexpr std::uint32_t kAgentStartErrorHookInstall = 3U;
 inline constexpr std::uint32_t kAgentStartErrorUnsupportedProfile = 5U;
 inline constexpr std::uint32_t kAgentStartErrorTraceWriter = 6U;
+inline constexpr std::uint32_t kAgentStartErrorUnsupportedOption = 7U;
 
 class ProtocolError final : public std::runtime_error {
  public:

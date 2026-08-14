@@ -9,6 +9,7 @@
 #include <windows.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -408,7 +409,7 @@ FastHookResult RtlDestroyHeapHook::install() {
   return result;
 }
 
-HookUninstallStatus RtlDestroyHeapHook::uninstall(std::uint32_t flush_attempts) noexcept {
+HookUninstallStatus RtlDestroyHeapHook::uninstall(QuiescenceDeadline deadline) noexcept {
   const InternalThreadScope internal_thread;
   if (state_ == State::kInactive || state_ == State::kRetired) {
     return HookUninstallStatus::kNotInstalled;
@@ -419,29 +420,30 @@ HookUninstallStatus RtlDestroyHeapHook::uninstall(std::uint32_t flush_attempts) 
 
   replacement_lifecycle.stop_recording();
   state_ = State::kTeardownPending;
-  const HookUninstallStatus backend_status = backend_->uninstall(target_, 0U);
+  const HookUninstallStatus backend_status =
+      backend_->uninstall(target_, std::chrono::steady_clock::now());
   replacement_lifecycle.route_to_target();
   backend_teardown_complete_ = backend_status == HookUninstallStatus::kUninstalled;
-  return try_finish_teardown(flush_attempts) ? HookUninstallStatus::kUninstalled
-                                             : HookUninstallStatus::kTeardownPending;
+  return try_finish_teardown(deadline) ? HookUninstallStatus::kUninstalled
+                                       : HookUninstallStatus::kTeardownPending;
 }
 
-bool RtlDestroyHeapHook::flush(std::uint32_t max_attempts) noexcept {
+bool RtlDestroyHeapHook::flush(QuiescenceDeadline deadline) noexcept {
   if (state_ == State::kInactive || state_ == State::kRetired) {
     return true;
   }
   if (state_ == State::kInstalled) {
     return false;
   }
-  return try_finish_teardown(max_attempts);
+  return try_finish_teardown(deadline);
 }
 
-bool RtlDestroyHeapHook::stop_recording(std::uint32_t max_attempts) noexcept {
+bool RtlDestroyHeapHook::stop_recording(QuiescenceDeadline deadline) noexcept {
   if (state_ != State::kInstalled) {
     return state_ == State::kInactive || state_ == State::kRetired;
   }
   replacement_lifecycle.stop_recording();
-  return replacement_lifecycle.wait_for_recording_quiescence(max_attempts);
+  return replacement_lifecycle.wait_for_recording_quiescence(deadline);
 }
 
 bool RtlDestroyHeapHook::is_installed() const noexcept { return state_ == State::kInstalled; }
@@ -502,9 +504,9 @@ const RtlHeapEventQueue& RtlDestroyHeapHook::event_queue() const noexcept {
 }
 void* RtlDestroyHeapHook::target_address() const noexcept { return target_; }
 
-bool RtlDestroyHeapHook::try_finish_teardown(std::uint32_t max_attempts) noexcept {
+bool RtlDestroyHeapHook::try_finish_teardown(QuiescenceDeadline deadline) noexcept {
   if (!replacement_quiescent_) {
-    if (!replacement_lifecycle.wait_for_quiescence(max_attempts)) {
+    if (!replacement_lifecycle.wait_for_quiescence(deadline)) {
       return false;
     }
     replacement_quiescent_ = true;
@@ -514,7 +516,7 @@ bool RtlDestroyHeapHook::try_finish_teardown(std::uint32_t max_attempts) noexcep
     }
   }
   if (!backend_teardown_complete_) {
-    backend_teardown_complete_ = backend_->flush(max_attempts);
+    backend_teardown_complete_ = backend_->flush(deadline);
   }
   if (!backend_teardown_complete_) {
     return false;

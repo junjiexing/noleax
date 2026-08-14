@@ -421,6 +421,15 @@ class CaptureSession::Impl {
     }
     stopped_ = true;
     if (last_status_.state == noleax::ipc::AgentState::kFailed) {
+      if ((last_status_.flags & noleax::ipc::kCaptureStatusFlagDrainIncomplete) != 0U) {
+        // The drain deadline fired with replacement calls still in flight; their late
+        // events cannot reconcile, so the agent finished with the writer error tail.
+        throw ControllerError{
+            "capture stop did not reach replacement quiescence within the drain budget; "
+            "calls still in flight were cut off and the partial trace preserves the "
+            "capture up to the stop",
+            ControllerFailureKind::kWriterError};
+      }
       // The agent already preserved the capture into the trace tail; the controller only
       // learns that the writer failed, not why (the target's stderr has the detail).
       throw ControllerError{
