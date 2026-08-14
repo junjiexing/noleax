@@ -7,29 +7,7 @@
 #include <limits>
 #include <thread>
 
-#if defined(_WIN32)
-// The deadline wait uses WaitOnAddress/WakeByAddressAll (stable since Windows 8). Pull the
-// real SDK declarations: hand-written prototypes fight the SDK's own (dllimport mismatch,
-// C4273 under -WX). The guard macros are scoped so including windows.h here neither leaks
-// min/max nor forces the lean set on consumers that wanted the full one.
-#ifndef NOMINMAX
-#define NOMINMAX
-#define NOLEAX_DETAIL_UNDEF_NOMINMAX
-#endif
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#define NOLEAX_DETAIL_UNDEF_WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-#ifdef NOLEAX_DETAIL_UNDEF_NOMINMAX
-#undef NOMINMAX
-#undef NOLEAX_DETAIL_UNDEF_NOMINMAX
-#endif
-#ifdef NOLEAX_DETAIL_UNDEF_WIN32_LEAN_AND_MEAN
-#undef WIN32_LEAN_AND_MEAN
-#undef NOLEAX_DETAIL_UNDEF_WIN32_LEAN_AND_MEAN
-#endif
-#elif defined(__linux__)
+#if defined(__linux__)
 #include <linux/futex.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -86,12 +64,13 @@ inline void notify_quiescence_epoch() noexcept {
   quiescence_epoch.fetch_add(1U, std::memory_order_release);
   // Wake the deadline-waiters with the platform primitive directly: std::atomic
   // ::notify_all may skip the wake syscall entirely when the standard library tracks no
-  // waiters of its own (libstdc++ does), and our waiters sleep on the raw futex/address.
+  // waiters of its own (libstdc++ does), and our waiters sleep on the raw futex word.
+  // Windows polls the portable fallback below (1 ms slices) — the WaitOnAddress variant
+  // proved unverifiable without a Windows toolchain (linkage + import-lib drift across
+  // SDKs); these are teardown paths, so the poll cost is noise either way.
   // Same out-of-section call class as the gate's epoch.wait above — the wake lands in
   // CRT/kernel code, never in noleax code the rendezvous scans.
-#if defined(_WIN32)
-  WakeByAddressAll(&quiescence_epoch);
-#elif defined(__linux__)
+#if defined(__linux__)
   static_cast<void>(::syscall(SYS_futex, reinterpret_cast<std::uint32_t*>(&quiescence_epoch),
                               FUTEX_WAKE | FUTEX_PRIVATE_FLAG, __INT_MAX__, nullptr, nullptr));
 #else
@@ -159,21 +138,7 @@ NOLEAX_HOOK_IMM_SECTION_POP
 // untimed std::atomic::wait the gate uses: a deadline-aware wait that never spins.
 [[nodiscard]] inline bool quiescence_epoch_wait(
     std::uint32_t expected, std::chrono::steady_clock::time_point deadline) noexcept {
-#if defined(_WIN32)
-  // WaitOnAddress pairs with the WakeByAddressAll the notify path issues directly. A false
-  // return with the epoch already changed is a wake (the caller re-evaluates); false with
-  // the epoch still equal is the timeout.
-  const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
-  if (now >= deadline) {
-    return false;
-  }
-  const auto remaining = std::chrono::ceil<std::chrono::milliseconds>(deadline - now).count();
-  constexpr auto kMaxWaitMilliseconds = static_cast<decltype(remaining)>(0xFFFFFFFEUL);
-  const auto milliseconds = static_cast<unsigned long>(
-      remaining > kMaxWaitMilliseconds ? kMaxWaitMilliseconds : remaining);
-  return WaitOnAddress(&quiescence_epoch, &expected, sizeof(expected), milliseconds) != 0 ||
-         quiescence_epoch.load(std::memory_order_acquire) != expected;
-#elif defined(__linux__)
+#if defined(__linux__)
   // FUTEX_WAIT_BITSET with an absolute CLOCK_MONOTONIC timeout (steady_clock). The notify
   // path issues FUTEX_WAKE on the same word directly.
   const std::int64_t nanoseconds =

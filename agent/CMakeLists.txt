@@ -65,9 +65,7 @@ target_link_libraries(noleax-hook-backend
 )
 
 if(WIN32)
-  # Psapi for the module walk; Synchronization for WaitOnAddress/WakeByAddressAll (the
-  # replacement-lifecycle deadline wait) — PUBLIC so every consumer's final link gets it.
-  target_link_libraries(noleax-hook-backend PUBLIC Psapi Synchronization)
+  target_link_libraries(noleax-hook-backend PRIVATE Psapi)
 endif()
 
 noleax_set_project_warnings(noleax-hook-backend)
