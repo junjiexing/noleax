@@ -153,16 +153,17 @@ NOLEAX_HOOK_IMM_SECTION_POP
   }
   return errno != ETIMEDOUT;
 #else
-  // Portable fallback: bounded sleep slices. Same observable contract (sleep, never spin,
-  // hard deadline) with up to one millisecond of extra wake latency.
+  // Portable fallback: spin-yield until the deadline. A 1 ms sleep poll is NOT an option:
+  // under continuous allocation churn the all-zero window of the watched counters can be
+  // microseconds brief, and a sleep sampler misses it indefinitely (the notify path is a
+  // no-op for sleepers) — the caller then burns its whole budget and the controller's pipe
+  // read times out first. Yield-rate sampling matches the pre-deadline behavior; the
+  // deadline keeps it bounded. These are teardown paths, so the spin cost is noise.
   static_cast<void>(expected);
-  const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
-  if (now >= deadline) {
+  if (std::chrono::steady_clock::now() >= deadline) {
     return false;
   }
-  std::this_thread::sleep_for(
-      (std::min)(std::chrono::milliseconds{1},
-                 std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now)));
+  std::this_thread::yield();
   return true;
 #endif
 }
