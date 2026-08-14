@@ -294,9 +294,8 @@ TEST_CASE("linux ptrace injector attaches the agent to a running process",
   // instead of kFinalized and the fixture keeps running with them in place.
   const auto final_status = noleax::ipc::decode_capture_status(finalized.payload);
   CHECK(final_status.state == noleax::ipc::AgentState::kDormant);
-  // H4: only the informational buffer-adjusted flag (default buffer floors to 16384
-  // slots); no degradation flag.
-  CHECK(final_status.flags == noleax::ipc::kCaptureStatusFlagBufferAdjusted);
+  // No degradation flags: the drain and the dormant retain both completed cleanly.
+  CHECK(final_status.flags == 0U);
 
   // Orderly fixture exit: release it and check its own exit code and report survived the
   // injection (the only thread was hijacked, restored, and detached mid-run).
