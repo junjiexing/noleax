@@ -245,7 +245,7 @@ class CaptureRuntime final {
       throw std::logic_error{"capture session is not recording"};
     }
     if (!noleax::agent::ReplacementQuiescenceGate::close_and_wait(
-            noleax::agent::quiescence_deadline_after())) {
+            noleax::agent::quiescence_deadline_after(std::chrono::milliseconds{10}))) {
       const std::uint64_t active = noleax::agent::ReplacementQuiescenceGate::active_call_count();
       const std::uint64_t transitions =
           noleax::agent::ReplacementQuiescenceGate::transition_count();
@@ -256,7 +256,8 @@ class CaptureRuntime final {
     }
     finalize_gate_closed_ = true;
     try {
-      if (!hooks_->stop_recording()) {
+      if (!hooks_->stop_recording(
+              noleax::agent::quiescence_deadline_after(std::chrono::milliseconds{1000}))) {
         throw std::runtime_error{"recording callbacks did not become quiescent"};
       }
       capture_ready.store(false, std::memory_order_release);
@@ -269,7 +270,7 @@ class CaptureRuntime final {
         throw std::runtime_error{"trace output could not be closed cleanly"};
       }
       if (!noleax::agent::ReplacementQuiescenceGate::close_and_wait(
-              noleax::agent::quiescence_deadline_after())) {
+              noleax::agent::quiescence_deadline_after(std::chrono::milliseconds{1000}))) {
         noleax::agent::ReplacementQuiescenceGate::open();
         throw std::runtime_error{"logically stopped callbacks did not reach the finalize gate"};
       }
@@ -289,7 +290,8 @@ class CaptureRuntime final {
       throw std::logic_error{"replacement finalize gate is not closed"};
     }
     try {
-      if (!hooks_->uninstall()) {
+      if (!hooks_->uninstall(
+              noleax::agent::quiescence_deadline_after(std::chrono::milliseconds{1000}))) {
         throw std::runtime_error{"physical hook teardown did not become quiescent"};
       }
       if (!backend_->shutdown()) {
@@ -300,7 +302,7 @@ class CaptureRuntime final {
       // restored-target route before releasing the hook instances they are about to touch.
       release_finalize_gate();
       if (!noleax::agent::ReplacementQuiescenceGate::wait_for_drain(
-              noleax::agent::quiescence_deadline_after())) {
+              noleax::agent::quiescence_deadline_after(std::chrono::milliseconds{10}))) {
         // Remaining waiters are frozen by the controller and will wake onto the lifecycle
         // counters only after this finalize returns. Transfer the profile to process lifetime
         // instead of freeing state they can still dereference.
@@ -326,13 +328,14 @@ class CaptureRuntime final {
       return;
     }
     if (!noleax::agent::ReplacementQuiescenceGate::close_and_wait(
-            noleax::agent::quiescence_deadline_after())) {
+            noleax::agent::quiescence_deadline_after(std::chrono::milliseconds{10}))) {
       noleax::agent::ReplacementQuiescenceGate::open();
       throw std::runtime_error{"replacement callbacks did not reach the finalize gate"};
     }
     finalize_gate_closed_ = true;
     try {
-      if (!hooks_->stop_recording()) {
+      if (!hooks_->stop_recording(
+              noleax::agent::quiescence_deadline_after(std::chrono::milliseconds{1000}))) {
         throw std::runtime_error{"recording callbacks did not become quiescent"};
       }
       release_finalize_gate();
@@ -352,7 +355,8 @@ class CaptureRuntime final {
   void finalize_timed() {
     finalize_graceful();
     if (hooks_ != nullptr) {
-      static_cast<void>(hooks_->uninstall());
+      static_cast<void>(hooks_->uninstall(
+          noleax::agent::quiescence_deadline_after(std::chrono::milliseconds{1000})));
       hooks_.reset();
     }
     if (backend_ != nullptr) {
@@ -380,7 +384,8 @@ class CaptureRuntime final {
     }
     state_ = noleax::ipc::AgentState::kDrained;
     try {
-      static_cast<void>(hooks_->stop_recording());
+      static_cast<void>(hooks_->stop_recording(
+          noleax::agent::quiescence_deadline_after(std::chrono::milliseconds{1000})));
       result_ = writer_->finish_after_worker_exit();
       writer_.reset();
       output_->flush();
