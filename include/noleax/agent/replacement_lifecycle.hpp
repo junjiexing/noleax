@@ -12,23 +12,23 @@
 // real SDK declarations: hand-written prototypes fight the SDK's own (dllimport mismatch,
 // C4273 under -WX). The guard macros are scoped so including windows.h here neither leaks
 // min/max nor forces the lean set on consumers that wanted the full one.
-# ifndef NOMINMAX
-#  define NOMINMAX
-#  define NOLEAX_DETAIL_UNDEF_NOMINMAX
-# endif
-# ifndef WIN32_LEAN_AND_MEAN
-#  define WIN32_LEAN_AND_MEAN
-#  define NOLEAX_DETAIL_UNDEF_WIN32_LEAN_AND_MEAN
-# endif
-# include <windows.h>
-# ifdef NOLEAX_DETAIL_UNDEF_NOMINMAX
-#  undef NOMINMAX
-#  undef NOLEAX_DETAIL_UNDEF_NOMINMAX
-# endif
-# ifdef NOLEAX_DETAIL_UNDEF_WIN32_LEAN_AND_MEAN
-#  undef WIN32_LEAN_AND_MEAN
-#  undef NOLEAX_DETAIL_UNDEF_WIN32_LEAN_AND_MEAN
-# endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#define NOLEAX_DETAIL_UNDEF_NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#define NOLEAX_DETAIL_UNDEF_WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#ifdef NOLEAX_DETAIL_UNDEF_NOMINMAX
+#undef NOMINMAX
+#undef NOLEAX_DETAIL_UNDEF_NOMINMAX
+#endif
+#ifdef NOLEAX_DETAIL_UNDEF_WIN32_LEAN_AND_MEAN
+#undef WIN32_LEAN_AND_MEAN
+#undef NOLEAX_DETAIL_UNDEF_WIN32_LEAN_AND_MEAN
+#endif
 #elif defined(__linux__)
 #include <linux/futex.h>
 #include <sys/syscall.h>
