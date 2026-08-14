@@ -264,7 +264,7 @@ int main() {
   check(a3 != MAP_FAILED, "remap source mmap succeeds");
   std::memset(a3, 0x5a, 0x1000U);
   errno = EDOM;
-  void* const a4 = ::mremap(a3, 0x1000U, 0x4000U, MREMAP_MAYMOVE, static_cast<void*>(nullptr));
+  void* const a4 = ::mremap(a3, 0x1000U, 0x4000U, MREMAP_MAYMOVE);
   const int errno_after_remap = errno;
   check(a4 != MAP_FAILED, "mremap growth succeeds");
   check(errno_after_remap == EDOM, "errno preserved across a successful mremap");
@@ -295,8 +295,7 @@ int main() {
   for (std::size_t page = 0U; page < kBigSize / 0x1000U; ++page) {
     static_cast<unsigned char*>(big)[page * 0x1000U] = static_cast<unsigned char>(page);
   }
-  void* const grown =
-      ::mremap(big, kBigSize, kBiggerSize, MREMAP_MAYMOVE, static_cast<void*>(nullptr));
+  void* const grown = ::mremap(big, kBigSize, kBiggerSize, MREMAP_MAYMOVE);
   check(grown != MAP_FAILED, "big mremap growth succeeds");
   void* const dest = ::mmap(nullptr, kBiggerSize, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   check(dest != MAP_FAILED, "move destination reservation succeeds");

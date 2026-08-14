@@ -4,6 +4,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <variant>
 #include <vector>
@@ -813,6 +814,31 @@ TEST_CASE("agent memory record decoders reject malformed payloads", "[trace][rec
     memory.monotonic_ticks = 1U;
     memory.categories = {
         AgentMemoryCategorySample{AgentMemoryCategory::kAgentHeap, 0U, 4U, 8U},
+    };
+    std::vector<std::byte> encoded;
+    CHECK_THROWS_AS(append_agent_memory_record(encoded, memory), MemorySnapshotValidationError);
+    CHECK(encoded.empty());
+  }
+
+  SECTION("category totals overflow") {
+    AgentMemory memory;
+    memory.monotonic_ticks = 1U;
+    memory.categories = {
+        AgentMemoryCategorySample{AgentMemoryCategory::kEventQueue, 0U,
+                                  std::numeric_limits<std::uint64_t>::max(), 0U},
+        AgentMemoryCategorySample{AgentMemoryCategory::kAgentHeap, 0U, 1U, 0U},
+    };
+    std::vector<std::byte> encoded;
+    CHECK_THROWS_AS(append_agent_memory_record(encoded, memory), MemorySnapshotValidationError);
+    CHECK(encoded.empty());
+  }
+
+  SECTION("duplicate categories are rejected") {
+    AgentMemory memory;
+    memory.monotonic_ticks = 1U;
+    memory.categories = {
+        AgentMemoryCategorySample{AgentMemoryCategory::kEventQueue, 0U, 4U, 2U},
+        AgentMemoryCategorySample{AgentMemoryCategory::kEventQueue, 0U, 8U, 4U},
     };
     std::vector<std::byte> encoded;
     CHECK_THROWS_AS(append_agent_memory_record(encoded, memory), MemorySnapshotValidationError);

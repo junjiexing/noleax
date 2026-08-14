@@ -307,6 +307,13 @@ void checked_increment(std::uint64_t& value, const char* subject) {
   ++value;
 }
 
+void checked_add(std::uint64_t& total, std::uint64_t value, const char* subject) {
+  if (value > std::numeric_limits<std::uint64_t>::max() - total) {
+    throw ConsoleFormatError{std::string{subject} + " total overflow"};
+  }
+  total += value;
+}
+
 // Peak value of one snapshot field and the first sampling tick that reached it.
 struct MemoryPeak {
   std::uint64_t value{0U};
@@ -502,7 +509,7 @@ void ConsoleWriter::write_outstanding(const OutstandingResult& result,
     const auto metadata = resolver ? resolver(generation.created_by) : ConsoleEventMetadata{};
     const bool virtual_bytes = generation.kind != GenerationKind::kHeapAllocation;
     if (virtual_bytes) {
-      outstanding_virtual_bytes += generation.size;
+      checked_add(outstanding_virtual_bytes, generation.size, "outstanding virtual bytes");
     }
     output_ << "generation: kind=" << generation_kind_name(generation.kind)
             << " allocation-id=" << identifier_text(generation.allocation_id)
@@ -556,9 +563,9 @@ void ConsoleWriter::write_event_stacks(const EventsStacksResult& result,
   }
   for (const auto& group : result.groups) {
     ++rank;
-    total_calls += group.calls;
-    total_alloc_bytes += group.alloc_bytes;
-    total_free_bytes += group.free_bytes;
+    checked_add(total_calls, group.calls, "event stack calls");
+    checked_add(total_alloc_bytes, group.alloc_bytes, "event stack allocation bytes");
+    checked_add(total_free_bytes, group.free_bytes, "event stack free bytes");
     output_ << "#" << rank << " calls=" << group.calls << " alloc=" << group.alloc_calls << "/"
             << group.alloc_bytes << "B free=" << group.free_calls << "/" << group.free_bytes
             << "B net=" << group.net_bytes() << "B";
@@ -612,8 +619,8 @@ void ConsoleWriter::write_leak_stacks(const LeaksStacksResult& result,
   }
   for (const auto& group : result.groups) {
     ++rank;
-    total_calls += group.calls;
-    total_bytes += group.bytes;
+    checked_add(total_calls, group.calls, "leak stack calls");
+    checked_add(total_bytes, group.bytes, "leak stack bytes");
     output_ << "#" << rank << " calls=" << group.calls << " bytes=" << group.bytes << "B";
     const auto names = group_api_names(group.api_ids, outstanding.trace.custom_hooks);
     if (!names.empty()) {

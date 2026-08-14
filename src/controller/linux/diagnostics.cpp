@@ -17,6 +17,27 @@
 namespace noleax::controller::linux {
 namespace {
 
+[[nodiscard]] std::uint16_t read_u16_le(const unsigned char* bytes) noexcept {
+  return static_cast<std::uint16_t>(bytes[0]) |
+         static_cast<std::uint16_t>(static_cast<std::uint16_t>(bytes[1]) << 8U);
+}
+
+[[nodiscard]] std::uint32_t read_u32_le(const unsigned char* bytes) noexcept {
+  std::uint32_t value = 0U;
+  for (std::size_t index = 0U; index < sizeof(value); ++index) {
+    value |= static_cast<std::uint32_t>(bytes[index]) << (index * 8U);
+  }
+  return value;
+}
+
+[[nodiscard]] std::uint64_t read_u64_le(const unsigned char* bytes) noexcept {
+  std::uint64_t value = 0U;
+  for (std::size_t index = 0U; index < sizeof(value); ++index) {
+    value |= static_cast<std::uint64_t>(bytes[index]) << (index * 8U);
+  }
+  return value;
+}
+
 using Entry = DiagnosticEntry;
 
 Entry make_entry(DiagnosticSeverity severity, std::string name, std::string message,
@@ -72,13 +93,13 @@ struct ElfIdentity {
   identity.is_elf = true;
   identity.is_64bit = header[4] == 2U;                           // EI_CLASS
   identity.is_x86_64 = header[18] == 0x3eU && header[19] == 0U;  // e_machine
-  const std::uint16_t type = static_cast<std::uint16_t>(header[16] | (header[17] << 8U));
+  const std::uint16_t type = read_u16_le(header.data() + 16U);
   identity.is_shared = type == 3U;  // ET_DYN
   if (!identity.is_shared) {
     // ET_EXEC: dynamic only when a PT_INTERP program header exists.
-    const std::uint64_t phoff = *reinterpret_cast<const std::uint64_t*>(header.data() + 32U);
-    const std::uint16_t phentsize = *reinterpret_cast<const std::uint16_t*>(header.data() + 54U);
-    const std::uint16_t phnum = *reinterpret_cast<const std::uint16_t*>(header.data() + 56U);
+    const std::uint64_t phoff = read_u64_le(header.data() + 32U);
+    const std::uint16_t phentsize = read_u16_le(header.data() + 54U);
+    const std::uint16_t phnum = read_u16_le(header.data() + 56U);
     const int fd_headers = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
     if (fd_headers >= 0) {
       for (std::uint32_t index = 0U; index < phnum && phentsize >= 56U; ++index) {
@@ -88,7 +109,7 @@ struct ElfIdentity {
             static_cast<ssize_t>(program.size())) {
           break;
         }
-        if (*reinterpret_cast<const std::uint32_t*>(program.data()) == 3U) {  // PT_INTERP
+        if (read_u32_le(program.data()) == 3U) {  // PT_INTERP
           identity.is_dynamic = true;
           break;
         }
@@ -136,9 +157,10 @@ void check_agent(DoctorReport& report, const std::filesystem::path& agent_path) 
   // environment, and the linkage check exercises the hoox backend end to end.
   void* const module = ::dlopen(agent_path.c_str(), RTLD_NOW | RTLD_LOCAL);
   if (module == nullptr) {
+    const char* const load_error = ::dlerror();
     report.entries.push_back(make_entry(
         DiagnosticSeverity::kError, "agent",
-        std::string{"cannot load the agent: "} + (::dlerror() != nullptr ? ::dlerror() : "unknown"),
+        std::string{"cannot load the agent: "} + (load_error != nullptr ? load_error : "unknown"),
         {}, 0U));
     return;
   }

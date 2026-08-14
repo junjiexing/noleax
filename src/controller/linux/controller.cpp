@@ -1,6 +1,7 @@
 #include "noleax/controller/linux/controller.hpp"
 
 #include <fcntl.h>
+#include <signal.h>
 #include <sys/random.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -35,25 +36,24 @@ using namespace std::chrono_literals;
 [[nodiscard]] std::array<std::byte, 16U> make_session_token() {
   std::array<std::byte, 16U> token{};
   std::size_t filled = 0U;
+  unsigned int flags = GRND_NONBLOCK;
   while (filled < token.size()) {
-    const ssize_t count = ::getrandom(token.data() + filled, token.size() - filled, GRND_NONBLOCK);
+    const ssize_t count = ::getrandom(token.data() + filled, token.size() - filled, flags);
     if (count < 0) {
       if (errno == EINTR) {
+        continue;
+      }
+      if (errno == EAGAIN && flags == GRND_NONBLOCK) {
+        // Preserve token unpredictability during early boot: once the non-blocking probe says
+        // the pool is not initialized, wait for the kernel CSPRNG instead of using a weak local
+        // fallback.
+        flags = 0U;
         continue;
       }
       throw ControllerError{"getrandom failed", static_cast<std::uint32_t>(errno)};
     }
     if (count == 0) {
-      // Non-blocking pool not initialized this early: fall back to time+pid mixing; the
-      // token only names the session socket and authenticates the hello on this host.
-      const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
-      const auto mixed = static_cast<std::uint64_t>(now) ^
-                         (static_cast<std::uint64_t>(::getpid()) << 32U) ^
-                         (static_cast<std::uint64_t>(::getppid()) << 17U);
-      for (std::size_t index = filled; index < token.size(); ++index) {
-        token[index] = static_cast<std::byte>((mixed >> ((index % 8U) * 8U)) & 0xffU);
-      }
-      break;
+      throw ControllerError{"getrandom returned no session-token bytes", EIO};
     }
     filled += static_cast<std::size_t>(count);
   }
@@ -140,6 +140,42 @@ struct ChildEnvironment {
   ::_exit(127);
 }
 
+// Owns a freshly forked launch until the controller handshake succeeds. A throwing constructor
+// does not run CaptureSession::Impl's destructor, so this local guard must terminate and reap the
+// child on every error path after fork.
+class LaunchChildGuard final {
+ public:
+  explicit LaunchChildGuard(pid_t process_id) noexcept : process_id_{process_id} {}
+
+  ~LaunchChildGuard() {
+    if (process_id_ <= 0) {
+      return;
+    }
+    int status = 0;
+    for (;;) {
+      const pid_t result = ::waitpid(process_id_, &status, WNOHANG);
+      if (result == process_id_ || (result < 0 && errno == ECHILD)) {
+        return;
+      }
+      if (result < 0 && errno == EINTR) {
+        continue;
+      }
+      break;
+    }
+    static_cast<void>(::kill(process_id_, SIGKILL));
+    while (::waitpid(process_id_, &status, 0) < 0 && errno == EINTR) {
+    }
+  }
+
+  LaunchChildGuard(const LaunchChildGuard&) = delete;
+  LaunchChildGuard& operator=(const LaunchChildGuard&) = delete;
+
+  void release() noexcept { process_id_ = -1; }
+
+ private:
+  pid_t process_id_{-1};
+};
+
 }  // namespace
 
 ControllerError::ControllerError(const std::string& message, std::uint32_t system_error)
@@ -201,6 +237,7 @@ class CaptureSession::Impl {
       child_exec(launch, environment, error_pipe[1]);
     }
     ::close(error_pipe[1]);
+    LaunchChildGuard child_guard{child};
     process_id_ = static_cast<std::uint32_t>(child);
 
     std::optional<int> exec_error;
@@ -228,6 +265,7 @@ class CaptureSession::Impl {
     }
 
     run_handshake(capture);
+    child_guard.release();
   }
 
   // Attach path: inject the agent into a running process and let its attach bootstrap

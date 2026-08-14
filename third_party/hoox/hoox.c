@@ -14454,8 +14454,11 @@ hoox_thumb_relocator_read_one (HooxThumbRelocator * self,
         break;
       case HX_ARM_INS_IT:
       {
+        hx_uint16 raw_instruction;
+
+        memcpy (&raw_instruction, self->input_cur, sizeof (raw_instruction));
         it_block_size = hoox_parse_it_instruction_block_size (
-            HX_UINT16_FROM_LE (*((hx_uint16 *) self->input_cur)));
+            HX_UINT16_FROM_LE (raw_instruction));
         self->eob = TRUE;
         break;
       }
@@ -21637,6 +21640,7 @@ hoox_arm64_writer_put_ldr_reg_value (HooxArm64Writer * self,
 {
   hx_uint distance;
   hx_uint32 * insn;
+  hx_uint64 encoded_value;
 
   distance = hoox_arm64_writer_offset (self) - ref;
 
@@ -21644,7 +21648,8 @@ hoox_arm64_writer_put_ldr_reg_value (HooxArm64Writer * self,
   *insn = HX_UINT32_TO_LE (HX_UINT32_FROM_LE (*insn) |
       (((distance / 4) & HOOX_INT19_MASK) << 5));
 
-  *((hx_uint64 *) self->code) = HX_UINT64_TO_LE (value);
+  encoded_value = HX_UINT64_TO_LE (value);
+  memcpy (self->code, &encoded_value, sizeof (encoded_value));
   self->code += 2;
   self->pc += 8;
 }
@@ -25953,7 +25958,7 @@ hoox_x86_relocator_rewrite_if_rip_relative (HooxX86Relocator * self,
       hx_uint8 bytes[4];
     } i32;
     hx_int32 distance;
-    hx_uint64 * return_address_placeholder = NULL;
+    hx_uint8 * return_address_placeholder = NULL;
 
     memcpy (i32.bytes, insn->bytes + insn->size - sizeof (hx_int32),
         sizeof (i32.bytes));
@@ -25963,7 +25968,7 @@ hoox_x86_relocator_rewrite_if_rip_relative (HooxX86Relocator * self,
     {
       hoox_x86_writer_put_push_reg (cw, HOOX_HX_RAX);
       hoox_x86_writer_put_mov_reg_address (cw, HOOX_HX_RAX, 0);
-      return_address_placeholder = (hx_uint64 *) (cw->code - sizeof (hx_uint64));
+      return_address_placeholder = cw->code - sizeof (hx_uint64);
       hoox_x86_writer_put_xchg_reg_reg_ptr (cw, HOOX_HX_RAX, HOOX_HX_RSP);
     }
 
@@ -25975,7 +25980,9 @@ hoox_x86_relocator_rewrite_if_rip_relative (HooxX86Relocator * self,
 
     if (insn->id == HX_INS_CALL)
     {
-      *return_address_placeholder = cw->pc;
+      const hx_uint64 encoded_return_address = HX_UINT64_TO_LE (cw->pc);
+      memcpy (return_address_placeholder, &encoded_return_address,
+          sizeof (encoded_return_address));
     }
 
     return TRUE;
@@ -26174,6 +26181,30 @@ static hx_boolean hoox_x86_writer_put_prefix_for_registers (HooxX86Writer * self
 
 static hx_uint8 hoox_get_jcc_opcode (hx_x86_insn instruction_id);
 
+static void
+hoox_x86_writer_write_s32 (hx_uint8 * address,
+                           hx_int32 value)
+{
+  const hx_int32 encoded = HX_INT32_TO_LE (value);
+  memcpy (address, &encoded, sizeof (encoded));
+}
+
+static void
+hoox_x86_writer_write_u32 (hx_uint8 * address,
+                           hx_uint32 value)
+{
+  const hx_uint32 encoded = HX_UINT32_TO_LE (value);
+  memcpy (address, &encoded, sizeof (encoded));
+}
+
+static void
+hoox_x86_writer_write_u64 (hx_uint8 * address,
+                           hx_uint64 value)
+{
+  const hx_uint64 encoded = HX_UINT64_TO_LE (value);
+  memcpy (address, &encoded, sizeof (encoded));
+}
+
 HooxX86Writer *
 hoox_x86_writer_ref (HooxX86Writer * writer)
 {
@@ -26305,7 +26336,7 @@ hoox_x86_writer_flush (HooxX86Writer * self)
         *((hx_int8 *) (r->address - 1)) = distance;
         break;
       case HOOX_LREF_NEAR:
-        *((hx_int32 *) (r->address - 4)) = HX_INT32_TO_LE (distance);
+        hoox_x86_writer_write_s32 (r->address - 4, distance);
         break;
       case HOOX_LREF_ABS:
       {
@@ -26318,9 +26349,9 @@ hoox_x86_writer_flush (HooxX86Writer * self)
         target_pc = base_pc + target_offset;
 
         if (self->target_cpu == HOOX_CPU_AMD64)
-          *((hx_uint64 *) (r->address - 8)) = HX_UINT64_TO_LE (target_pc);
+          hoox_x86_writer_write_u64 (r->address - 8, target_pc);
         else
-          *((hx_uint32 *) (r->address - 4)) = HX_UINT32_TO_LE (target_pc);
+          hoox_x86_writer_write_u32 (r->address - 4, (hx_uint32) target_pc);
 
         break;
       }
@@ -26658,7 +26689,7 @@ hoox_x86_writer_put_call_address (HooxX86Writer * self,
   if (distance_fits_in_i32)
   {
     self->code[0] = 0xe8;
-    *((hx_int32 *) (self->code + 1)) = HX_INT32_TO_LE (distance);
+    hoox_x86_writer_write_s32 (self->code + 1, (hx_int32) distance);
     hoox_x86_writer_commit (self, 5);
   }
   else
@@ -26673,7 +26704,7 @@ hoox_x86_writer_put_call_address (HooxX86Writer * self,
     hoox_x86_writer_put_jmp_short_label (self, carry_on);
 
     hoox_x86_writer_put_label (self, call_target_storage);
-    *((hx_uint64 *) (self->code)) = HX_UINT64_TO_LE (address);
+    hoox_x86_writer_write_u64 (self->code, address);
     hoox_x86_writer_commit (self, 8);
 
     hoox_x86_writer_put_label (self, carry_on);
@@ -26749,7 +26780,7 @@ hoox_x86_writer_put_call_reg_offset_ptr (HooxX86Writer * self,
   }
   else
   {
-    *((hx_int32 *) self->code) = HX_INT32_TO_LE (offset);
+    hoox_x86_writer_write_s32 (self->code, (hx_int32) offset);
     hoox_x86_writer_commit (self, 4);
   }
 
@@ -26769,13 +26800,13 @@ hoox_x86_writer_put_call_indirect (HooxX86Writer * self,
 
     self->code[0] = 0xff;
     self->code[1] = 0x15;
-    *((hx_uint32 *) (self->code + 2)) = HX_INT32_TO_LE ((hx_int32) distance);
+    hoox_x86_writer_write_s32 (self->code + 2, (hx_int32) distance);
   }
   else
   {
     self->code[0] = 0xff;
     self->code[1] = 0x15;
-    *((hx_uint32 *) (self->code + 2)) = HX_UINT32_TO_LE (address);
+    hoox_x86_writer_write_u32 (self->code + 2, (hx_uint32) address);
   }
 
   hoox_x86_writer_commit (self, 6);
@@ -26825,7 +26856,7 @@ hoox_x86_writer_put_jmp_address (HooxX86Writer * self,
     if (HOOX_IS_WITHIN_INT32_RANGE (distance))
     {
       self->code[0] = 0xe9;
-      *((hx_int32 *) (self->code + 1)) = HX_INT32_TO_LE ((hx_int32) distance);
+      hoox_x86_writer_write_s32 (self->code + 1, (hx_int32) distance);
       hoox_x86_writer_commit (self, 5);
     }
     else
@@ -26835,10 +26866,10 @@ hoox_x86_writer_put_jmp_address (HooxX86Writer * self,
 
       self->code[0] = 0xff;
       self->code[1] = 0x25;
-      *((hx_int32 *) (self->code + 2)) = HX_INT32_TO_LE (2); /* RIP + 2 */
+      hoox_x86_writer_write_s32 (self->code + 2, 2); /* RIP + 2 */
       self->code[6] = 0x0f;
       self->code[7] = 0x0b;
-      *((hx_uint64 *) (self->code + 8)) = HX_UINT64_TO_LE (address);
+      hoox_x86_writer_write_u64 (self->code + 8, address);
       hoox_x86_writer_commit (self, 16);
     }
   }
@@ -26874,7 +26905,7 @@ hoox_x86_writer_put_near_jmp (HooxX86Writer * self,
   if (HOOX_IS_WITHIN_INT32_RANGE (distance))
   {
     self->code[0] = 0xe9;
-    *((hx_int32 *) (self->code + 1)) = HX_INT32_TO_LE (distance);
+    hoox_x86_writer_write_s32 (self->code + 1, (hx_int32) distance);
     hoox_x86_writer_commit (self, 5);
   }
   else
@@ -26884,12 +26915,12 @@ hoox_x86_writer_put_near_jmp (HooxX86Writer * self,
 
     self->code[0] = 0xff;                               /* JMP [RIP + 2] */
     self->code[1] = 0x25;
-    *((hx_int32 *) (self->code + 2)) = HX_INT32_TO_LE (2);  /* RIP + 2 */
+    hoox_x86_writer_write_s32 (self->code + 2, 2);      /* RIP + 2 */
 
     self->code[6] = 0x0f;                               /* UD2 */
     self->code[7] = 0x0b;
 
-    *((hx_uint64 *) (self->code + 8)) = HX_UINT64_TO_LE (HX_POINTER_TO_SIZE (target));
+    hoox_x86_writer_write_u64 (self->code + 8, HX_POINTER_TO_SIZE (target));
     hoox_x86_writer_commit (self, 16);
   }
 
@@ -26975,7 +27006,7 @@ hoox_x86_writer_put_jmp_reg_offset_ptr (HooxX86Writer * self,
   }
   else
   {
-    *((hx_int32 *) self->code) = HX_INT32_TO_LE (offset);
+    hoox_x86_writer_write_s32 (self->code, (hx_int32) offset);
     hoox_x86_writer_commit (self, 4);
   }
 
@@ -27040,7 +27071,7 @@ hoox_x86_writer_put_jcc_near (HooxX86Writer * self,
   distance = (hx_ssize) target - (hx_ssize) (self->pc + 6);
   if (!HOOX_IS_WITHIN_INT32_RANGE (distance))
     return FALSE;
-  *((hx_int32 *) (self->code + 2)) = HX_INT32_TO_LE (distance);
+  hoox_x86_writer_write_s32 (self->code + 2, (hx_int32) distance);
   hoox_x86_writer_commit (self, 6);
 
   return TRUE;
@@ -27091,7 +27122,7 @@ hoox_x86_writer_put_add_or_sub_reg_imm (HooxX86Writer * self,
   }
   else
   {
-    *((hx_int32 *) self->code) = HX_INT32_TO_LE (imm_value);
+    hoox_x86_writer_write_s32 (self->code, (hx_int32) imm_value);
     hoox_x86_writer_commit (self, 4);
   }
 
@@ -27129,14 +27160,15 @@ hoox_x86_writer_put_lock_inc_or_dec_imm32_ptr (HooxX86Writer * self,
 
   if (self->target_cpu == HOOX_CPU_IA32)
   {
-    *((hx_uint32 *) (self->code + 3)) = HX_UINT32_TO_LE (HX_POINTER_TO_SIZE (target));
+    hoox_x86_writer_write_u32 (self->code + 3,
+        (hx_uint32) HX_POINTER_TO_SIZE (target));
   }
   else
   {
     hx_int64 distance = (hx_ssize) target - (hx_ssize) (self->pc + 7);
     if (!HOOX_IS_WITHIN_INT32_RANGE (distance))
       return FALSE;
-    *((hx_int32 *) (self->code + 3)) = HX_INT32_TO_LE (distance);
+    hoox_x86_writer_write_s32 (self->code + 3, (hx_int32) distance);
   }
 
   hoox_x86_writer_commit (self, 7);
@@ -27162,14 +27194,14 @@ hoox_x86_writer_put_and_reg_u32 (HooxX86Writer * self,
   if (ri.meta == HOOX_HX_META_XAX)
   {
     self->code[0] = 0x25;
-    *((hx_uint32 *) (self->code + 1)) = HX_UINT32_TO_LE (imm_value);
+    hoox_x86_writer_write_u32 (self->code + 1, imm_value);
     hoox_x86_writer_commit (self, 5);
   }
   else
   {
     self->code[0] = 0x81;
     self->code[1] = 0xe0 | ri.index;
-    *((hx_uint32 *) (self->code + 2)) = HX_UINT32_TO_LE (imm_value);
+    hoox_x86_writer_write_u32 (self->code + 2, imm_value);
     hoox_x86_writer_commit (self, 6);
   }
 
@@ -27217,7 +27249,7 @@ hoox_x86_writer_put_mov_reg_u32 (HooxX86Writer * self,
     return FALSE;
 
   self->code[0] = 0xb8 | dst.index;
-  *((hx_uint32 *) (self->code + 1)) = HX_UINT32_TO_LE (imm_value);
+  hoox_x86_writer_write_u32 (self->code + 1, imm_value);
   hoox_x86_writer_commit (self, 5);
 
   return TRUE;
@@ -27242,7 +27274,7 @@ hoox_x86_writer_put_mov_reg_u64 (HooxX86Writer * self,
     return FALSE;
 
   self->code[0] = 0xb8 | dst.index;
-  *((hx_uint64 *) (self->code + 1)) = HX_UINT64_TO_LE (imm_value);
+  hoox_x86_writer_write_u64 (self->code + 1, imm_value);
   hoox_x86_writer_commit (self, 9);
 
   return TRUE;
@@ -27309,12 +27341,12 @@ hoox_x86_writer_put_mov_reg_offset_ptr_u32 (HooxX86Writer * self,
     }
     else
     {
-      *((hx_int32 *) self->code) = HX_INT32_TO_LE (dst_offset);
+      hoox_x86_writer_write_s32 (self->code, (hx_int32) dst_offset);
       hoox_x86_writer_commit (self, 4);
     }
   }
 
-  *((hx_uint32 *) self->code) = HX_UINT32_TO_LE (imm_value);
+  hoox_x86_writer_write_u32 (self->code, imm_value);
   hoox_x86_writer_commit (self, 4);
 
   return TRUE;
@@ -27379,7 +27411,7 @@ hoox_x86_writer_put_mov_reg_offset_ptr_reg (HooxX86Writer * self,
     }
     else
     {
-      *((hx_int32 *) self->code) = HX_INT32_TO_LE (dst_offset);
+      hoox_x86_writer_write_s32 (self->code, (hx_int32) dst_offset);
       hoox_x86_writer_commit (self, 4);
     }
   }
@@ -27438,7 +27470,7 @@ hoox_x86_writer_put_mov_reg_reg_offset_ptr (HooxX86Writer * self,
   }
   else
   {
-    *((hx_int32 *) self->code) = HX_INT32_TO_LE (src_offset);
+    hoox_x86_writer_write_s32 (self->code, (hx_int32) src_offset);
     hoox_x86_writer_commit (self, 4);
   }
 
@@ -27476,7 +27508,7 @@ hoox_x86_writer_put_lea_reg_reg_offset (HooxX86Writer * self,
   if (src.meta == HOOX_HX_META_XSP)
     hoox_x86_writer_put_u8 (self, 0x24);
 
-  *((hx_int32 *) self->code) = HX_INT32_TO_LE (src_offset);
+  hoox_x86_writer_write_s32 (self->code, (hx_int32) src_offset);
   hoox_x86_writer_commit (self, 4);
 
   return TRUE;
@@ -27528,7 +27560,7 @@ hoox_x86_writer_put_push_u32 (HooxX86Writer * self,
                              hx_uint32 imm_value)
 {
   self->code[0] = 0x68;
-  *((hx_uint32 *) (self->code + 1)) = HX_UINT32_TO_LE (imm_value);
+  hoox_x86_writer_write_u32 (self->code + 1, imm_value);
   hoox_x86_writer_commit (self, 5);
 }
 
@@ -27543,14 +27575,14 @@ hoox_x86_writer_put_push_near_ptr (HooxX86Writer * self,
   {
     if (address > HX_MAXUINT32)
       return FALSE;
-    *((hx_uint32 *) (self->code + 2)) = HX_UINT32_TO_LE ((hx_uint32) address);
+    hoox_x86_writer_write_u32 (self->code + 2, (hx_uint32) address);
   }
   else
   {
     hx_int64 distance = (hx_int64) address - (hx_int64) (self->pc + 6);
     if (distance < HX_MININT32 || distance > HX_MAXINT32)
       return FALSE;
-    *((hx_int32 *) (self->code + 2)) = HX_INT32_TO_LE ((hx_int32) distance);
+    hoox_x86_writer_write_s32 (self->code + 2, (hx_int32) distance);
   }
 
   hoox_x86_writer_commit (self, 6);

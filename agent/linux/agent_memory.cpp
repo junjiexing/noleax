@@ -7,6 +7,7 @@
 #include <bit>
 #include <cerrno>
 #include <cstring>
+#include <limits>
 #include <utility>
 
 namespace noleax::agent::linux {
@@ -18,6 +19,13 @@ namespace {
     return value > 0 ? static_cast<std::uint64_t>(value) : 4096U;
   }();
   return cached;
+}
+
+void checked_add_category_bytes(std::uint64_t& total, std::uint64_t value) {
+  if (value > std::numeric_limits<std::uint64_t>::max() - total) {
+    throw AgentMemoryError{"agent memory category byte total overflow"};
+  }
+  total += value;
 }
 
 }  // namespace
@@ -100,6 +108,9 @@ std::uint64_t AgentMemoryRegistry::region_reserved_bytes(
   std::uint64_t reserved = 0U;
   for (std::size_t index = 0U; index < region_count_; ++index) {
     if (regions_[index].category == category) {
+      if (regions_[index].bytes > std::numeric_limits<std::uint64_t>::max() - reserved) {
+        return std::numeric_limits<std::uint64_t>::max();
+      }
       reserved += regions_[index].bytes;
     }
   }
@@ -136,8 +147,10 @@ void AgentMemoryRegistry::snapshot(
         ++second;
         continue;
       }
-      categories[first].reserved_bytes += categories[second].reserved_bytes;
-      categories[first].resident_bytes += categories[second].resident_bytes;
+      checked_add_category_bytes(categories[first].reserved_bytes,
+                                 categories[second].reserved_bytes);
+      checked_add_category_bytes(categories[first].resident_bytes,
+                                 categories[second].resident_bytes);
       categories[first].flags &= categories[second].flags;
       categories.erase(categories.begin() + static_cast<std::ptrdiff_t>(second));
     }

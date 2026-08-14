@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <unordered_set>
 
 namespace noleax::trace {
 
@@ -40,11 +41,23 @@ void validate_agent_memory(const AgentMemory& memory) {
   if (memory.categories.size() > kMaximumAgentMemoryCategories) {
     throw MemorySnapshotValidationError{"agent memory category count is out of range"};
   }
+  std::unordered_set<std::uint32_t> seen_categories;
+  std::uint64_t reserved_total = 0U;
+  std::uint64_t resident_total = 0U;
   for (const AgentMemoryCategorySample& category : memory.categories) {
+    if (!seen_categories.insert(static_cast<std::uint32_t>(category.category)).second) {
+      throw MemorySnapshotValidationError{"agent memory sample contains a duplicate category"};
+    }
     if (category.resident_bytes > category.reserved_bytes) {
       throw MemorySnapshotValidationError{
           "agent memory category resident bytes exceed the reserved bytes"};
     }
+    if (category.reserved_bytes > std::numeric_limits<std::uint64_t>::max() - reserved_total ||
+        category.resident_bytes > std::numeric_limits<std::uint64_t>::max() - resident_total) {
+      throw MemorySnapshotValidationError{"agent memory category byte totals overflow"};
+    }
+    reserved_total += category.reserved_bytes;
+    resident_total += category.resident_bytes;
   }
 }
 

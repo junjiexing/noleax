@@ -51,13 +51,12 @@ struct AgentMemoryTotals {
   bool exact{true};
 };
 
-[[nodiscard]] AgentMemoryTotals agent_memory_totals(
-    const noleax::trace::AgentMemory& memory) noexcept;
+[[nodiscard]] AgentMemoryTotals agent_memory_totals(const noleax::trace::AgentMemory& memory);
 
 // Process working set minus the agent-owned resident sum (saturating at zero). Only
 // meaningful when the snapshot carries both counters and agent records; the result is an
 // estimate unless agent_memory_totals(snapshot.agent).exact holds.
-[[nodiscard]] std::uint64_t application_memory_estimate(const MemorySnapshot& snapshot) noexcept;
+[[nodiscard]] std::uint64_t application_memory_estimate(const MemorySnapshot& snapshot);
 
 // Stable snake_case name for a category ("event_queue", ...); "unknown-<id>" for ids this
 // analyzer build does not know.

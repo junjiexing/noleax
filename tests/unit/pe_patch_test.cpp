@@ -332,6 +332,20 @@ TEST_CASE("patch rejects unsupported and malformed inputs", "[controller][pe-pat
     }
   }
 
+  SECTION("legacy temporary-name collisions are preserved") {
+    const auto input = directory / "temporary-collision.exe";
+    const auto output = directory / "temporary-collision-out.exe";
+    const auto legacy_temporary = directory / "temporary-collision-out.exe.nlx-tmp";
+    const std::vector<std::byte> sentinel{std::byte{0x4e}, std::byte{0x4c}, std::byte{0x58}};
+    write_all(input, source);
+    write_all(legacy_temporary, sentinel);
+
+    static_cast<void>(noleax::controller::windows::patch_pe_image(options_for(input, output)));
+
+    CHECK(read_all(legacy_temporary) == sentinel);
+    CHECK(noleax::controller::windows::read_static_patch_info(output).has_value());
+  }
+
   SECTION("agent name must be a bare file name") {
     const auto input = directory / "agent-name.exe";
     write_all(input, source);

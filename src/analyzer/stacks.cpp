@@ -5,6 +5,7 @@
 #include <compare>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <unordered_map>
 #include <utility>
@@ -49,6 +50,13 @@ std::vector<std::string> group_api_names(
 }
 
 namespace {
+
+void checked_add_bytes(std::uint64_t& total, std::uint64_t value, const char* subject) {
+  if (value > std::numeric_limits<std::uint64_t>::max() - total) {
+    throw StacksAnalysisError{std::string{subject} + " byte total overflow"};
+  }
+  total += value;
+}
 
 void validate_window(const StacksWindow& window) {
   const bool negative_time =
@@ -192,10 +200,12 @@ class EventsStacksCollector {
       note_api(group, event.header.api_id);
       ++group.alloc_calls;
       ++group.calls;
-      group.alloc_bytes +=
+      checked_add_bytes(
+          group.alloc_bytes,
           operation == noleax::trace::EventOperation::kAllocate
               ? std::get<noleax::trace::AllocationEvent>(event.payload).requested_size
-              : std::get<noleax::trace::ReallocationEvent>(event.payload).requested_size;
+              : std::get<noleax::trace::ReallocationEvent>(event.payload).requested_size,
+          "allocation stack group");
       ++aggregated_event_count_;
     }
   }
@@ -211,7 +221,7 @@ class EventsStacksCollector {
     note_api(group, event.header.api_id);
     ++group.free_calls;
     ++group.calls;
-    group.free_bytes += generation.size;
+    checked_add_bytes(group.free_bytes, generation.size, "free stack group");
     ++aggregated_event_count_;
   }
 
@@ -262,7 +272,7 @@ LeaksStacksResult analyze_leak_stacks(std::istream& input, OutstandingWindow win
       group.api_ids.push_back(generation.created_by.header.api_id);
     }
     ++group.calls;
-    group.bytes += generation.size;
+    checked_add_bytes(group.bytes, generation.size, "leak stack group");
   }
   result.groups.reserve(groups.size());
   for (auto& entry : groups) {

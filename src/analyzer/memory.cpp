@@ -102,7 +102,8 @@ MemoryAnalysisResult analyze_memory(std::istream& input, MemoryWindow window,
   return result;
 }
 
-AgentMemoryTotals agent_memory_totals(const noleax::trace::AgentMemory& memory) noexcept {
+AgentMemoryTotals agent_memory_totals(const noleax::trace::AgentMemory& memory) {
+  noleax::trace::validate_agent_memory(memory);
   AgentMemoryTotals totals;
   for (const noleax::trace::AgentMemoryCategorySample& category : memory.categories) {
     totals.reserved_bytes += category.reserved_bytes;
@@ -113,7 +114,7 @@ AgentMemoryTotals agent_memory_totals(const noleax::trace::AgentMemory& memory) 
   return totals;
 }
 
-std::uint64_t application_memory_estimate(const MemorySnapshot& snapshot) noexcept {
+std::uint64_t application_memory_estimate(const MemorySnapshot& snapshot) {
   if (!snapshot.counters.has_value() || !snapshot.agent.has_value()) {
     return 0U;
   }

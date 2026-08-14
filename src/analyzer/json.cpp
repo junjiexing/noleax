@@ -449,6 +449,13 @@ void checked_increment(std::uint64_t& value, const char* subject) {
   ++value;
 }
 
+void checked_add(std::uint64_t& total, std::uint64_t value, const char* subject) {
+  if (value > std::numeric_limits<std::uint64_t>::max() - total) {
+    throw JsonFormatError{std::string{subject} + " total overflow"};
+  }
+  total += value;
+}
+
 void write_process_target(JsonEmitter& json, const noleax::trace::ProcessTarget& target,
                           const noleax::trace::FileHeader& header) {
   json.raw("{\"scope\":");
@@ -780,7 +787,7 @@ void JsonWriter::write_outstanding(const OutstandingResult& result, const Analys
     // memory); heap allocations report the requested size.
     const bool virtual_bytes = generation.kind != GenerationKind::kHeapAllocation;
     if (virtual_bytes) {
-      outstanding_virtual_bytes += generation.size;
+      checked_add(outstanding_virtual_bytes, generation.size, "outstanding virtual bytes");
     }
     const EventPresentation presentation =
         resolver ? resolver(generation.created_by) : EventPresentation{};
@@ -854,9 +861,9 @@ void JsonWriter::write_event_stacks(const EventsStacksResult& result, const Anal
   std::uint64_t total_free_bytes = 0U;
   for (const auto& group : result.groups) {
     ++rank;
-    total_calls += group.calls;
-    total_alloc_bytes += group.alloc_bytes;
-    total_free_bytes += group.free_bytes;
+    checked_add(total_calls, group.calls, "event stack calls");
+    checked_add(total_alloc_bytes, group.alloc_bytes, "event stack allocation bytes");
+    checked_add(total_free_bytes, group.free_bytes, "event stack free bytes");
     if (!first) {
       json.raw(",");
     }
@@ -944,8 +951,8 @@ void JsonWriter::write_leak_stacks(const LeaksStacksResult& result, const Analys
   std::uint64_t total_bytes = 0U;
   for (const auto& group : result.groups) {
     ++rank;
-    total_calls += group.calls;
-    total_bytes += group.bytes;
+    checked_add(total_calls, group.calls, "leak stack calls");
+    checked_add(total_bytes, group.bytes, "leak stack bytes");
     if (!first) {
       json.raw(",");
     }
