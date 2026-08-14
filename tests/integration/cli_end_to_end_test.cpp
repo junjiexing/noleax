@@ -424,7 +424,7 @@ int main(int argc, char* argv[]) {
     const auto& memory_snapshots = memory_document.at("snapshots").array_items();
     if (!analysis_completed(memory_json_run.exit_code) ||
         memory_document.at("mode").scalar() != "memory" ||
-        memory_document.at("schema_version").unsigned_value() != 4U ||
+        memory_document.at("schema_version").unsigned_value() != 5U ||
         memory_snapshots.size() < 3U) {
       throw std::runtime_error{"memory JSON analysis did not list the periodic counters"};
     }

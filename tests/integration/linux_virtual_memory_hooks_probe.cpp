@@ -117,6 +117,7 @@ void verify_event(const LinuxHeapEvent& event, const ExpectedEvent& expected,
   check(event.queue_sequence == expected_sequence, "queue sequence is not contiguous from 1");
   check(event.thread_id == main_thread_id, "event thread id matches the caller thread");
   check(event.monotonic_ticks != 0U, "event carries monotonic ticks");
+  check(event.completion_sequence != 0U, "VM event carries a completion sequence");
   check(event.stack.requested_depth == stack_depth, "event stack requested depth");
   check(stack_capture_succeeded(event.stack), "event stack captured");
   check(event.stack.frame_count <= stack_depth, "event stack depth within the requested limit");
@@ -126,11 +127,16 @@ void verify_scripted_phase(const std::vector<LinuxHeapEvent>& events, const Expe
                            std::size_t count, std::uint64_t first_sequence,
                            std::uint64_t main_thread_id, std::uint16_t stack_depth) {
   std::uint64_t previous_ticks = 0U;
+  std::uint64_t previous_completion = 0U;
   for (std::size_t index = 0U; index < count; ++index) {
     verify_event(events[index], expected[index], first_sequence + static_cast<std::uint64_t>(index),
                  main_thread_id, stack_depth);
     check(events[index].monotonic_ticks >= previous_ticks, "monotonic ticks are non-decreasing");
     previous_ticks = events[index].monotonic_ticks;
+    // Single-threaded scripted phases complete syscalls in call order.
+    check(events[index].completion_sequence > previous_completion,
+          "completion sequences strictly increase within a scripted phase");
+    previous_completion = events[index].completion_sequence;
   }
 }
 

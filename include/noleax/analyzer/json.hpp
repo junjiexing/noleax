@@ -15,7 +15,7 @@
 
 namespace noleax::analyzer {
 
-inline constexpr std::uint32_t kAnalysisJsonSchemaVersion = 4U;
+inline constexpr std::uint32_t kAnalysisJsonSchemaVersion = 5U;
 
 class JsonFormatError final : public std::runtime_error {
  public:

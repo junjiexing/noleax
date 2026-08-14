@@ -1,7 +1,7 @@
 # Noleax JSON 输出
 
-> schema：`docs/schema/noleax-analysis-v4.schema.json`
-> 日期：2026-08-05
+> schema：`docs/schema/noleax-analysis-v5.schema.json`
+> 日期：2026-08-13
 
 ## 1. 目标与边界
 
@@ -18,23 +18,26 @@ events 输出可能包含已完成校验的前序记录，但不会包含闭合�
 
 每个文档固定包含：
 
-| 字段 | V4 含义 |
+| 字段 | V5 含义 |
 |---|---|
 | `schema` | 固定为 `noleax.analysis` |
-| `schema_version` | 固定为整数 `4` |
+| `schema_version` | 固定为整数 `5` |
 | `mode` | `events`、`leaks`、`stacks` 或 `memory` |
 | `metadata` | trace header 和 capture scope |
 | `filters` | 本次实际使用的全部过滤条件；未设置的范围为 `null`，空枚举为 `[]`（memory 模式恒为空） |
 | `summary` | trace、完整性、统计、custom hook 失败明细和对应 mode 的计数 |
 
 events 文档另有 `events` 数组；leaks 文档另有 `window` 和 `allocations`；stacks 文档另有
-`dataset`、`window` 和 `groups`；memory 文档另有 `window` 和 `snapshots`。V4 schema 对根对象、
-所有已定义对象及九类 payload 禁止未知字段。V4 相对 V3 增加 `summary.custom_hook_failures`
-数组（元素为 `module`、`role`、`reason`、`detail` 四字段的对象，无失败时为空数组）并在
-completeness issue 命名中新增 `custom_hook_install_failed`；这是结构和枚举变化，因此提升
-schema version。V3 相对 V2 增加 `memory` mode（含
+`dataset`、`window` 和 `groups`；memory 文档另有 `window` 和 `snapshots`。V5 schema 对根对象、
+所有已定义对象及九类 payload 禁止未知字段。V5 相对 V4：leaks 的 `allocations` 项新增
+`size_semantics`（`virtual` 表示 mapping generation 的 size 是剩余虚拟地址空间字节，
+`requested` 表示 heap allocation 的请求大小），leaks summary 新增 `outstanding_virtual_bytes`
+（mapping 类 generation 的剩余虚拟字节合计）；这是结构变化，因此提升 schema version。
+V4 相对 V3 增加 `summary.custom_hook_failures` 数组（元素为 `module`、`role`、`reason`、
+`detail` 四字段的对象，无失败时为空数组）并在
+completeness issue 命名中新增 `custom_hook_install_failed`；V3 相对 V2 增加 `memory` mode（含
 `memory_window`/`memory_snapshot` 结构与对应 summary 计数字段）。仓库保留只接受旧结构的
-V1/V2/V3 schema。后续新增字段、改变字段类型或新增枚举值也必须按消费者无法静默误解的兼容
+V1/V2/V3/V4 schema。后续新增字段、改变字段类型或新增枚举值也必须按消费者无法静默误解的兼容
 策略处理。
 
 ## 3. 基础编码规则
@@ -78,9 +81,13 @@ summary 的 mode 专属字段为 `matched_events` 和 `filtered_events`。公共
 事件之后的纳秒/sequence 边界，保证半开窗口仍包含最后事件；effective c 使用包含最后事件的 trace
 终点。程序化 API 的混合界按分量独立截断，未越界分量继续生效。
 
-`allocations` 中每项包含 generation kind、allocation/mapping/heap ID、heap handle、地址、size 和
-完整的 `created_by` Event。非 heap generation 的 `heap_handle` 为 `null`。summary 另外包含候选数、
-截至 c 已结束数、最终过滤数、outstanding 数以及两类 orphan end 计数。
+`allocations` 中每项包含 generation kind、allocation/mapping/heap ID、heap handle、地址、size、
+`size_semantics` 和完整的 `created_by` Event。非 heap generation 的 `heap_handle` 为 `null`。
+mapping 类 generation（`virtual_allocation`/`mapped_view`）的 `size` 是观察点 C 处的**剩余
+虚拟地址空间字节**（Linux 部分释放、逐出和 mremap 缩容都会扣减；不等于驻留内存），
+`size_semantics` 为 `virtual`；heap allocation 的 `size` 是请求大小，`size_semantics` 为
+`requested`。summary 另外包含候选数、截至 c 已结束数、最终过滤数、outstanding 数、
+`outstanding_virtual_bytes`（mapping 类 generation 剩余虚拟字节合计）以及两类 orphan end 计数。
 
 ## 5.1 stacks 文档
 

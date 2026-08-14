@@ -49,7 +49,10 @@ c 来自配置还是 trace end，以及原始 trace-end ticks；`--to` 缺省或
 最后事件之后的排他边界，确保半开窗口包含最后事件。
 窗口界按种类显示：时间界为 `123ns`，sequence 界为 `#123`；未设置的 to 显示 `trace-end`。
 每个结果显示 generation kind、allocation/mapping ID、size、地址、heap 信息、创建事件和创建栈。
-summary 分别显示候选数、截至 c 已结束数、最终过滤数和 outstanding 数。
+mapping 类 generation 的 size 是观察点 c 处的剩余**虚拟**地址空间字节（行内标注
+`size=NB (virtual)`），不是驻留内存；heap allocation 的 size 是请求大小。
+summary 分别显示候选数、截至 c 已结束数、最终过滤数、outstanding 数，以及
+`outstanding-virtual-bytes`（mapping 类 generation 剩余虚拟字节合计）。
 
 ## 5. stacks 布局
 

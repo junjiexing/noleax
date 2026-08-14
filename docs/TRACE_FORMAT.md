@@ -435,6 +435,15 @@ VmFree：
 - free type。
 - mapping_id，可匹配时。
 
+**Linux 区间语义扩展（H3）**：Linux writer 发出的 VmFree 可以是部分/内部释放——base
+位于 generation 内部、region size 小于该 generation 的剩余范围；一次 munmap 或一次
+隐式逐出（MAP_FIXED、mremap）可以对一个 generation 产生多条 VmFree，也可以横跨多个
+generation 各发一条。`free_type` 恒带 release 位（0x8000）。下游读取方必须按
+`[base, base+region_size)` 从该 mapping_id 的存活区间里相减，而不是整代结束；
+`region_size == 0` 仍是 Windows 的整段 release 线形（base 必须等于代基址）。文件视图
+的部分释放同样以 VmFree 表达（mapping_id 指向 mapped-view generation）；Unmap 仍表示
+整视图结束。部分释放的完整模型见 TRACE_WRITER.md §8.1。
+
 Map：
 
 - section handle。

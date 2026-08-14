@@ -51,17 +51,23 @@ allocation_id 或 mapping_id 作为身份，不以可复用的地址作为身份
 | 创建事件 | generation kind | 结束事件 |
 |---|---|---|
 | 成功 Allocate、产生新 generation 的 Reallocate | heap allocation | 成功 Reallocate、Free、HeapDestroy |
-| 当前进程成功 VmAllocate | virtual allocation | 当前进程成功 VmFree |
-| 当前进程成功 Map | mapped view | 当前进程成功 Unmap |
+| 当前进程成功 VmAllocate | virtual allocation | 当前进程成功 VmFree（整段或累计部分释放） |
+| 当前进程成功 Map | mapped view | 当前进程成功 Unmap，或累计部分 VmFree |
 
 - realloc 即使返回原地址，也先以 reallocated 结束旧 ID，再创建新 ID。
 - realloc failure/no_change、失败 free 和 unmatched/preexisting end 不改变已知 live 状态。
 - realloc 的 adapter effect 为 freed 时只结束旧 generation，不创建新 generation。
 - 成功 heap destroy 按 allocation_id 顺序结束该 heap 的所有 live allocation。
 - 远程进程 VM 操作保留在 events 输出中，但不进入本进程 generation 状态。
+- mapping generation 的 live 范围是区间集（与 Linux writer 共用同一 IntervalSet 语义）：
+  带 release 位且 `region_size != 0` 的 VmFree 按 `[base, base+region_size)` 相减，对匿名和
+  文件视图 generation 都适用，剩余字节为 0 时代结束；`region_size == 0` 是 Windows 整段
+  release 线形，base 必须等于代基址、kind 必须是 virtual allocation。同 mapping_id 的
+  VmAllocate 更新（in-place mremap resize）按连续片段run扩缩。
 - 地址结束后可以复用；allocation_id 和 mapping_id 在整个 trace 中不得复用。
 - 若 end 引用了当前状态中不存在的有效 ID，继续处理并增加 orphan counter，以支持存在 Loss 的
-  trace；若 ID 存在但地址、heap 或 mapping kind 矛盾，则拒绝该 trace 的状态语义。
+  trace；若 ID 存在但地址、heap 或 mapping kind 矛盾，则拒绝该 trace 的状态语义。同一存活
+  片段的重复释放（相减与任何存活片段都不相交）同样是状态语义错误。
 
 创建和结束回调在状态变更点同步触发，供窗口分析器只保存候选窗口内的 generation。状态机同时保留
 所有历史 generation ID 的集合以检测 ID 重用；该索引受输入 trace 文件大小上限约束。
@@ -79,7 +85,10 @@ allocation_id 或 mapping_id 作为身份，不以可复用的地址作为身份
   的候选不再 outstanding。
 - c 之后才结束的候选仍在 c outstanding，即使读取完整 trace 后它已不在 tracker 的最终 live
   集合中。
-- 只保存 `[a,b)` 中的候选及其可选结束事件；状态还原仍消费全部事件。
+- 只保存 `[a,b)` 中的候选；确定在 c 之前结束的候选在结束事件到达时即从候选集淘汰
+  （early eviction），状态还原仍消费全部事件。mapping generation 在 c 点存活当且仅当它的
+  剩余虚拟字节 > 0：Linux 的部分 VmFree（前缀/后缀/中段/跨映射/逐出/裁剪）按区间相减，
+  在 c 之前的相减会更新候选报告的剩余字节，c 之后的不影响。
 - 输出保持候选创建顺序，覆盖 heap allocation、当前进程 virtual allocation 和 mapped view。
 
 用户时间是相对 FileHeader.monotonic_origin 的纳秒数。边界比较直接比较 tick/frequency 与纳秒
@@ -105,8 +114,9 @@ AnalysisFilter 使用固定组合规则：一个类别中的多个值为 OR，�
 events 的 size 定义为：heap alloc/realloc 使用 requested_size；VM alloc 成功时使用
 result_size、失败时使用 requested_size；VM free 使用 region_size；map 使用 view_size。
 HeapCreate、HeapDestroy、heap Free 和 Unmap 没有可独立解释的 size，存在 size 过滤时不会匹配。
-outstanding 直接使用 MemoryGeneration.size，因此 heap allocation 为 requested_size，VM allocation
-为 result_size，mapped view 为 view_size。`--allocation-id` 不匹配独立编号空间中的 mapping_id。
+outstanding 直接使用 MemoryGeneration.size，因此 heap allocation 为 requested_size，mapping 类
+generation（virtual allocation / mapped view）为 c 点的剩余**虚拟**字节（不等于驻留内存）。
+`--allocation-id` 不匹配独立编号空间中的 mapping_id。
 
 API 名称按 ApiDefinition canonical name 做 UTF-8 精确、区分大小写匹配。模块 pattern 支持 `*`
 和 `?`，ASCII 字母不区分大小写，`/` 与 `\` 等价；pattern 含路径分隔符时匹配规范化完整路径，

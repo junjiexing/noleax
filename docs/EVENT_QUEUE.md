@@ -83,6 +83,21 @@ Windows API 与队列操作不会改变目标可观察到的错误状态。栈�
 harness 显式使用 256 个 slot 以稳定制造 overflow。writer 只消费该固定队列，不在 hook 热路径
 扩容；未来产品配置仍需由 agent 根据 byte budget 推导容量。
 
+## 4.1 Linux 原始事件与 VM 完成序号
+
+Linux 原始事件（`LinuxHeapEvent`）固定为 648 bytes：128-byte 字段头 + 同一 520-byte
+`CapturedStack`。头部在 H3 增加了 8-byte `completion_sequence`（此前的 reserved 尾部是
+6+2 个不连续字节，放不下一个 64 位字）：VM 组（mmap/munmap/mremap）的替换体在 libc
+调用返回后、任何入队动作之前，从进程级原子计数器取号。heap 族恒为 0。
+
+事件在调用返回后才入队，被抢占的线程会让队列顺序偏离内核里 VM 操作的完成顺序；例如
+一个被抢占线程的 munmap(A) 可能被另一个线程"分配到 A 的 mmap"在队列里反超。
+`completion_sequence` 按完成时刻全序化 VM syscall，writer 的同址 generation 匹配一律
+以它为准（TRACE_WRITER.md §8.1 的区间模型）。取号与 syscall 返回之间仍有几条指令的
+残余窗口，但相比此前"返回 → 计时 → 栈捕获 → 入队"的整条路径可忽略。容量换算按
+`bit_floor(buffer_size / sizeof(event))` 进行，事件从 640 增至 648 后默认 16 MiB
+buffer 仍向下取整为 16,384 个 slot。
+
 ## 5. 验证
 
 单元测试覆盖：
