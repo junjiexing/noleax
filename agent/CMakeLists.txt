@@ -36,6 +36,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   )
 
   target_sources(noleax-hook-backend PRIVATE
+    linux/agent_memory.cpp
     linux/custom_symbol_hooks.cpp
     linux/elf_symbol_lookup.cpp
     linux/glibc_heap_hooks.cpp
@@ -65,7 +66,9 @@ target_link_libraries(noleax-hook-backend
 )
 
 if(WIN32)
-  target_link_libraries(noleax-hook-backend PRIVATE Psapi)
+  # Psapi for the module walk; Synchronization for WaitOnAddress/WakeByAddressAll (the
+  # replacement-lifecycle deadline wait) — PUBLIC so every consumer's final link gets it.
+  target_link_libraries(noleax-hook-backend PUBLIC Psapi Synchronization)
 endif()
 
 noleax_set_project_warnings(noleax-hook-backend)
