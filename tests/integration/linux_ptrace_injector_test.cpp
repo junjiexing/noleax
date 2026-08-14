@@ -362,6 +362,46 @@ TEST_CASE("linux ptrace injector attaches the agent to a running process",
   }
 }
 
+TEST_CASE("linux failed launch terminates and reaps its child",
+          "[controller][linux][launch][failure]") {
+  const auto stamp = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+  const std::filesystem::path marker =
+      std::filesystem::temp_directory_path() / ("noleax-launch-failure-" + stamp + ".pid");
+
+  noleax::controller::linux::LaunchOptions launch;
+  launch.executable = "/bin/sh";
+  launch.arguments = {"-c", "echo $$ > '" + marker.string() + "'; exec /bin/sleep 30"};
+
+  noleax::controller::linux::CaptureOptions capture;
+  capture.agent_path = "/noleax-test-missing/agent.so";
+  capture.timeout = 500ms;
+  capture.start.capture_kind = noleax::ipc::CaptureKind::kLaunch;
+  capture.start.hook_profile = noleax::ipc::HookProfile::kLinuxGlibcHeap;
+  capture.start.trace_path_utf8 = marker.string() + ".nlx";
+
+  try {
+    auto session = noleax::controller::linux::CaptureSession::launch(launch, capture);
+    FAIL("launch without an agent should fail");
+  } catch (const noleax::controller::linux::ControllerError& error) {
+    CHECK(error.failure_kind() == noleax::controller::linux::ControllerFailureKind::kAgentCrash);
+  }
+
+  std::ifstream marker_input{marker};
+  pid_t child = -1;
+  marker_input >> child;
+  REQUIRE(child > 0);
+  int status = 0;
+  errno = 0;
+  CHECK(::waitpid(child, &status, WNOHANG) == -1);
+  CHECK(errno == ECHILD);
+  errno = 0;
+  CHECK(::kill(child, 0) == -1);
+  CHECK(errno == ESRCH);
+
+  std::error_code error;
+  std::filesystem::remove(marker, error);
+}
+
 // H2 failure classification: the controller must say WHY a capture failed. An uncreatable
 // trace path surfaces as a StartCapture error with the trace-writer code, and a SIGKILLed
 // target mid-capture classifies as target-exit (not a bare broken pipe).

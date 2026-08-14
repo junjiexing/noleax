@@ -41,6 +41,10 @@ TEST_CASE("linux end-to-end run captures an analyzable trace", "[linux][e2e]") {
       std::filesystem::temp_directory_path() / ("noleax-e2e-events-" + stamp + ".txt");
   const std::filesystem::path leaks_out =
       std::filesystem::temp_directory_path() / ("noleax-e2e-leaks-" + stamp + ".txt");
+  const std::filesystem::path linked_output =
+      std::filesystem::temp_directory_path() / ("noleax-e2e-linked-output-" + stamp + ".json");
+  const std::filesystem::path link_log =
+      std::filesystem::temp_directory_path() / ("noleax-e2e-linked-output-" + stamp + ".log");
 
   const std::string run_command =
       "\"" NOLEAX_CLI_PATH "\" run --hook-profile linux-glibc-heap --trace \"" + trace.string() +
@@ -52,6 +56,23 @@ TEST_CASE("linux end-to-end run captures an analyzable trace", "[linux][e2e]") {
   CHECK(run_output.find("capture finalized") != std::string::npos);
   CHECK(run_output.find("target_exit_code=42") != std::string::npos);
   CHECK(run_output.find("dropped=0") != std::string::npos);
+
+  const std::string original_trace = read_all(trace);
+  std::filesystem::create_hard_link(trace, linked_output);
+  const CommandResult hard_link = run_shell(
+      "\"" NOLEAX_CLI_PATH "\" analyze --format json --output \"" + linked_output.string() +
+      "\" \"" + trace.string() + "\" > \"" + link_log.string() + "\" 2>&1");
+  CHECK(hard_link.exit_code != 0);
+  CHECK(read_all(trace) == original_trace);
+  std::filesystem::remove(linked_output);
+
+  std::filesystem::create_symlink(trace, linked_output);
+  const CommandResult symbolic_link = run_shell(
+      "\"" NOLEAX_CLI_PATH "\" analyze --format json --output \"" + linked_output.string() +
+      "\" \"" + trace.string() + "\" > \"" + link_log.string() + "\" 2>&1");
+  CHECK(symbolic_link.exit_code != 0);
+  CHECK(read_all(trace) == original_trace);
+  std::filesystem::remove(linked_output);
 
   const CommandResult events =
       run_shell("\"" NOLEAX_CLI_PATH "\" analyze --mode events --group-by stack \"" +
@@ -79,6 +100,7 @@ TEST_CASE("linux end-to-end run captures an analyzable trace", "[linux][e2e]") {
   std::filesystem::remove(run_log);
   std::filesystem::remove(events_out);
   std::filesystem::remove(leaks_out);
+  std::filesystem::remove(link_log);
 }
 
 TEST_CASE("linux end-to-end native profile captures VM events and memory snapshots",

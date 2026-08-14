@@ -318,6 +318,13 @@ void checked_increment(std::uint64_t& value, const char* subject) {
   ++value;
 }
 
+void checked_add(std::uint64_t& total, std::uint64_t value, const char* subject) {
+  if (value > std::numeric_limits<std::uint64_t>::max() - total) {
+    throw CsvFormatError{std::string{subject} + " total overflow"};
+  }
+  total += value;
+}
+
 [[nodiscard]] std::string escape_stack_component(std::string_view value) {
   if (!detail::is_valid_utf8(value)) {
     throw CsvFormatError{"stack frame text is not valid UTF-8"};
@@ -1369,9 +1376,9 @@ void CsvWriter::write_event_stacks_summary(const EventsStacksResult& result) {
   std::uint64_t total_alloc_bytes = 0U;
   std::uint64_t total_free_bytes = 0U;
   for (const auto& group : result.groups) {
-    total_calls += group.calls;
-    total_alloc_bytes += group.alloc_bytes;
-    total_free_bytes += group.free_bytes;
+    checked_add(total_calls, group.calls, "event stack calls");
+    checked_add(total_alloc_bytes, group.alloc_bytes, "event stack allocation bytes");
+    checked_add(total_free_bytes, group.free_bytes, "event stack free bytes");
   }
   set(row, EventStacksColumn::kGroups, decimal(static_cast<std::uint64_t>(result.groups.size())));
   set(row, EventStacksColumn::kCalls, decimal(total_calls));
@@ -1476,8 +1483,8 @@ void CsvWriter::write_leak_stacks_summary(const LeaksStacksResult& result) {
   std::uint64_t total_calls = 0U;
   std::uint64_t total_bytes = 0U;
   for (const auto& group : result.groups) {
-    total_calls += group.calls;
-    total_bytes += group.bytes;
+    checked_add(total_calls, group.calls, "leak stack calls");
+    checked_add(total_bytes, group.bytes, "leak stack bytes");
   }
   set(row, LeakStacksColumn::kGroups, decimal(static_cast<std::uint64_t>(result.groups.size())));
   set(row, LeakStacksColumn::kCalls, decimal(total_calls));

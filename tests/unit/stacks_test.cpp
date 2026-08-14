@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 #include <ios>
+#include <limits>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -168,6 +169,18 @@ TEST_CASE("event stacks track free bytes and unmatched frees", "[analyzer][stack
   CHECK(group.free_bytes == 96U);
   CHECK(group.net_bytes() == 0);
   CHECK(result.unmatched_free_count == 1U);
+}
+
+TEST_CASE("stack byte aggregation rejects uint64 overflow", "[analyzer][stacks]") {
+  const auto encoded = make_trace({
+      allocation_event(1U, 110U, 11U, 1U, std::numeric_limits<std::uint64_t>::max()),
+      allocation_event(2U, 120U, 11U, 2U, 1U),
+  });
+
+  CHECK_THROWS_AS(analyze_events(encoded, noleax::analyzer::StacksSort::kAllocBytes),
+                  noleax::analyzer::StacksAnalysisError);
+  CHECK_THROWS_AS(analyze_leaks(encoded, noleax::analyzer::StacksSort::kBytes),
+                  noleax::analyzer::StacksAnalysisError);
 }
 
 TEST_CASE("event stacks skip failed calls and events outside the window", "[analyzer][stacks]") {

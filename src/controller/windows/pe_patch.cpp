@@ -1,11 +1,17 @@
 #include "noleax/controller/windows/pe_patch.hpp"
 
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -38,6 +44,76 @@ constexpr char kBootstrapSectionName[] = ".nlxboot";
 [[noreturn]] void reject(PePatchError code, const std::string& message) {
   throw PePatchException{code, message};
 }
+
+class TemporaryPatchFile final {
+ public:
+  explicit TemporaryPatchFile(const std::filesystem::path& output) {
+    static std::atomic<std::uint64_t> ordinal{0U};
+    for (std::uint32_t attempt = 0U; attempt < 128U; ++attempt) {
+      const std::uint64_t suffix = ordinal.fetch_add(1U, std::memory_order_relaxed);
+      path_ = output.parent_path() /
+              (output.filename().native() + L".nlx-tmp-" +
+               std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(suffix));
+      handle_ = CreateFileW(path_.c_str(), GENERIC_WRITE, 0U, nullptr, CREATE_NEW,
+                            FILE_ATTRIBUTE_TEMPORARY, nullptr);
+      if (handle_ != INVALID_HANDLE_VALUE) {
+        return;
+      }
+      const DWORD error = GetLastError();
+      if (error != ERROR_FILE_EXISTS && error != ERROR_ALREADY_EXISTS) {
+        reject(PePatchError::kIo,
+               "cannot create the temporary patch output (Windows error " +
+                   std::to_string(error) + ")");
+      }
+    }
+    reject(PePatchError::kIo, "cannot allocate a unique temporary patch output name");
+  }
+
+  ~TemporaryPatchFile() {
+    close();
+    if (remove_on_destroy_) {
+      std::error_code error;
+      static_cast<void>(std::filesystem::remove(path_, error));
+    }
+  }
+
+  TemporaryPatchFile(const TemporaryPatchFile&) = delete;
+  TemporaryPatchFile& operator=(const TemporaryPatchFile&) = delete;
+
+  void write(std::span<const std::byte> data) {
+    std::size_t offset = 0U;
+    while (offset < data.size()) {
+      const DWORD requested = static_cast<DWORD>((std::min)(
+          data.size() - offset, static_cast<std::size_t>(std::numeric_limits<DWORD>::max())));
+      DWORD written = 0U;
+      if (WriteFile(handle_, data.data() + offset, requested, &written, nullptr) == FALSE ||
+          written == 0U) {
+        reject(PePatchError::kIo, "cannot write the temporary patch output");
+      }
+      offset += written;
+    }
+    if (FlushFileBuffers(handle_) == FALSE) {
+      reject(PePatchError::kIo, "cannot flush the temporary patch output");
+    }
+    close();
+  }
+
+  [[nodiscard]] const std::filesystem::path& path() const noexcept { return path_; }
+
+  void release() noexcept { remove_on_destroy_ = false; }
+
+ private:
+  void close() noexcept {
+    if (handle_ != INVALID_HANDLE_VALUE) {
+      static_cast<void>(CloseHandle(handle_));
+      handle_ = INVALID_HANDLE_VALUE;
+    }
+  }
+
+  std::filesystem::path path_;
+  HANDLE handle_{INVALID_HANDLE_VALUE};
+  bool remove_on_destroy_{true};
+};
 
 template <typename Value>
 [[nodiscard]] Value read_at(const std::vector<std::byte>& data, std::uint64_t offset,
@@ -530,28 +606,13 @@ PePatchResult patch_pe_image(const PePatchOptions& options) {
   std::memcpy(data.data() + new_raw_offset, content.data(), content.size());
   result.output_size = data.size();
 
-  const std::filesystem::path temporary =
-      options.output.parent_path() / (options.output.filename().native() + L".nlx-tmp");
-  {
-    std::error_code remove_error;
-    static_cast<void>(std::filesystem::remove(temporary, remove_error));
-    std::ofstream output{temporary, std::ios::binary | std::ios::trunc};
-    if (!output.write(reinterpret_cast<const char*>(data.data()),
-                      static_cast<std::streamsize>(data.size())) ||
-        !output.flush()) {
-      reject(PePatchError::kIo, "cannot write the patched output");
-    }
+  TemporaryPatchFile temporary{options.output};
+  temporary.write(data);
+  if (options.verify) {
+    verify_patched_image(temporary.path(), result, plan);
   }
-  try {
-    if (options.verify) {
-      verify_patched_image(temporary, result, plan);
-    }
-    std::filesystem::rename(temporary, options.output);
-  } catch (...) {
-    std::error_code remove_error;
-    static_cast<void>(std::filesystem::remove(temporary, remove_error));
-    throw;
-  }
+  std::filesystem::rename(temporary.path(), options.output);
+  temporary.release();
   return result;
 }
 

@@ -687,9 +687,25 @@ struct AnalysisResult {
   if (configuration.analysis.inputs.value.size() != 1U) {
     unsupported("P6 analyze currently requires exactly one input trace");
   }
-  if (configuration.analysis.output.value.has_value() &&
-      *configuration.analysis.output.value == configuration.analysis.inputs.value.front()) {
-    throw ApplicationError{1, "analysis output must be different from its input trace"};
+  if (configuration.analysis.output.value.has_value()) {
+    const auto& input_path = configuration.analysis.inputs.value.front();
+    const auto& output_path = *configuration.analysis.output.value;
+    std::error_code exists_error;
+    const bool output_exists = std::filesystem::exists(output_path, exists_error);
+    if (exists_error) {
+      throw ApplicationError{1, "cannot inspect analysis output '" +
+                                    noleax::config::path_to_utf8(output_path) + "'"};
+    }
+    if (output_exists) {
+      std::error_code equivalent_error;
+      const bool same_file = std::filesystem::equivalent(input_path, output_path, equivalent_error);
+      if (equivalent_error) {
+        throw ApplicationError{1, "cannot compare analysis input and output files"};
+      }
+      if (same_file) {
+        throw ApplicationError{1, "analysis output must be different from its input trace"};
+      }
+    }
   }
 
   std::ofstream output_file;

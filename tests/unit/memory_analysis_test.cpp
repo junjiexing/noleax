@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <ios>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -154,6 +155,19 @@ TEST_CASE("memory analysis merges snapshots by sampling tick", "[analyzer][memor
   CHECK(result.trace.memory_counters_count == 3U);
   CHECK(result.trace.memory_map_count == 2U);
   CHECK_FALSE(result.trace.partially_understood);
+}
+
+TEST_CASE("agent memory totals reject overflowing samples", "[analyzer][memory]") {
+  noleax::trace::AgentMemory memory;
+  memory.categories = {
+      noleax::trace::AgentMemoryCategorySample{
+          noleax::trace::AgentMemoryCategory::kEventQueue, 0U,
+          std::numeric_limits<std::uint64_t>::max(), 0U},
+      noleax::trace::AgentMemoryCategorySample{noleax::trace::AgentMemoryCategory::kAgentHeap, 0U,
+                                               1U, 0U},
+  };
+  CHECK_THROWS_AS(noleax::analyzer::agent_memory_totals(memory),
+                  noleax::trace::MemorySnapshotValidationError);
 }
 
 TEST_CASE("memory analysis applies the time window", "[analyzer][memory]") {

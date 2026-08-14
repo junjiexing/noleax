@@ -392,13 +392,15 @@ __attribute__((noinline)) inline int replacement_munmap(void* address, std::size
 NOLEAX_HOOK_SECTION
 __attribute__((noinline)) inline void* replacement_mremap(void* old_address, std::size_t old_size,
                                                           std::size_t new_size, int flags, ...) {
-  // The glibc wrapper declares mremap variadic; callers pass new_address only together with
-  // MREMAP_FIXED. glibc fetches the slot whenever MREMAP_MAYMOVE is set, so the forward to
-  // the original does the same (the kernel ignores it without MREMAP_FIXED), but the event
-  // records it only when MREMAP_FIXED makes it semantically real — a MAYMOVE-only call has
-  // no fifth argument and reading it would record garbage.
+  // The glibc wrapper declares mremap variadic. An ordinary MREMAP_MAYMOVE call has four
+  // arguments, so reading its nonexistent variadic slot is undefined behavior. Current glibc
+  // consumes new_address only for FIXED and DONTUNMAP; mirror that ABI when forwarding.
   void* requested_new_address = nullptr;
-  if ((flags & MREMAP_MAYMOVE) != 0) {
+  int address_flags = MREMAP_FIXED;
+#ifdef MREMAP_DONTUNMAP
+  address_flags |= MREMAP_DONTUNMAP;
+#endif
+  if ((flags & address_flags) != 0) {
     va_list arguments;
     va_start(arguments, flags);
     requested_new_address = va_arg(arguments, void*);

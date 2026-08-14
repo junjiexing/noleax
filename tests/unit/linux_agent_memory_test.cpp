@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <thread>
 #include <vector>
 
@@ -221,6 +222,24 @@ TEST_CASE("agent memory registry rejects overflow with a stable error", "[agent]
     ::munmap(base, 4096U);
   }
   ::munmap(extra, 4096U);
+}
+
+TEST_CASE("agent memory registry rejects category byte overflow", "[agent][memory][linux]") {
+  void* const base =
+      ::mmap(nullptr, 4096U, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  REQUIRE(base != MAP_FAILED);
+  AgentMemoryRegistry::instance().register_region(noleax::trace::AgentMemoryCategory::kEventQueue,
+                                                  base, 4096U);
+  AgentMemoryRegistry::instance().set_estimate(noleax::trace::AgentMemoryCategory::kEventQueue,
+                                               std::numeric_limits<std::uint64_t>::max(), 0U);
+
+  std::vector<noleax::trace::AgentMemoryCategorySample> categories;
+  CHECK_THROWS_AS(AgentMemoryRegistry::instance().snapshot(categories),
+                  noleax::agent::linux::AgentMemoryError);
+
+  AgentMemoryRegistry::instance().clear_estimate(noleax::trace::AgentMemoryCategory::kEventQueue);
+  AgentMemoryRegistry::instance().unregister_region(base);
+  ::munmap(base, 4096U);
 }
 
 TEST_CASE("mmap event queue keeps MPSC semantics under concurrency", "[agent][memory][linux]") {

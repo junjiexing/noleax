@@ -620,7 +620,8 @@ flags uint32（bit0 = exact：驻留字节来自专属映射的页级实测；�
   点之间；pre_init 的 category 列表可以为空（agent 尚未注册任何内存）。
 - application 估算 = 同 tick MemoryCounters.working_set_bytes − 本记录 resident 合计
   （饱和到 0）；仅当所有 category 都 exact 时标注 exact，否则标注 estimate。
-- codec 校验：category 数 ≤ 64，每条 resident ≤ reserved。老 minor reader 将整个 memory
+- codec 校验：category 数 ≤ 64、category ID 不重复、每条 resident ≤ reserved，且所有
+  reserved/resident 合计均不得发生 uint64 overflow。老 minor reader 将整个 memory
   chunk 按未知 chunk 跳过；minor 2/3 的 reader 将本记录按未知 record 跳过并标记
   partially understood。
 
