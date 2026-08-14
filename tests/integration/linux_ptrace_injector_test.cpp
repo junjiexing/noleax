@@ -273,8 +273,8 @@ TEST_CASE("linux ptrace injector attaches the agent to a running process",
   const auto capturing = noleax::ipc::decode_capture_status(status.payload);
   CHECK(capturing.state == noleax::ipc::AgentState::kCapturing);
   CHECK(capturing.observed_calls > 0U);
-  // H2 live telemetry: the default 16 MiB buffer floors to 16384 640-byte slots; the
-  // writer flushes on its flush interval, so bytes and the flush stamp are live.
+  // H2 live telemetry: the default 16 MiB buffer floors to 16384 slots (648-byte events);
+  // the writer flushes on its flush interval, so bytes and the flush stamp are live.
   CHECK(capturing.queue_capacity == 16'384U);
   CHECK(capturing.queued_events <= capturing.queue_capacity);
   CHECK(capturing.queue_high_water_events >= capturing.queued_events);
@@ -294,7 +294,9 @@ TEST_CASE("linux ptrace injector attaches the agent to a running process",
   // instead of kFinalized and the fixture keeps running with them in place.
   const auto final_status = noleax::ipc::decode_capture_status(finalized.payload);
   CHECK(final_status.state == noleax::ipc::AgentState::kDormant);
-  CHECK(final_status.flags == 0U);
+  // H4: only the informational buffer-adjusted flag (default buffer floors to 16384
+  // slots); no degradation flag.
+  CHECK(final_status.flags == noleax::ipc::kCaptureStatusFlagBufferAdjusted);
 
   // Orderly fixture exit: release it and check its own exit code and report survived the
   // injection (the only thread was hijacked, restored, and detached mid-run).
@@ -443,19 +445,28 @@ TEST_CASE("linux controller classifies writer start failures and target exit",
     REQUIRE(session.query_status().state == noleax::ipc::AgentState::kCapturing);
 
     REQUIRE(::kill(child, SIGKILL) == 0);
+    // The kill lands asynchronously: an early poll can still see the target alive and
+    // classify the dead socket as an agent crash. Keep polling until the target-exit
+    // classification shows up; only its absence within the deadline is a failure.
+    std::optional<noleax::controller::linux::ControllerFailureKind> last_kind;
+    std::string last_message;
     bool classified = false;
     for (int attempt = 0; attempt != 50 && !classified; ++attempt) {
       try {
         static_cast<void>(session.query_status());
         std::this_thread::sleep_for(20ms);  // the socket may die a beat after the kill
       } catch (const noleax::controller::linux::ControllerError& error) {
-        classified = true;
-        CHECK(error.failure_kind() ==
-              noleax::controller::linux::ControllerFailureKind::kTargetExit);
-        CHECK(std::string{error.what()}.find("target exited") != std::string::npos);
+        last_kind = error.failure_kind();
+        last_message = error.what();
+        classified = last_kind == noleax::controller::linux::ControllerFailureKind::kTargetExit;
+        if (!classified) {
+          std::this_thread::sleep_for(20ms);
+        }
       }
     }
     CHECK(classified);
+    CHECK(last_kind == noleax::controller::linux::ControllerFailureKind::kTargetExit);
+    CHECK(last_message.find("target exited") != std::string::npos);
     CHECK(session.target_exited());
     // SIGKILL leaves the trace as a .partial the analyzer can still open.
     const std::filesystem::path partial = trace.string() + ".partial";
