@@ -51,8 +51,7 @@ struct AgentMemoryTotals {
   bool exact{true};
 };
 
-[[nodiscard]] AgentMemoryTotals agent_memory_totals(
-    const noleax::trace::AgentMemory& memory);
+[[nodiscard]] AgentMemoryTotals agent_memory_totals(const noleax::trace::AgentMemory& memory);
 
 // Process working set minus the agent-owned resident sum (saturating at zero). Only
 // meaningful when the snapshot carries both counters and agent records; the result is an

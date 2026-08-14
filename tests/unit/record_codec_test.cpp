@@ -829,8 +829,7 @@ TEST_CASE("agent memory record decoders reject malformed payloads", "[trace][rec
         AgentMemoryCategorySample{AgentMemoryCategory::kAgentHeap, 0U, 1U, 0U},
     };
     std::vector<std::byte> encoded;
-    CHECK_THROWS_AS(append_agent_memory_record(encoded, memory),
-                    MemorySnapshotValidationError);
+    CHECK_THROWS_AS(append_agent_memory_record(encoded, memory), MemorySnapshotValidationError);
     CHECK(encoded.empty());
   }
 
@@ -842,8 +841,7 @@ TEST_CASE("agent memory record decoders reject malformed payloads", "[trace][rec
         AgentMemoryCategorySample{AgentMemoryCategory::kEventQueue, 0U, 8U, 4U},
     };
     std::vector<std::byte> encoded;
-    CHECK_THROWS_AS(append_agent_memory_record(encoded, memory),
-                    MemorySnapshotValidationError);
+    CHECK_THROWS_AS(append_agent_memory_record(encoded, memory), MemorySnapshotValidationError);
     CHECK(encoded.empty());
   }
 }

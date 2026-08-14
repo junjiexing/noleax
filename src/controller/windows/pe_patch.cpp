@@ -52,8 +52,8 @@ class TemporaryPatchFile final {
     for (std::uint32_t attempt = 0U; attempt < 128U; ++attempt) {
       const std::uint64_t suffix = ordinal.fetch_add(1U, std::memory_order_relaxed);
       path_ = output.parent_path() /
-              (output.filename().native() + L".nlx-tmp-" +
-               std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(suffix));
+              (output.filename().native() + L".nlx-tmp-" + std::to_wstring(GetCurrentProcessId()) +
+               L"-" + std::to_wstring(suffix));
       handle_ = CreateFileW(path_.c_str(), GENERIC_WRITE, 0U, nullptr, CREATE_NEW,
                             FILE_ATTRIBUTE_TEMPORARY, nullptr);
       if (handle_ != INVALID_HANDLE_VALUE) {
@@ -61,9 +61,8 @@ class TemporaryPatchFile final {
       }
       const DWORD error = GetLastError();
       if (error != ERROR_FILE_EXISTS && error != ERROR_ALREADY_EXISTS) {
-        reject(PePatchError::kIo,
-               "cannot create the temporary patch output (Windows error " +
-                   std::to_string(error) + ")");
+        reject(PePatchError::kIo, "cannot create the temporary patch output (Windows error " +
+                                      std::to_string(error) + ")");
       }
     }
     reject(PePatchError::kIo, "cannot allocate a unique temporary patch output name");

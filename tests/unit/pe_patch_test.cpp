@@ -340,8 +340,7 @@ TEST_CASE("patch rejects unsupported and malformed inputs", "[controller][pe-pat
     write_all(input, source);
     write_all(legacy_temporary, sentinel);
 
-    static_cast<void>(
-        noleax::controller::windows::patch_pe_image(options_for(input, output)));
+    static_cast<void>(noleax::controller::windows::patch_pe_image(options_for(input, output)));
 
     CHECK(read_all(legacy_temporary) == sentinel);
     CHECK(noleax::controller::windows::read_static_patch_info(output).has_value());

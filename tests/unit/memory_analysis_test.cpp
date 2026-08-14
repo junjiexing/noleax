@@ -160,9 +160,8 @@ TEST_CASE("memory analysis merges snapshots by sampling tick", "[analyzer][memor
 TEST_CASE("agent memory totals reject overflowing samples", "[analyzer][memory]") {
   noleax::trace::AgentMemory memory;
   memory.categories = {
-      noleax::trace::AgentMemoryCategorySample{
-          noleax::trace::AgentMemoryCategory::kEventQueue, 0U,
-          std::numeric_limits<std::uint64_t>::max(), 0U},
+      noleax::trace::AgentMemoryCategorySample{noleax::trace::AgentMemoryCategory::kEventQueue, 0U,
+                                               std::numeric_limits<std::uint64_t>::max(), 0U},
       noleax::trace::AgentMemoryCategorySample{noleax::trace::AgentMemoryCategory::kAgentHeap, 0U,
                                                1U, 0U},
   };

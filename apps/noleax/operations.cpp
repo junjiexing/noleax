@@ -693,8 +693,8 @@ struct AnalysisResult {
     std::error_code exists_error;
     const bool output_exists = std::filesystem::exists(output_path, exists_error);
     if (exists_error) {
-      throw ApplicationError{1, "cannot inspect analysis output '" +
-                                    noleax::config::path_to_utf8(output_path) + "'"};
+      throw ApplicationError{
+          1, "cannot inspect analysis output '" + noleax::config::path_to_utf8(output_path) + "'"};
     }
     if (output_exists) {
       std::error_code equivalent_error;
