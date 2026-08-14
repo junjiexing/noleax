@@ -155,6 +155,7 @@ NOLEAX_HOOK_IMM_SECTION_POP
 #else
   // Portable fallback: bounded sleep slices. Same observable contract (sleep, never spin,
   // hard deadline) with up to one millisecond of extra wake latency.
+  static_cast<void>(expected);
   const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
   if (now >= deadline) {
     return false;
