@@ -214,6 +214,10 @@ ctest --preset windows-x64-release -R "hook.(rtl-.*heap|nt-virtual-memory).*quie
 
 > 状态：已实现（Linux 移植 M1）。`HOOX_POSIX_PATCH_PC_GUARD` 与 `hoox_peer_park_*` 当前是
 > vendored hoox 的本地扩展，计划回流上游（third_party/hoox/README.md 的 deviation 清单）。
+> H1-B 起 attach 路径改用进程外停核（ptrace seizure + hoox
+> `hoox_memory_set_external_thread_suspension`），见下文与
+> [LINUX_PTRACE_INJECTION.md](LINUX_PTRACE_INJECTION.md)；信号 park 仍用于 launch 路径的
+> 安装/拆除与 patch rendezvous。
 
 Linux 没有 SuspendThread/GetThreadContext 的对应物，停核用信号实现（`agent/patch_rendezvous.cpp`
 的 Linux 分支 + hoox 的 POSIX patch guard，共用同一套 park 原语）：
@@ -246,3 +250,15 @@ Linux 没有 SuspendThread/GetThreadContext 的对应物，停核用信号实现
 replacement"的窗口不由 patch guard 覆盖。生产拆除顺序（停止记录 → 路由 original → 静态化
 → rendezvous 验证 → 释放 lease → flush 回收）在 M2/M3 接线时照搬 Windows 编排，届时该窗口
 关闭。
+
+**H1-B：attach 改为进程外停核**。信号 park 对两类目标系统性失败（屏蔽 park 信号的线程、
+以及 ptrace 停核线程信号滞留导致的 park 超时），事故表现为 patch 失败进 hx_abort 的
+SIGABRT。attach 因此不再在运行中进程内安装：injector 的 ptrace seizure 把全部既有线程
+冻结，`noleax_agent_attach_bootstrap` 在被劫持线程上同步跑完握手与全部 hook 安装，
+hoox 侧经线程局部的 `hoox_memory_set_external_thread_suspension` 跳过 park 与 PC-guard
+扫描；作为对价，injector 在占据后、任何 patch 之前把所有被停线程单步撤出"将被覆盖的
+序言窗口"（内建 registry 符号 + exit/_exit + custom hook 目标），因为 PC-guard 的扫描
+在此模型下不存在。超时贯穿 seizure→dlopen→bootstrap→握手→安装；stub 中途超时先给一个
+与配置等长的 grace，grace 也耗尽才判 wedged——此时不恢复寄存器、不 detach、进程保持
+停核，响亮报错要求重启目标。完整语义与失败矩阵见
+[LINUX_PTRACE_INJECTION.md](LINUX_PTRACE_INJECTION.md)。

@@ -1,17 +1,24 @@
-// End-to-end attach test for the ptrace injector (M6): the harness forks a long-running
-// allocation fixture (a direct child, so the attach stays ptrace-able under Yama
-// ptrace_scope=1), injects the built agent into it with PtraceInjector, then plays the
-// controller over the session socket — hello handshake, StartCapture with the
-// linux-glibc-heap profile and attach capture kind, status query, drain, finalize. It then
-// asserts the trace analyzes with the attach capture scope (started_at_process_start=false,
-// preexisting_allocations_unknown=true) and that the fixture kept running correctly through
-// the injection (its own exit code 42 and batch report intact).
+// End-to-end attach test for the ptrace injector (M6, stop-window bootstrap in H1-B): the
+// harness forks a long-running allocation fixture (a direct child, so the attach stays
+// ptrace-able under Yama ptrace_scope=1), injects the built agent into it with
+// PtraceInjector, then plays the controller over the session socket — hello handshake,
+// StartCapture with the linux-glibc-heap profile and attach capture kind, status query,
+// drain, finalize. It then asserts the trace analyzes with the attach capture scope
+// (started_at_process_start=false, preexisting_allocations_unknown=true) and that the
+// fixture kept running correctly through the injection (its own exit code 42 and batch
+// report intact). The fixture carries a churn thread and a peer that SIG_BLOCKs hoox's
+// peer-park signal, so the synchronous in-window install is the only reason attach
+// succeeds at all (the field crash regression).
 
+#include <dirent.h>
 #include <poll.h>
+#include <signal.h>
+#include <sys/ptrace.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 #include <array>
+#include <atomic>
 #include <catch2/catch_test_macros.hpp>
 #include <cerrno>
 #include <chrono>
@@ -19,8 +26,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -54,7 +63,42 @@ constexpr std::uint32_t kFixtureExitCode = 42U;
 // it through the pipe (or a ~30s watchdog saves the suite from a hung test), then a batch
 // report down the second pipe and exit 42. Runs in the forked child without an exec, so it
 // keeps producing glibc-heap traffic for the capture while staying a direct child.
+//
+// Two extra threads make the stop-window attach honest: a detached churn thread keeps
+// malloc/free traffic racing the seizure, and a peer that SIG_BLOCKs SIGRTMIN+6 (hoox's
+// default Linux peer-park signal) reproduces the field crash — an in-process park can
+// never complete while that thread exists, so attach only succeeds because the
+// synchronous bootstrap disables the park outright (external thread suspension).
 [[noreturn]] void fixture_child(int release_fd, int report_fd) {
+  std::atomic<bool> blocked_peer_ready{false};
+  std::thread churn{[] {
+    for (;;) {
+      void* const block = std::malloc(192U);
+      if (block == nullptr) {
+        ::_exit(47);
+      }
+      std::memset(block, 0x77, 16U);
+      std::free(block);
+    }
+  }};
+  churn.detach();
+  std::thread blocked_peer{[&blocked_peer_ready] {
+    sigset_t blocked{};
+    sigemptyset(&blocked);
+    sigaddset(&blocked, SIGRTMIN + 6);  // hoox's default Linux peer-park signal
+    if (pthread_sigmask(SIG_BLOCK, &blocked, nullptr) != 0) {
+      ::_exit(46);
+    }
+    blocked_peer_ready.store(true, std::memory_order_release);
+    for (;;) {
+      static_cast<void>(::poll(nullptr, 0U, 1000));
+    }
+  }};
+  blocked_peer.detach();
+  while (!blocked_peer_ready.load(std::memory_order_acquire)) {
+    std::this_thread::yield();
+  }
+
   std::uint64_t batches = 0U;
   std::vector<void*> retained;
   for (;;) {
@@ -165,8 +209,19 @@ TEST_CASE("linux ptrace injector attaches the agent to a running process",
   std::vector<std::byte> parameter_bytes(sizeof(parameters));
   std::memcpy(parameter_bytes.data(), &parameters, sizeof(parameters));
 
-  REQUIRE_NOTHROW(noleax::controller::linux::PtraceInjector::inject(
-      static_cast<std::uint32_t>(child), NOLEAX_AGENT_PATH, parameter_bytes));
+  // H1-B: inject() now blocks until the synchronous in-window bootstrap has completed
+  // the handshake and installed every hook, so it runs on a worker while this thread
+  // drives the session channel — the same concurrency the controller uses internally.
+  std::exception_ptr injection_error;
+  std::jthread injection_worker{[&] {
+    try {
+      noleax::controller::linux::PtraceInjector::inject(static_cast<std::uint32_t>(child),
+                                                        NOLEAX_AGENT_PATH, parameter_bytes,
+                                                        std::chrono::seconds{10});
+    } catch (...) {
+      injection_error = std::current_exception();
+    }
+  }};
 
   SocketChannel channel = server.accept(10s);
   const noleax::ipc::Message hello = channel.receive(10s);
@@ -199,6 +254,17 @@ TEST_CASE("linux ptrace injector attaches the agent to a running process",
     INFO(noleax::ipc::decode_error_response(ready.payload).message);
   }
   REQUIRE(ready.type == MessageType::kCaptureReady);
+  // The injector returns only after the agent's install-complete signal: by the time the
+  // ready arrives, the injection worker must be done, without an error.
+  injection_worker.join();
+  if (injection_error != nullptr) {
+    try {
+      std::rethrow_exception(injection_error);
+    } catch (const std::exception& error) {
+      INFO(error.what());
+    }
+  }
+  REQUIRE(injection_error == nullptr);
 
   // Let the capture accumulate fixture traffic, then prove events are flowing.
   std::this_thread::sleep_for(300ms);
@@ -207,8 +273,8 @@ TEST_CASE("linux ptrace injector attaches the agent to a running process",
   const auto capturing = noleax::ipc::decode_capture_status(status.payload);
   CHECK(capturing.state == noleax::ipc::AgentState::kCapturing);
   CHECK(capturing.observed_calls > 0U);
-  // H2 live telemetry: the default 16 MiB buffer floors to 16384 640-byte slots; the
-  // writer flushes on its flush interval, so bytes and the flush stamp are live.
+  // H2 live telemetry: the default 16 MiB buffer floors to 16384 slots (648-byte events);
+  // the writer flushes on its flush interval, so bytes and the flush stamp are live.
   CHECK(capturing.queue_capacity == 16'384U);
   CHECK(capturing.queued_events <= capturing.queue_capacity);
   CHECK(capturing.queue_high_water_events >= capturing.queued_events);
@@ -228,6 +294,7 @@ TEST_CASE("linux ptrace injector attaches the agent to a running process",
   // instead of kFinalized and the fixture keeps running with them in place.
   const auto final_status = noleax::ipc::decode_capture_status(finalized.payload);
   CHECK(final_status.state == noleax::ipc::AgentState::kDormant);
+  // No degradation flags: the drain and the dormant retain both completed cleanly.
   CHECK(final_status.flags == 0U);
 
   // Orderly fixture exit: release it and check its own exit code and report survived the
@@ -377,19 +444,28 @@ TEST_CASE("linux controller classifies writer start failures and target exit",
     REQUIRE(session.query_status().state == noleax::ipc::AgentState::kCapturing);
 
     REQUIRE(::kill(child, SIGKILL) == 0);
+    // The kill lands asynchronously: an early poll can still see the target alive and
+    // classify the dead socket as an agent crash. Keep polling until the target-exit
+    // classification shows up; only its absence within the deadline is a failure.
+    std::optional<noleax::controller::linux::ControllerFailureKind> last_kind;
+    std::string last_message;
     bool classified = false;
     for (int attempt = 0; attempt != 50 && !classified; ++attempt) {
       try {
         static_cast<void>(session.query_status());
         std::this_thread::sleep_for(20ms);  // the socket may die a beat after the kill
       } catch (const noleax::controller::linux::ControllerError& error) {
-        classified = true;
-        CHECK(error.failure_kind() ==
-              noleax::controller::linux::ControllerFailureKind::kTargetExit);
-        CHECK(std::string{error.what()}.find("target exited") != std::string::npos);
+        last_kind = error.failure_kind();
+        last_message = error.what();
+        classified = last_kind == noleax::controller::linux::ControllerFailureKind::kTargetExit;
+        if (!classified) {
+          std::this_thread::sleep_for(20ms);
+        }
       }
     }
     CHECK(classified);
+    CHECK(last_kind == noleax::controller::linux::ControllerFailureKind::kTargetExit);
+    CHECK(last_message.find("target exited") != std::string::npos);
     CHECK(session.target_exited());
     // SIGKILL leaves the trace as a .partial the analyzer can still open.
     const std::filesystem::path partial = trace.string() + ".partial";
@@ -406,4 +482,274 @@ TEST_CASE("linux controller classifies writer start failures and target exit",
     ::waitpid(child, &exit_status, 0);  // already reaped by the session: ECHILD is fine
     guard.pid = -1;
   }
+}
+
+namespace {
+
+// Forks the churning fixture child (with its park-signal-blocking peer) and closes the
+// harness ends of the pipes. When bootstrap_delay_ms is nonzero the child environment
+// carries the H1-B test seam that slows the agent's attach bootstrap inside the window.
+[[nodiscard]] pid_t spawn_fixture(int (&release_pipe)[2], int (&report_pipe)[2],
+                                  unsigned long bootstrap_delay_ms = 0UL) {
+  if (bootstrap_delay_ms != 0UL) {
+    ::setenv("NOLEAX_ATTACH_BOOTSTRAP_DELAY_MS", std::to_string(bootstrap_delay_ms).c_str(), 1);
+  }
+  const pid_t child = ::fork();
+  if (child == 0) {
+    ::close(release_pipe[1]);
+    ::close(report_pipe[0]);
+    fixture_child(release_pipe[0], report_pipe[1]);
+  }
+  if (bootstrap_delay_ms != 0UL) {
+    // Parent only (the child never returns from fixture_child): keep the harness env clean.
+    ::unsetenv("NOLEAX_ATTACH_BOOTSTRAP_DELAY_MS");
+  }
+  return child;
+}
+
+// Every tid of a process, for the wedged-test cleanup (the abandoned seizure's threads
+// must be detached one by one before the kill can be reaped).
+[[nodiscard]] std::vector<pid_t> list_task_threads(pid_t pid) {
+  std::vector<pid_t> tids;
+  const std::string task_dir = "/proc/" + std::to_string(pid) + "/task";
+  DIR* const dir = ::opendir(task_dir.c_str());
+  if (dir == nullptr) {
+    return tids;
+  }
+  while (const dirent* const entry = ::readdir(dir)) {
+    const long tid = std::strtol(entry->d_name, nullptr, 10);
+    if (tid > 0) {
+      tids.push_back(static_cast<pid_t>(tid));
+    }
+  }
+  ::closedir(dir);
+  return tids;
+}
+
+// Releases the fixture, reaps it, and checks it kept running correctly through whatever
+// the test put it through (its own exit code and batch report intact).
+void check_fixture_exit(pid_t child, int release_fd, int report_fd) {
+  const ssize_t released = ::write(release_fd, "x", 1U);
+  REQUIRE(released == 1);
+  ::close(release_fd);
+
+  int exit_status = 0;
+  bool reaped = false;
+  for (int attempt = 0; attempt < 500 && !reaped; ++attempt) {
+    reaped = ::waitpid(child, &exit_status, WNOHANG) == child;
+    if (!reaped) {
+      std::this_thread::sleep_for(10ms);
+    }
+  }
+  REQUIRE(reaped);
+  CHECK(WIFEXITED(exit_status));
+  CHECK(WEXITSTATUS(exit_status) == static_cast<int>(kFixtureExitCode));
+
+  std::string report;
+  char chunk[128]{};
+  for (;;) {
+    const ssize_t count = ::read(report_fd, chunk, sizeof(chunk));
+    if (count <= 0) {
+      break;
+    }
+    report.append(chunk, static_cast<std::size_t>(count));
+  }
+  ::close(report_fd);
+  INFO(report);
+  CHECK(report.find("batches=") != std::string::npos);
+}
+
+}  // namespace
+
+// H1-B stress: repeated attach/drain cycles against the churning multi-threaded fixture
+// (including the park-signal-blocking peer). The in-window install must never crash and
+// the handshake must complete cleanly on every round. Field target: 100 rounds.
+TEST_CASE("linux ptrace attach loop stays clean across repeated seizures",
+          "[controller][linux][ptrace][attach][stress]") {
+#ifdef NDEBUG
+  constexpr int kRounds = 100;
+#else
+  constexpr int kRounds = 25;  // debug installs are slower; keep the suite time bounded
+#endif
+  for (int round = 0; round < kRounds; ++round) {
+    int release_pipe[2] = {-1, -1};
+    int report_pipe[2] = {-1, -1};
+    REQUIRE(::pipe(release_pipe) == 0);
+    REQUIRE(::pipe(report_pipe) == 0);
+    const pid_t child = spawn_fixture(release_pipe, report_pipe);
+    REQUIRE(child > 0);
+    ::close(release_pipe[0]);
+    ::close(report_pipe[1]);
+    ChildGuard guard{child};
+    std::this_thread::sleep_for(50ms);  // let the churn and blocked threads arm
+
+    noleax::controller::linux::CaptureOptions capture;
+    capture.agent_path = NOLEAX_AGENT_PATH;
+    capture.timeout = 10s;
+    capture.start.capture_kind = noleax::ipc::CaptureKind::kAttach;
+    capture.start.hook_profile = noleax::ipc::HookProfile::kLinuxGlibcHeap;
+    const std::filesystem::path trace = std::filesystem::temp_directory_path() /
+                                        ("noleax-attach-loop-" + std::to_string(round) + ".nlx");
+    capture.start.trace_path_utf8 = trace.string();
+
+    std::optional<noleax::controller::linux::CaptureSession> session;
+    try {
+      session.emplace(noleax::controller::linux::CaptureSession::attach(
+          static_cast<std::uint32_t>(child), capture));
+    } catch (const std::exception& error) {
+      INFO(std::string{"attach round "} + std::to_string(round) + ": " + error.what());
+      FAIL("attach round failed");
+    }
+    CHECK(session->query_status().state == noleax::ipc::AgentState::kCapturing);
+    const auto stopped = session->stop();
+    CHECK(stopped.state == noleax::ipc::AgentState::kDormant);  // attach never live-unpatches
+    session.reset();
+
+    check_fixture_exit(child, release_pipe[1], report_pipe[0]);
+    guard.pid = -1;
+    std::error_code error;
+    std::filesystem::remove(trace, error);
+  }
+}
+
+// H1-B fault reporting: a capture the agent rejects at start must surface the phase and
+// the root cause, and the target's threads/registers must come through the failed
+// injection untouched (the fixture keeps running correctly).
+TEST_CASE("linux attach surfaces the failing phase and root cause",
+          "[controller][linux][ptrace][attach][failure]") {
+  const auto stamp = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+  const std::filesystem::path trace =
+      std::filesystem::temp_directory_path() / ("noleax-attach-fault-" + stamp + ".nlx");
+
+  int release_pipe[2] = {-1, -1};
+  int report_pipe[2] = {-1, -1};
+  REQUIRE(::pipe(release_pipe) == 0);
+  REQUIRE(::pipe(report_pipe) == 0);
+  const pid_t child = spawn_fixture(release_pipe, report_pipe);
+  REQUIRE(child > 0);
+  ::close(release_pipe[0]);
+  ::close(report_pipe[1]);
+  ChildGuard guard{child};
+  std::this_thread::sleep_for(200ms);
+
+  noleax::controller::linux::CaptureOptions capture;
+  capture.agent_path = NOLEAX_AGENT_PATH;
+  capture.timeout = 10s;
+  capture.start.capture_kind = noleax::ipc::CaptureKind::kAttach;
+  capture.start.hook_profile = noleax::ipc::HookProfile::kLinuxGlibcHeap;
+  capture.start.trace_path_utf8 = trace.string();
+  capture.start.unload_on_stop = true;  // the Linux agent rejects this at capture start
+  try {
+    auto session = noleax::controller::linux::CaptureSession::attach(
+        static_cast<std::uint32_t>(child), capture);
+    FAIL("expected a classified ControllerError");
+  } catch (const noleax::controller::linux::ControllerError& error) {
+    CHECK(error.failure_kind() == noleax::controller::linux::ControllerFailureKind::kHookInstall);
+    CHECK(std::string{error.what()}.find("unload_on_stop is not supported") != std::string::npos);
+  }
+
+  check_fixture_exit(child, release_pipe[1], report_pipe[0]);
+  guard.pid = -1;
+  std::error_code error;
+  std::filesystem::remove(trace, error);
+  std::filesystem::remove(trace.string() + ".partial", error);
+}
+
+// H1-B failure window: a bootstrap that outlives the injection timeout but finishes
+// within the grace budget is an ORDINARY outcome (here: a start failure, because no
+// session server exists) — the injector restores and detaches every thread and the
+// target keeps running correctly.
+TEST_CASE("linux injector grace covers a slow bootstrap with registers intact",
+          "[controller][linux][ptrace][attach][grace]") {
+  int release_pipe[2] = {-1, -1};
+  int report_pipe[2] = {-1, -1};
+  REQUIRE(::pipe(release_pipe) == 0);
+  REQUIRE(::pipe(report_pipe) == 0);
+  const pid_t child = spawn_fixture(release_pipe, report_pipe, 2'500UL);
+  REQUIRE(child > 0);
+  ::close(release_pipe[0]);
+  ::close(report_pipe[1]);
+  ChildGuard guard{child};
+  std::this_thread::sleep_for(200ms);
+
+  noleax::agent::linux::AttachBootstrapParameters parameters{};
+  parameters.controller_process_id = static_cast<std::uint32_t>(::getpid());
+  parameters.connect_timeout_ms = 500U;
+  std::vector<std::byte> parameter_bytes(sizeof(parameters));
+  std::memcpy(parameter_bytes.data(), &parameters, sizeof(parameters));
+
+  // The 2 s budget expires while the bootstrap sleeps; the 2 s grace lets it reach the
+  // trap, where it reports the failed session (no server is listening) as a plain
+  // bootstrap return code instead of a wedged stub.
+  try {
+    noleax::controller::linux::PtraceInjector::inject(static_cast<std::uint32_t>(child),
+                                                      NOLEAX_AGENT_PATH, parameter_bytes,
+                                                      std::chrono::seconds{2});
+    FAIL("expected the bootstrap failure to surface");
+  } catch (const noleax::controller::linux::ControllerError& error) {
+    INFO(error.what());
+    CHECK(std::string{error.what()}.find("noleax_agent_attach_bootstrap returned") !=
+          std::string::npos);
+    CHECK(std::string{error.what()}.find("wedged") == std::string::npos);
+  }
+
+  check_fixture_exit(child, release_pipe[1], report_pipe[0]);
+  guard.pid = -1;
+}
+
+// H1-B failure window: a bootstrap that outlives the timeout plus the grace budget is
+// wedged. The injector must NOT restore the thread's saved registers (teleporting it out
+// of mid-agent code): it leaves the process stopped under the seizure and fails loudly.
+TEST_CASE("linux injector leaves a wedged bootstrap stopped instead of corrupting the target",
+          "[controller][linux][ptrace][attach][grace]") {
+  int release_pipe[2] = {-1, -1};
+  int report_pipe[2] = {-1, -1};
+  REQUIRE(::pipe(release_pipe) == 0);
+  REQUIRE(::pipe(report_pipe) == 0);
+  const pid_t child = spawn_fixture(release_pipe, report_pipe, 30'000UL);
+  REQUIRE(child > 0);
+  ::close(release_pipe[0]);
+  ::close(report_pipe[1]);
+  ChildGuard guard{child};
+  std::this_thread::sleep_for(200ms);
+
+  noleax::agent::linux::AttachBootstrapParameters parameters{};
+  parameters.controller_process_id = static_cast<std::uint32_t>(::getpid());
+  parameters.connect_timeout_ms = 1'000U;
+  std::vector<std::byte> parameter_bytes(sizeof(parameters));
+  std::memcpy(parameter_bytes.data(), &parameters, sizeof(parameters));
+
+  // 1 s budget + 1 s grace expire while the bootstrap sleeps for 30 s: wedged.
+  try {
+    noleax::controller::linux::PtraceInjector::inject(static_cast<std::uint32_t>(child),
+                                                      NOLEAX_AGENT_PATH, parameter_bytes,
+                                                      std::chrono::seconds{1});
+    FAIL("expected the wedged-stub error");
+  } catch (const noleax::controller::linux::ControllerError& error) {
+    INFO(error.what());
+    CHECK(std::string{error.what()}.find("wedged") != std::string::npos);
+    CHECK(std::string{error.what()}.find("must be restarted") != std::string::npos);
+  }
+
+  // The target was left seized and stopped: still there, not progressing. Kill it (the
+  // documented operator action for a wedged target) and reap.
+  CHECK(::kill(child, 0) == 0);
+  ::close(release_pipe[1]);
+  ::close(report_pipe[0]);
+  // The abandoned seizure keeps every thread traced: each non-leader thread must be
+  // reaped by tid under __WALL before the group leader becomes reappable. The thread set
+  // is enumerated BEFORE the kill: a dead process no longer lists its traced zombies.
+  const std::vector<pid_t> tids = list_task_threads(child);
+  REQUIRE(::kill(child, SIGKILL) == 0);
+  for (const pid_t tid : tids) {
+    if (tid != child) {
+      int thread_status = 0;
+      static_cast<void>(::waitpid(tid, &thread_status, __WALL));
+    }
+  }
+  int exit_status = 0;
+  CHECK(::waitpid(child, &exit_status, __WALL) == child);
+  CHECK(WIFSIGNALED(exit_status));
+  CHECK(WTERMSIG(exit_status) == SIGKILL);
+  guard.pid = -1;
 }

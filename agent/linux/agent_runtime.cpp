@@ -84,6 +84,20 @@ class HookGuardRuntimeLease final {
   bool ready_{false};
 };
 
+// RAII for hoox's thread-local external-suspension flag (H1-B). Set exactly for the
+// attach bootstrap stretch that can run patch transactions; cleared on every exit.
+class ExternalThreadSuspensionScope final {
+ public:
+  ExternalThreadSuspensionScope() noexcept {
+    noleax::agent::HookBackend::set_external_thread_suspension(true);
+  }
+  ~ExternalThreadSuspensionScope() noexcept {
+    noleax::agent::HookBackend::set_external_thread_suspension(false);
+  }
+  ExternalThreadSuspensionScope(const ExternalThreadSuspensionScope&) = delete;
+  ExternalThreadSuspensionScope& operator=(const ExternalThreadSuspensionScope&) = delete;
+};
+
 // ---------------------------------------------------------------------------
 // env channel
 // ---------------------------------------------------------------------------
@@ -1066,6 +1080,13 @@ __attribute__((constructor)) void noleax_agent_linux_init() {
 // attach bootstrap export (called by the controller's ptrace injector)
 // ---------------------------------------------------------------------------
 
+// Called by the controller's ptrace injector on the hijacked thread while every
+// pre-existing peer thread is stopped by the seizure (H1-B). The whole session bootstrap
+// — connect, handshake, StartCapture, hook installation — runs synchronously here and
+// completes before this returns, so no business thread ever executes a partially written
+// prologue. Return codes: 0 = capture ready (every hook installed), 1 = bad parameters,
+// 2 = already bootstrapped, 3 = unexpected exception, 4 = the session/start failed (the
+// detail went to the controller over the session channel).
 extern "C" __attribute__((visibility("default"))) std::uint32_t noleax_agent_attach_bootstrap(
     const noleax::agent::linux::AttachBootstrapParameters* parameters) noexcept {
   if (parameters == nullptr ||
@@ -1076,21 +1097,31 @@ extern "C" __attribute__((visibility("default"))) std::uint32_t noleax_agent_att
   if (bootstrap_started.exchange(true, std::memory_order_acq_rel)) {
     return 2U;  // already bootstrapped (e.g. agent was preloaded too)
   }
+  // Test seam (H1-B): simulate a slow bootstrap inside the stop window so injector tests
+  // can drive the grace and wedged deadline paths. Read from the target's own
+  // environment (attach has no env channel) and scrubbed immediately.
+  if (const char* value = std::getenv(noleax::agent::linux::kAttachBootstrapDelayEnv)) {
+    const unsigned long delay_ms = std::strtoul(value, nullptr, 10);
+    unsetenv(noleax::agent::linux::kAttachBootstrapDelayEnv);
+    if (delay_ms > 0UL && delay_ms <= 60'000UL) {
+      std::this_thread::sleep_for(std::chrono::milliseconds{delay_ms});
+    }
+  }
   try {
     const std::string_view socket_name{
         parameters->socket_name,
         strnlen(parameters->socket_name, noleax::agent::linux::kAttachSocketNameCapacity)};
-    std::thread([socket_name = std::string{socket_name}, token = parameters->session_token,
-                 pid = parameters->controller_process_id,
-                 timeout = parameters->connect_timeout_ms]() mutable {
-      // The worker runs outside any guarded caller: a dead controller socket or any
-      // other failure must never terminate the attached target.
-      try {
-        static_cast<void>(session_bootstrap(socket_name, token, pid, timeout));
-      } catch (...) {
-      }
-    }).detach();
-    return 0U;
+    // The injector holds every pre-existing peer thread in a ptrace stop for the whole
+    // bootstrap, so hoox must not run its in-process stop-the-world (peer park) here:
+    // SIGRTMIN+6 sent to a ptrace-stopped thread stays pending until the thread resumes
+    // (after detach), so the park would only ever time out into a patch failure — and a
+    // thread that blocks the signal does the same in the other direction. The flag is
+    // thread-local; the scope clears it on every exit, including the failure returns.
+    const ExternalThreadSuspensionScope external_suspension;
+    return session_bootstrap(socket_name, parameters->session_token,
+                             parameters->controller_process_id, parameters->connect_timeout_ms)
+               ? 0U
+               : 4U;
   } catch (...) {
     return 3U;
   }

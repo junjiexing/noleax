@@ -27,12 +27,20 @@ inline constexpr char kAgentConfigEnv[] = "NOLEAX_AGENT_CONFIG";
 // budget (milliseconds, 1..3600000) so tests can force a bounded drain timeout against a
 // slow in-flight replacement call. Scrubbed with the rest of the channel.
 inline constexpr char kDrainBudgetEnv[] = "NOLEAX_DRAIN_BUDGET_MS";
+// Test seam (H1-B): sleeps the given milliseconds (1..60000) at the start of the attach
+// bootstrap, inside the injector's stop window, so injector tests can drive the
+// grace/wedged deadline paths deterministically. Attach has no env channel, so this is
+// read from the target's own environment by the bootstrap export and scrubbed there.
+inline constexpr char kAttachBootstrapDelayEnv[] = "NOLEAX_ATTACH_BOOTSTRAP_DELAY_MS";
 
 inline constexpr std::uint32_t kDefaultConnectTimeoutMs = 10'000U;
 
-// Attach bootstrap ABI (port M6): there is no env channel when attaching to a running
-// process, so the ptrace injector calls this export after dlopening the agent, passing
-// the same session fields the env channel would carry.
+// Attach bootstrap ABI (port M6, synchronous since H1-B): there is no env channel when
+// attaching to a running process, so the ptrace injector calls this export on the
+// hijacked thread after dlopening the agent, passing the same session fields the env
+// channel would carry. The call runs the entire session bootstrap — connect, handshake,
+// StartCapture, hook installation — inside the injector's stop window and returns only
+// after every hook is installed (or the start failed).
 inline constexpr std::uint32_t kAttachBootstrapVersion = 1U;
 inline constexpr std::size_t kAttachSocketNameCapacity = 64U;
 
@@ -48,7 +56,8 @@ struct AttachBootstrapParameters {
 
 static_assert(std::is_trivially_copyable_v<AttachBootstrapParameters>);
 
-// Returns 0 on success; the session worker runs the handshake from there.
+// Returns 0 after the handshake and hook installation have completed; nonzero on any
+// failure (the injector keeps the target's register state intact on all of them).
 extern "C" std::uint32_t noleax_agent_attach_bootstrap(
     const AttachBootstrapParameters* parameters) noexcept;
 
